@@ -1,0 +1,70 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Repository Status
+
+This repository is **design-phase only** — no source code, Dockerfile, or tests exist yet. The two documents here are the authoritative spec for the POC:
+
+- `dmac-assistant-sds.md` — Software Design Specification (components, data flow, mounts, env vars, milestones)
+- `dmac-assistant-adrs.md` — Architecture Decision Records (the *why* behind each choice)
+
+Read both before implementing. When a decision is unclear, the ADRs record the reasoning and the rejected alternatives — do not re-litigate them without cause.
+
+## What This System Is
+
+DMAC Assistant wraps **Claude Code itself** as the agent runtime for MIT BioMicro Center lab users. It is a thin bridge around a containerized `claude` CLI — not a custom agent framework (ADR-001). Three moving parts:
+
+1. **FastAPI WebSocket bridge** (host, ~200–400 LOC) — authenticates users, resolves their authorized project directories, starts a per-user Docker container via `docker-py`, and relays messages between the chat UI's WebSocket and the container's stdin/stdout (`--output-format stream-json`). Chat UI is unchanged (ADR-006).
+2. **Docker image `dmac-assistant`** (Node 20 base, `linux/amd64`) — bakes in Claude Code (pinned npm version), `uv`, plugins, docs, and `entrypoint.sh`. Zero secrets in the image (ADR-005, ADR-011).
+3. **Plugins** — CLI-invocable Python/Bash scripts with markdown docs. Claude Code discovers them by reading the baked-in `/app/CLAUDE.md`, which points at per-plugin docs in `/app/docs/`. MCP was intentionally rejected for POC plugins (ADR-008).
+
+## Load-Bearing Invariants
+
+These are the assumptions the whole design rests on. Do not violate them without revisiting the relevant ADR.
+
+- **Docker mounts are the security boundary — not application code** (ADR-002). A user's container only sees directories it was started with. Do not add app-level path-allowlist checks as a substitute; that would create the illusion of defense-in-depth while actually splitting the trust model.
+- **Project data is mounted read-only; output goes to `/data/scratch/`** (ADR-003). Plugins must never do in-place transformations — DropBox sync would propagate corruption to every synced machine.
+- **Secrets live only in the container's runtime env** (ADR-005). `AWS_BEARER_TOKEN_BEDROCK`, `NEXTSEEK_USERNAME`, `NEXTSEEK_PASSWORD` are passed via `docker run -e`. The entrypoint **must** scrub the `env` block from `/home/user/.claude/settings.local.json` on every start, because that path is a persistent mount and will leak credentials across sessions otherwise.
+- **`--dangerously-skip-permissions` is intentional and required** (ADR-012). The system is headless behind a chat UI with no terminal to approve prompts. The flag is only safe because Docker mounts bound the blast radius — if that isolation model ever changes, remove the flag immediately. When writing the baked-in `/app/CLAUDE.md` for the container, explicitly instruct the in-container Claude Code to never log, print, or write credentials, and to confirm destructive NExtSEEK operations conversationally before executing.
+- **Chat UI credentials == NExtSEEK credentials** (ADR-009). Users auth once; the bridge holds the plaintext password in memory for the session to pass into the container. Never persist it.
+- **Session state lives in the mounted `.claude/`, not in the bridge** (ADR-010). Resumption is `claude --resume --session-id {id}` against `/persistent/claude-users/{user_id}/.claude/`. The bridge is stateless.
+
+## Canonical Mount Contract
+
+| Container | Host | Mode |
+|---|---|---|
+| `/data/projects/{name}` | `~/Library/CloudStorage/Dropbox/DMAC_Data/{name}` (macOS dev) | `ro` |
+| `/data/scratch` | `/persistent/scratch/{user_id}` | `rw` |
+| `/home/user/.claude` | `/persistent/claude-users/{user_id}/.claude` | `rw` |
+
+The container always sees `/data/projects/`; only the host side changes between macOS dev and the Linux production VM (ADR-011).
+
+## Headless Invocation
+
+```
+claude --print --output-format stream-json --dangerously-skip-permissions [--resume --session-id <id>]
+```
+
+Environment: `CLAUDE_CODE_USE_BEDROCK=1`, `AWS_REGION`, `AWS_BEARER_TOKEN_BEDROCK`, `NEXTSEEK_USERNAME`, `NEXTSEEK_PASSWORD`.
+
+Bedrock bearer tokens expire hourly (ADR-004). POC accepts that long sessions may fail mid-conversation; token refresh is explicitly deferred.
+
+## POC vs Post-POC Boundary
+
+Do **not** build these as part of the POC — they are explicitly deferred and adding them now will entangle the bridge:
+
+- Container pool / lifecycle manager (ADR-007 — POC uses manual start/stop, one container per WebSocket)
+- Bedrock token refresh (ADR-004)
+- Network egress restriction to only Bedrock + NExtSEEK (SDS §4.3)
+- Institutional SSO, multi-user concurrency control
+- `.claude/` retention policy, scratch quotas
+
+The architecture supports multi-user (mounts are keyed by `user_id`), but POC code should hardcode the user→project mapping.
+
+## Conventions When Code Lands
+
+- Python plugin deps managed with **`uv`**, not pip/poetry.
+- Bridge uses **`docker-py`**, not `subprocess` around the `docker` CLI (ADR-006 — stream attachment is more robust).
+- Plugins: read from `/data/projects/`, write to `/data/scratch/`, read credentials from env. Stateless per invocation (ADR-008).
+- Plugin docs in `/app/docs/*.md` are the primary teaching surface for the in-container Claude Code — keep them example-heavy; Claude infers argument shapes from them rather than from a formal schema.
