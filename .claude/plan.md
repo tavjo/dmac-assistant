@@ -1,5 +1,49 @@
 # Plan: NExtSEEK Docs Ingestion Tool
 
+## COLD-START HANDOFF
+**Generated**: 2026-04-13T19:49:24.506155
+**Plan**: Plan: NExtSEEK Docs Ingestion Tool (`?`)
+**Last status**: Unknown
+
+### 1. Original Goal
+(not found)
+
+### 2. Completed Tasks
+None yet.
+
+### 3. In-Progress Tasks
+None.
+
+### 4. Remaining Tasks
+None — all tasks accounted for.
+
+### 5. Key Decisions & Amendments
+- **2026-04-13** — plan drafted (original T0–T10).
+- **2026-04-13** — adversarial review appended; 14 risks identified; hardening decisions captured.
+- **2026-04-13** — spike validated GitBook endpoint returns HTML (not PDF); markitdown auto-detects and preserves `<h1>` as `#`. Spec rewritten. Plan revised: dropped T0 (spec rewrite done inline); fixture strategy pivoted from reportlab PDF to synthetic HTML (no binary dep); deps hoisted to T1; DI adopted for fetcher/parser; marker strings centralized in `constants.py`; autouse conftest guard structural instead of conventional; fence-aware splitter explicit; hash written LAST; logging contract codified; commit protocol codified. Spike deps (`reportlab`, `pymupdf4llm`) removed; `markitdown[all]` locked.
+- **2026-04-13** — Phase 3 EXPLODE complete. Nine task specs written to `.claude/tasks/` with full behavioral contracts, reference implementations, exact diffs, verification commands, and worktree/branch assignments. Refinements (pytest-cov, package scaffolding in T2, Makefile integration test, repo-pollution canary) captured above.
+- **2026-04-13** — Phase 4 VET complete. Each spec attacked individually; T2, T5, T7 revised to fix concrete bugs (OLD-block mismatch, golden-string trailing-newline mismatch, missing ValueError-branch tests, `capsys`-vs-`caplog` logging assertion, missing coverage-gap tests). All specs now carry `## Spec Risk Notes (Phase 4)` sections. Every spec marked `vetted`. No coverage exceptions declared.
+- **2026-04-13** — Phase 5 LOCK confirmed by user. The design spec (`docs/superpowers/specs/2026-04-13-nextseek-docs-ingestion-design.md`), the plan (`.claude/plan.md`), and the nine task specs (`.claude/tasks/task-01..task-09`) are now immutable. Any deviation requires `/ultraplan amend`.
+- **2026-04-13** — Phase 5.5 settings written. `.claude/settings.local.json` approved by user. Worktree creation deferred to the start of Phase 6 per user preference — integration branch `ultraplan/nextseek-docs-ingestion` will be created together with the T1 worktree when execution begins.
+
+Spec locked: **Locked at**: 2026-04-13
+**Scope**: nine executable task specs (T1–T9) + one human gate (T10), covering the NExtSEEK docs build-time ingestion tool.
+**Coverage floor**: 95% across `build_tools/ingest_nextseek_docs/`. No exceptions.
+**TDD**: strict red-green-refactor per task.
+**Deferred (not in scope of this plan)**: first live-network ingestion, Docker image build, ruff/mypy, cron-based refresh, generalization to other doc sources, IGB and internal BMC docs.
+
+Any change to the locked artifacts must go through `/ultraplan amend` — identify affected specs, blast radius, and user confirmation before modification.
+
+### 6. Open Questions & Ambiguities
+None recorded.
+
+### Resume Instructions
+Run `/ultraplan onboard` in a fresh session. The onboard protocol will
+cross-reference this handoff against the actual codebase state before
+resuming execution.
+
+---
+
 **Status:** `LOCKED (2026-04-13) — PHASE 5.5 SETTINGS WRITTEN — AWAITING PHASE 6 GO TO CREATE INTEGRATION BRANCH + WORKTREES` (no tasks started)
 **Owner:** Taisha (human reviewer) + Claude Code (executor)
 **Spec:** `docs/superpowers/specs/2026-04-13-nextseek-docs-ingestion-design.md` (revised 2026-04-13)
@@ -517,3 +561,8 @@ Every spec attacked individually: likely failure mode, catastrophic failure mode
 **Deferred (not in scope of this plan)**: first live-network ingestion, Docker image build, ruff/mypy, cron-based refresh, generalization to other doc sources, IGB and internal BMC docs.
 
 Any change to the locked artifacts must go through `/ultraplan amend` — identify affected specs, blast radius, and user confirmation before modification.
+
+## Auto-Compact Triggered
+- **Reason**: user-requested context clear before Phase 6 execution
+- **Timestamp**: 2026-04-13T23:49:24Z
+- **Action**: Session ended. Run `/ultraplan onboard` to resume.
