@@ -1,6 +1,6 @@
 # Plan: NExtSEEK Docs Ingestion Tool
 
-**Status:** `READY FOR EXECUTION — AWAITING USER APPROVAL` (no tasks started)
+**Status:** `PHASE 3 COMPLETE — TASK SPECS READY — AWAITING PHASE 4 VETTING OR USER APPROVAL TO PROCEED` (no tasks started)
 **Owner:** Taisha (human reviewer) + Claude Code (executor)
 **Spec:** `docs/superpowers/specs/2026-04-13-nextseek-docs-ingestion-design.md` (revised 2026-04-13)
 **Created:** 2026-04-13
@@ -443,8 +443,44 @@ Human reviews:
 
 _(Append any questions surfaced during execution here with their resolution.)_
 
+## Task Specs Manifest
+
+Phase 3 EXPLODE complete. Each task in `T1–T9` has a complete 10-section spec in `.claude/tasks/`:
+
+| ID | Spec file | Wave | Dependencies | Coverage target |
+|----|-----------|------|--------------|-----------------|
+| T1 | `.claude/tasks/task-01-test-infra.md` | 1 | — | N/A (scaffolding) |
+| T2 | `.claude/tasks/task-02-container-claude-md.md` | 2 | T1 | N/A |
+| T3 | `.claude/tasks/task-03-fetch.md` | 3 (parallel) | T2 | ≥95% (targeting 100%) |
+| T4 | `.claude/tasks/task-04-split.md` | 3 (parallel) | T2 | ≥95% |
+| T5 | `.claude/tasks/task-05-toc.md` | 3 (parallel) | T2, T4 | ≥95% |
+| T6 | `.claude/tasks/task-06-hashing.md` | 3 (parallel) | T2 | ≥95% (targeting 100%) |
+| T7 | `.claude/tasks/task-07-orchestrator.md` | 4 | T3, T4, T5, T6 | ≥95% |
+| T8 | `.claude/tasks/task-08-makefile.md` | 5 | T7 | N/A (Makefile) |
+| T9 | `.claude/tasks/task-09-end-to-end.md` | 5 | T7 | ≥95% whole-package |
+| T10 | Human gate (no spec file) | 6 | T1–T9 | N/A |
+
+**Wave structure for Phase 6 execution:**
+- Wave 1: T1 (solo)
+- Wave 2: T2 (solo)
+- Wave 3: T3, T4, T5, T6 (parallel; T5 waits briefly for T4 to publish `Section`)
+- Wave 4: T7 (solo)
+- Wave 5: T8, T9 (parallel)
+- Wave 6: T10 (human gate)
+
+Note: T5 has a secondary dep on T4 because it imports `Section`. In practice T5 can start the same time as T3/T6 (it can create `constants.py` first, then wait on T4's merge before implementing `toc.py`). For simplicity, in Phase 6 we treat T5 as dependent on T4 and let T3/T6 run first within Wave 3.
+
+**Coverage exceptions**: None declared. `Makefile` and `container/CLAUDE.md` skeleton are not Python code, so they carry no coverage target. All Python modules under `build_tools/ingest_nextseek_docs/` must meet the 95% floor.
+
+**Refinements captured in specs beyond the original plan sketch:**
+- T1 adds `pytest-cov` to dev deps (originally omitted; 95% floor requires it).
+- T2 creates the `build_tools/` + `build_tools/ingest_nextseek_docs/` package scaffolding (empty `__init__.py` files) so T3–T6 don't race on directory creation.
+- T8 includes a Python integration test file (`tests/integration/test_makefile.py`) rather than relying on ad-hoc shell checks.
+- T9 adds a repo-pollution canary test using `git status --porcelain`.
+
 ## Amendment Log
 
 - **2026-04-13** — plan drafted (original T0–T10).
 - **2026-04-13** — adversarial review appended; 14 risks identified; hardening decisions captured.
 - **2026-04-13** — spike validated GitBook endpoint returns HTML (not PDF); markitdown auto-detects and preserves `<h1>` as `#`. Spec rewritten. Plan revised: dropped T0 (spec rewrite done inline); fixture strategy pivoted from reportlab PDF to synthetic HTML (no binary dep); deps hoisted to T1; DI adopted for fetcher/parser; marker strings centralized in `constants.py`; autouse conftest guard structural instead of conventional; fence-aware splitter explicit; hash written LAST; logging contract codified; commit protocol codified. Spike deps (`reportlab`, `pymupdf4llm`) removed; `markitdown[all]` locked.
+- **2026-04-13** — Phase 3 EXPLODE complete. Nine task specs written to `.claude/tasks/` with full behavioral contracts, reference implementations, exact diffs, verification commands, and worktree/branch assignments. Refinements (pytest-cov, package scaffolding in T2, Makefile integration test, repo-pollution canary) captured above.
