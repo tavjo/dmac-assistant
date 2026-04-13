@@ -1,6 +1,6 @@
 # Plan: NExtSEEK Docs Ingestion Tool
 
-**Status:** `PHASE 3 COMPLETE — TASK SPECS READY — AWAITING PHASE 4 VETTING OR USER APPROVAL TO PROCEED` (no tasks started)
+**Status:** `PHASE 4 COMPLETE — ALL SPECS VETTED — READY FOR PHASE 5 LOCK` (no tasks started)
 **Owner:** Taisha (human reviewer) + Claude Code (executor)
 **Spec:** `docs/superpowers/specs/2026-04-13-nextseek-docs-ingestion-design.md` (revised 2026-04-13)
 **Created:** 2026-04-13
@@ -478,9 +478,30 @@ Note: T5 has a secondary dep on T4 because it imports `Section`. In practice T5 
 - T8 includes a Python integration test file (`tests/integration/test_makefile.py`) rather than relying on ad-hoc shell checks.
 - T9 adds a repo-pollution canary test using `git status --porcelain`.
 
+## Phase 4 Vetting Results
+
+Every spec attacked individually: likely failure mode, catastrophic failure mode, hidden deps, ambiguous success conditions, coverage reachability, cross-task dependency consistency.
+
+| Spec | Verdict | Revisions applied |
+|------|---------|-------------------|
+| T1 | vetted | none (Spec Risk Notes appended) |
+| T2 | vetted (**revised**) | Edit 1 OLD block didn't match committed `CLAUDE.md` — verified current content, rewrote the diff with anchors that exist. Added guidance for the executing agent to Read first, confirm anchor, escalate if not found. |
+| T3 | vetted | none (Spec Risk Notes appended) |
+| T4 | vetted | none (Spec Risk Notes appended; 1 minor untested edge, still ≥95%) |
+| T5 | vetted (**revised**) | Three concrete bugs fixed: (a) golden trailing-newline mismatch between `render_claude_md_block` test and impl; (b) `update_claude_md` test passing content without the leading `\n` required by the verbatim-replace contract; (c) only 2 of 6 `ValueError` branches had tests — now all 6 covered. Atomicity lambda replaced with a real `def` for clarity. |
+| T6 | vetted | none |
+| T7 | vetted (**revised**) | Three fixes: (a) logging test using `capsys.readouterr().err` couldn't work because `ingest()` does not call `logging.basicConfig` — switched to `caplog` for log-record capture; (b) README.md-preservation branch in cleanup glob had no dedicated test — added one; (c) `_extract_overview_paragraph` fallback branch untested — added test; dead `if not sections: return ""` removed to prevent untested line. |
+| T8 | vetted | none |
+| T9 | vetted | none |
+
+**Coverage exceptions**: none declared. All Python modules target ≥95%. T1 and T2 use `--no-cov` during their own verification because `build_tools/` is not yet populated; from T3 onward the global coverage floor is active.
+
+**Cross-spec dependency consistency verified**: T3/T4 only depend on T2's package scaffolding. T5 imports `Section` from T4. T7 imports from T3/T4/T5/T6. T9 imports from T7. No cycles; no references to artifacts from un-vetted tasks.
+
 ## Amendment Log
 
 - **2026-04-13** — plan drafted (original T0–T10).
 - **2026-04-13** — adversarial review appended; 14 risks identified; hardening decisions captured.
 - **2026-04-13** — spike validated GitBook endpoint returns HTML (not PDF); markitdown auto-detects and preserves `<h1>` as `#`. Spec rewritten. Plan revised: dropped T0 (spec rewrite done inline); fixture strategy pivoted from reportlab PDF to synthetic HTML (no binary dep); deps hoisted to T1; DI adopted for fetcher/parser; marker strings centralized in `constants.py`; autouse conftest guard structural instead of conventional; fence-aware splitter explicit; hash written LAST; logging contract codified; commit protocol codified. Spike deps (`reportlab`, `pymupdf4llm`) removed; `markitdown[all]` locked.
 - **2026-04-13** — Phase 3 EXPLODE complete. Nine task specs written to `.claude/tasks/` with full behavioral contracts, reference implementations, exact diffs, verification commands, and worktree/branch assignments. Refinements (pytest-cov, package scaffolding in T2, Makefile integration test, repo-pollution canary) captured above.
+- **2026-04-13** — Phase 4 VET complete. Each spec attacked individually; T2, T5, T7 revised to fix concrete bugs (OLD-block mismatch, golden-string trailing-newline mismatch, missing ValueError-branch tests, `capsys`-vs-`caplog` logging assertion, missing coverage-gap tests). All specs now carry `## Spec Risk Notes (Phase 4)` sections. Every spec marked `vetted`. No coverage exceptions declared.

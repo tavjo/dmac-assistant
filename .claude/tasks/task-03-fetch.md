@@ -336,3 +336,11 @@ grep -EnR "^(from|import) (baml|duckdb|leiden|smart_form|openai)" build_tools/ &
 - **Worktree**: `.claude/worktrees/task-03-fetch/`
 - **Merge target**: `ultraplan/nextseek-docs-ingestion`
 - **Merge condition**: all Section 8 checks pass; `fetch.py` coverage ≥ 95%.
+
+## Spec Risk Notes (Phase 4)
+
+**Status**: vetted.
+
+- **Monkeypatch of `httpx.Client` attribute, not symbol in fetch module**: `monkeypatch.setattr(fetch_module.httpx, "Client", lambda ...)` mutates the global `httpx` module's `Client` attribute. Monkeypatch auto-restores at test end, so safe in serial pytest execution. If a future refactor introduces pytest-xdist parallelism (process isolation makes this safe again) or in-process concurrency (not safe), revisit and switch to `monkeypatch.setattr(fetch_module, "httpx", fake_module)`.
+- **Temp-file-glob-based cleanup test is mildly racy**: `set(Path(tempfile.gettempdir()).glob("tmp*.pdf"))` will include any other process's `.pdf` tempfiles created during the test. The assertion `after <= before` is true iff no new `.pdf` tempfiles were added by the function under test — unaffected by other processes' files unless one of them happens to be deleted during the test window (then `after` shrinks, still satisfies `<=`). Stable in practice; worst case a concurrent process cleans up a `.pdf` mid-test and the assertion passes trivially (false-positive green, not false-failure).
+- **`markitdown` auto-detection inheritance**: the implementation writes source bytes to a `.pdf`-suffixed tempfile and lets markitdown sniff the actual content. This is inherited verbatim from smart-form-tool and verified to work for HTML content on 2026-04-13. If markitdown ever gates on extension again (regression), the T1 contract test catches it first.

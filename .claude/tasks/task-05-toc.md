@@ -189,7 +189,6 @@ def test_render_claude_md_block_golden_output() -> None:
         "Top-level sections: Welcome, Getting Started, Sample Registration.\n"
         "\n"
         "For detail, read `/app/docs/nextseek/README.md` first.\n"
-        "\n"
     )
     assert result == expected, (
         f"render_claude_md_block output mismatch.\n"
@@ -199,6 +198,7 @@ def test_render_claude_md_block_golden_output() -> None:
 
 
 def test_update_claude_md_replaces_block_between_markers(tmp_path: Path) -> None:
+    """update_claude_md replaces verbatim — caller supplies leading/trailing newlines."""
     seeded = (
         "# Header\n"
         f"{BEGIN_MARKER}\n"
@@ -209,7 +209,11 @@ def test_update_claude_md_replaces_block_between_markers(tmp_path: Path) -> None
     path = tmp_path / "CLAUDE.md"
     path.write_text(seeded)
 
-    toc.update_claude_md(path, "NEW CONTENT\n")
+    # Block content starts with "\n" because the content between markers
+    # is sandwiched directly between the marker strings — the caller is
+    # responsible for producing a newline after BEGIN_MARKER and before
+    # END_MARKER. `render_claude_md_block` follows this convention.
+    toc.update_claude_md(path, "\nNEW CONTENT\n")
 
     result = path.read_text()
     expected = (
@@ -222,24 +226,64 @@ def test_update_claude_md_replaces_block_between_markers(tmp_path: Path) -> None
     assert result == expected
 
 
-def test_update_claude_md_missing_markers_raises_and_file_unchanged(
-    tmp_path: Path,
-) -> None:
+def test_update_claude_md_begin_missing_raises(tmp_path: Path) -> None:
+    """No BEGIN marker: raise, file unchanged."""
+    original = f"Just content.\n{END_MARKER}\nFooter.\n"
+    path = tmp_path / "CLAUDE.md"
+    path.write_text(original)
+    with pytest.raises(ValueError, match="marker"):
+        toc.update_claude_md(path, "\nanything\n")
+    assert path.read_text() == original
+
+
+def test_update_claude_md_end_missing_raises(tmp_path: Path) -> None:
+    """No END marker: raise, file unchanged."""
+    original = f"Header\n{BEGIN_MARKER}\nJust content.\n"
+    path = tmp_path / "CLAUDE.md"
+    path.write_text(original)
+    with pytest.raises(ValueError, match="marker"):
+        toc.update_claude_md(path, "\nanything\n")
+    assert path.read_text() == original
+
+
+def test_update_claude_md_both_markers_missing_raises(tmp_path: Path) -> None:
+    """Neither marker: raise, file unchanged."""
     original = "# No markers here\nJust content.\n"
     path = tmp_path / "CLAUDE.md"
     path.write_text(original)
     with pytest.raises(ValueError, match="marker"):
-        toc.update_claude_md(path, "anything")
+        toc.update_claude_md(path, "\nanything\n")
     assert path.read_text() == original
 
 
-def test_update_claude_md_duplicate_markers_raises(tmp_path: Path) -> None:
-    doubled = f"{BEGIN_MARKER}\n1\n{END_MARKER}\n{BEGIN_MARKER}\n2\n{END_MARKER}\n"
+def test_update_claude_md_begin_duplicated_raises(tmp_path: Path) -> None:
+    """Two BEGIN markers: raise, file unchanged."""
+    doubled = f"{BEGIN_MARKER}\n1\n{END_MARKER}\n{BEGIN_MARKER}\n2\n"
     path = tmp_path / "CLAUDE.md"
     path.write_text(doubled)
     with pytest.raises(ValueError, match="marker"):
-        toc.update_claude_md(path, "anything")
+        toc.update_claude_md(path, "\nanything\n")
     assert path.read_text() == doubled
+
+
+def test_update_claude_md_end_duplicated_raises(tmp_path: Path) -> None:
+    """Two END markers: raise, file unchanged."""
+    doubled = f"{BEGIN_MARKER}\n1\n{END_MARKER}\n{END_MARKER}\n"
+    path = tmp_path / "CLAUDE.md"
+    path.write_text(doubled)
+    with pytest.raises(ValueError, match="marker"):
+        toc.update_claude_md(path, "\nanything\n")
+    assert path.read_text() == doubled
+
+
+def test_update_claude_md_inverted_marker_order_raises(tmp_path: Path) -> None:
+    """END appears before BEGIN: raise, file unchanged."""
+    inverted = f"Prefix\n{END_MARKER}\nmiddle\n{BEGIN_MARKER}\nSuffix\n"
+    path = tmp_path / "CLAUDE.md"
+    path.write_text(inverted)
+    with pytest.raises(ValueError, match="marker"):
+        toc.update_claude_md(path, "\nanything\n")
+    assert path.read_text() == inverted
 
 
 def test_update_claude_md_is_atomic_on_replace_failure(
@@ -250,13 +294,12 @@ def test_update_claude_md_is_atomic_on_replace_failure(
     path = tmp_path / "CLAUDE.md"
     path.write_text(original)
 
-    monkeypatch.setattr(
-        toc.os,
-        "replace",
-        lambda src, dst: (_ for _ in ()).throw(OSError("disk full")),
-    )
+    def fake_replace(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(toc.os, "replace", fake_replace)
     with pytest.raises(OSError, match="disk full"):
-        toc.update_claude_md(path, "new\n")
+        toc.update_claude_md(path, "\nnew\n")
 
     assert path.read_text() == original
     # No orphaned .tmp file either
@@ -268,7 +311,7 @@ def test_update_claude_md_idempotent(tmp_path: Path) -> None:
     path = tmp_path / "CLAUDE.md"
     path.write_text(seeded)
 
-    block = "SAME CONTENT\n"
+    block = "\nSAME CONTENT\n"
     toc.update_claude_md(path, block)
     first = path.read_bytes()
     toc.update_claude_md(path, block)
@@ -349,12 +392,25 @@ def render_claude_md_block(
 ) -> str:
     """Render the content that goes between BEGIN and END markers.
 
-    Leading and trailing newlines are included so the block sits cleanly
-    between the markers in the final file.
+    Starts with a leading `\\n` so the first content line sits on its own
+    line after the BEGIN_MARKER, and ends with `\\n` so the END_MARKER sits
+    on its own line after the last content line.
+
+    Output layout (when placed between markers in a file):
+
+        <!-- BEGIN NEXTSEEK-DOCS (auto-generated) -->
+        ## NExtSEEK Documentation
+
+        {overview_paragraph}
+
+        Top-level sections: {titles}.
+
+        For detail, read `/app/docs/nextseek/README.md` first.
+        <!-- END NEXTSEEK-DOCS (auto-generated) -->
     """
     titles = ", ".join(s.title for s in sections)
     lines = [
-        "",  # blank line after BEGIN_MARKER
+        "",  # leading blank line: gives "\n" after BEGIN_MARKER
         "## NExtSEEK Documentation",
         "",
         overview_paragraph,
@@ -362,9 +418,8 @@ def render_claude_md_block(
         f"Top-level sections: {titles}.",
         "",
         "For detail, read `/app/docs/nextseek/README.md` first.",
-        "",  # trailing blank line before END_MARKER
     ]
-    return "\n".join(lines)
+    return "\n".join(lines) + "\n"
 
 
 def update_claude_md(path: Path, block_content: str) -> None:
@@ -453,9 +508,9 @@ print('marker consistency ok')
 uv run pytest -q
 ```
 
-**Expected test count**: 6 in `test_constants.py` + 8 in `test_toc.py` = 14 new.
+**Expected test count**: 6 in `test_constants.py` + 12 in `test_toc.py` = 18 new.
 
-**Expected coverage**: ≥ 95% for both modules.
+**Expected coverage**: ≥ 95% for both modules; every `ValueError` branch in `update_claude_md` has a dedicated test (`begin_missing`, `end_missing`, `both_missing`, `begin_duplicated`, `end_duplicated`, `inverted_order`).
 
 ## 9. Implementation Notes
 
@@ -471,3 +526,12 @@ uv run pytest -q
 - **Worktree**: `.claude/worktrees/task-05-toc/`
 - **Merge target**: `ultraplan/nextseek-docs-ingestion`
 - **Merge condition**: all Section 8 checks pass; coverage ≥ 95% for both new modules.
+
+## Spec Risk Notes (Phase 4)
+
+**Status**: vetted after revision.
+
+- **Fixed during Phase 4**: three concrete bugs in the original spec drafting — (1) golden string for `render_claude_md_block` had an extra trailing `\n` that didn't match the reference impl; (2) `test_update_claude_md_replaces_block_between_markers` was passing content without a leading `\n`, which cannot produce the expected file layout when `update_claude_md` does verbatim replacement; (3) only 2 of 6 `ValueError` branches in `update_claude_md` had tests — the end-missing, end-duplicated, both-missing, and inverted-order cases were absent and would have left coverage near 88%.
+- **Resolution**: impl now returns `"\n".join(...) + "\n"` for a clean, spec-matching layout. Tests pass `"\nNEW CONTENT\n"` (leading + trailing `\n`) to match the convention used by `render_claude_md_block`. Six dedicated ValueError tests added.
+- **Caller contract**: `update_claude_md` is a verbatim replacer. The caller supplies `\n` boundaries. Documented in the docstring and reinforced by test naming.
+- **Atomicity**: `fake_replace` is now a real `def` rather than the generator-throw lambda trick. Same behavior, less cognitive load for future readers.

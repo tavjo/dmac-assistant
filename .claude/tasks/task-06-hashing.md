@@ -191,3 +191,9 @@ uv run pytest -q
 - **Worktree**: `.claude/worktrees/task-06-hashing/`
 - **Merge target**: `ultraplan/nextseek-docs-ingestion`
 - **Merge condition**: all Section 8 checks pass; coverage ≥ 95% (targeting 100%).
+
+## Spec Risk Notes (Phase 4)
+
+**Status**: vetted.
+
+- Spec is complete and minimal. All three functions have direct tests, all branches reachable. Known-digest pinning (R7 resolution) handled correctly. No revisions needed.

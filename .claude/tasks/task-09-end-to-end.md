@@ -321,3 +321,11 @@ git status --porcelain docs/nextseek/ container/CLAUDE.md
 - **Worktree**: `.claude/worktrees/task-09-end-to-end/`
 - **Merge target**: `ultraplan/nextseek-docs-ingestion`
 - **Merge condition**: all Section 8 checks pass; whole-package coverage ≥ 95%.
+
+## Spec Risk Notes (Phase 4)
+
+**Status**: vetted.
+
+- **`test_end_to_end_does_not_pollute_repo` is a canary, not a hard assertion**: the test skips on non-git environments and does not assert emptiness (since a dev may have legitimate uncommitted work under the observed paths). Its value is as a warning signal during local dev — it confirms the autouse guard from T1 did its job. Hard enforcement of no-pollution lives in the autouse fixture itself.
+- **Markdown-construction detail**: `SECTIONS_A` and `SECTIONS_B` differ only in the second entry. The stale-cleanup test depends on the first and third sections having identical slugs across both inputs — `_slugify` is deterministic so this holds. If someone later changes the slug algorithm, the test will flag the mismatch before Phase 7 evaluation.
+- **Real markitdown invocation**: this task is the first caller outside T1's contract test that exercises `parse_source_to_markdown` on synthetic HTML. If markitdown's HTML handling regresses between T1 and T9 (unlikely, but possible with a `markitdown[all]` minor version bump), the failure surfaces here. Debug path: run `tests/integration/test_markitdown_contract.py` in isolation; if it still passes, the issue is in the splitter or orchestrator.

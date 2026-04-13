@@ -385,3 +385,11 @@ uv run pytest -q
 - **Worktree**: `.claude/worktrees/task-04-split/`
 - **Merge target**: `ultraplan/nextseek-docs-ingestion`
 - **Merge condition**: all Section 8 checks pass; `split.py` coverage ≥ 95%.
+
+## Spec Risk Notes (Phase 4)
+
+**Status**: vetted.
+
+- **Untested edge in `_truncate_at_word_boundary`**: the `if last_space <= 0: return head.rstrip() + "…"` branch handles descriptions with no word boundary in the first 140 chars (e.g., a single enormous URL). Not covered by the 11 tests. The line is a single `return` so missing it costs ~1 of ~40 statements → ~2.5% coverage loss. Still well above 95% floor. If the actual report shows <95%, add `test_split_description_no_word_boundary_truncates_hard` with input `"a" * 200` as a single body line.
+- **Empty-title pathology**: a heading like `# ` with no title text would slugify to empty → the impl falls back to `"section"` (see `_slugify` logic). Not directly tested. Since the H1 regex requires `^#\s+\S` (non-whitespace after `#`), this case can only be reached if a future caller passes hand-crafted markdown that bypasses the regex — e.g., if `split_by_h1` is called with pre-split section text. For now, the regex gates this out of the pipeline. Safe.
+- **Ordinal gap risk**: the impl assigns ordinals contiguously 1..N based on source order. If a future caller filters sections post-split, ordinals remain contiguous but may not reflect the filter. This is the caller's responsibility. Documented implicitly by the `i, (title, body) in enumerate(...)` pattern.

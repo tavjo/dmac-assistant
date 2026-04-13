@@ -345,3 +345,11 @@ print('socket-disable working')
 - **Worktree**: `.claude/worktrees/task-01-test-infra/`
 - **Merge target**: `ultraplan/nextseek-docs-ingestion`
 - **Merge condition**: all Section 8 verification commands pass; integration contract test green; autouse tests skip cleanly.
+
+## Spec Risk Notes (Phase 4)
+
+**Status**: vetted.
+
+- **Transient mismatch between addopts and filesystem state**: `pyproject.toml` sets `addopts = "... --cov=build_tools --cov-fail-under=95"` but in T1's own run, `build_tools/` does not yet exist (T2 creates it). pytest-cov treats a missing coverage target as a 0% measurement and would fail under 95%. Mitigation: T1 verification commands explicitly use `--no-cov` to suppress the check; T2 verification also uses `--no-cov` while the package is still empty. From T3 onward `uv run pytest` runs without `--no-cov` and coverage is enforced. The executing agent must respect the `--no-cov` flag during T1/T2 invocations — flagged in the verification block so it's not missed.
+- **Shared-module monkeypatching risk (low)**: the autouse fixture monkeypatches `build_tools.ingest_nextseek_docs.constants.DEFAULT_DOCS_DIR` and `DEFAULT_CLAUDE_MD_PATH`. These are module-level attributes. If code caches a reference to the old value BEFORE the fixture runs, the guard won't catch usage. Since `ingest()` looks up `DEFAULT_DOCS_DIR` only in `main()`'s argparse defaults (not inside `ingest()` itself), and tests always call `ingest()` directly with `tmp_path` arguments, the cache-before-monkey path is not exercised. Safe for this plan; revisit if future code caches constants eagerly.
+- **`_PoisonedPath` brittleness**: subclasses of `pathlib.Path` are version-dependent; my `_PoisonedPath` is a plain class relying on `__fspath__` being called during `Path(...)` construction. Tested in `test_autouse_guard.py`. If a future pathlib version changes this protocol, the guard silently stops raising. The self-test catches that failure mode.

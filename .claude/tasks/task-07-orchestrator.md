@@ -63,7 +63,7 @@ Wire the full ingestion pipeline in `build_tools/ingest_nextseek_docs/__main__.p
 **Step 15 — RED**: `test_ingest_writes_hash_last` — monkeypatch `write_stored_hash` to raise; assert hash absent but other files present.
 **Step 16 — GREEN**: confirmed by ordering.
 
-**Step 17 — RED**: `test_ingest_logs_to_stderr_only` — capsys check.
+**Step 17 — RED**: `test_ingest_emits_info_logs_and_status_line` — uses `caplog` for log-record capture (not `capsys` for stderr, because `ingest()` deliberately does not configure logging — that's `main()`'s job). stdout assertion stays on `capsys`.
 **Step 18 — GREEN**: add status print to stdout + logger.info calls throughout.
 
 **Step 19 — RED**: `test_cli_help_mentions_force` (subprocess invocation).
@@ -310,9 +310,21 @@ def test_ingest_writes_hash_last(
     assert not (docs_dir / ".content-hash").exists()
 
 
-def test_ingest_logs_to_stderr_and_status_to_stdout(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_ingest_emits_info_logs_and_status_line(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """ingest() emits INFO-level logs (captured via caplog, not capsys).
+
+    ingest() deliberately does NOT call logging.basicConfig — that's main()'s
+    job — so stderr is empty when ingest is called directly from a test.
+    The log records are still produced; we use pytest's caplog to capture them.
+    stdout should contain the human-readable status line.
+    """
+    import logging
+
+    caplog.set_level(logging.INFO, logger="build_tools.ingest_nextseek_docs")
     docs_dir = tmp_path / "docs" / "nextseek"
     claude_md = tmp_path / "container" / "CLAUDE.md"
     _seed_claude_md(claude_md)
@@ -327,11 +339,53 @@ def test_ingest_logs_to_stderr_and_status_to_stdout(
         parser=_stub_parser(md),
     )
     assert rc == 2
+
+    # stdout: single status line about changes.
     captured = capsys.readouterr()
-    # stdout: single status line about changes
-    assert "changes written" in captured.out.lower() or "section files" in captured.out.lower()
-    # stderr: at least one log-like line (INFO-level)
-    assert captured.err != ""
+    assert "changes written" in captured.out.lower()
+
+    # Logs: at least one INFO record from the orchestrator module.
+    info_records = [
+        r for r in caplog.records
+        if r.levelno == logging.INFO
+        and r.name.startswith("build_tools.ingest_nextseek_docs")
+    ]
+    assert len(info_records) >= 1, (
+        f"expected at least 1 INFO log from orchestrator; got: "
+        f"{[(r.name, r.levelname, r.getMessage()) for r in caplog.records]}"
+    )
+
+
+def test_ingest_preserves_existing_readme_md_during_cleanup(tmp_path: Path) -> None:
+    """Pre-existing README.md must be overwritten (not left stale, not deleted and absent).
+
+    Exercises the `if stale.name == 'README.md': continue` branch of the
+    cleanup loop.
+    """
+    docs_dir = tmp_path / "docs" / "nextseek"
+    docs_dir.mkdir(parents=True)
+    (docs_dir / "README.md").write_text("# OLD README\n\nstale.\n")
+    (docs_dir / "01-old-section.md").write_text("# Old\n\nstale.\n")
+    claude_md = tmp_path / "container" / "CLAUDE.md"
+    _seed_claude_md(claude_md)
+    md = _markdown([("Welcome", "Intro.")])
+
+    rc = orchestrator.ingest(
+        docs_dir=docs_dir,
+        claude_md_path=claude_md,
+        doc_url="fake",
+        force=True,
+        fetcher=_stub_fetcher(b"x"),
+        parser=_stub_parser(md),
+    )
+    assert rc == 2
+    # Stale section file deleted
+    assert not (docs_dir / "01-old-section.md").exists()
+    # README.md still exists AND was rewritten with new content
+    readme = docs_dir / "README.md"
+    assert readme.exists()
+    assert "OLD README" not in readme.read_text()
+    assert "Welcome" in readme.read_text()
 
 
 def test_cli_module_help_mentions_force_flag() -> None:
@@ -347,7 +401,7 @@ def test_cli_module_help_mentions_force_flag() -> None:
 
 
 def test_test_main_uses_monkeypatch_at_most_once_per_test_class() -> None:
-    """Enforce the DI-over-monkeypatch convention: only one test uses monkeypatch."""
+    """Enforce the DI-over-monkeypatch convention: only one test uses monkeypatch on orchestrator."""
     src = Path(__file__).read_text()
     # Count references to 'monkeypatch.setattr(orchestrator' specifically
     references = src.count("monkeypatch.setattr(orchestrator")
@@ -355,6 +409,31 @@ def test_test_main_uses_monkeypatch_at_most_once_per_test_class() -> None:
         f"only test_ingest_writes_hash_last should monkeypatch orchestrator; "
         f"found {references} references"
     )
+
+
+def test_extract_overview_falls_back_when_first_section_is_empty_body(
+    tmp_path: Path,
+) -> None:
+    """First section's description is the '(section overview)' sentinel → generic fallback prose."""
+    docs_dir = tmp_path / "docs" / "nextseek"
+    claude_md = tmp_path / "container" / "CLAUDE.md"
+    _seed_claude_md(claude_md)
+
+    # First H1 has no body paragraph before the next H1 → description = "(section overview)".
+    md = "# Overview\n# Real Section\n\nBody here.\n"
+
+    rc = orchestrator.ingest(
+        docs_dir=docs_dir,
+        claude_md_path=claude_md,
+        doc_url="fake",
+        force=True,
+        fetcher=_stub_fetcher(b"x"),
+        parser=_stub_parser(md),
+    )
+    assert rc == 2
+    content = claude_md.read_text()
+    # The generic fallback mentions the section count.
+    assert "covering 2 top-level sections" in content
 ```
 
 ## 6. Reference Implementation
@@ -468,9 +547,10 @@ def ingest(
 
 
 def _extract_overview_paragraph(sections: list[Section]) -> str:
-    """Return the first Section's description, or a fallback if empty."""
-    if not sections:
-        return ""
+    """Return the first Section's description, or a generic fallback if it's the empty-body sentinel.
+
+    Precondition (guaranteed by ingest()): `sections` is non-empty.
+    """
     desc = sections[0].description
     if desc and desc != "(section overview)":
         return desc
@@ -543,9 +623,14 @@ uv run python -m build_tools.ingest_nextseek_docs --help
 uv run pytest -q
 ```
 
-**Expected test count**: 10 new tests in `test_main.py`.
+**Expected test count**: 12 new tests in `test_main.py`.
 
-**Expected coverage**: ≥ 95% for `__main__.py`. The `if __name__ == "__main__":` guard contributes 1 uncovered line; everything else is exercised.
+**Expected coverage**: ≥ 95% for `__main__.py`. The `if __name__ == "__main__":` guard contributes 1 uncovered line; everything else is exercised by:
+- hash-match (exit 0) and hash-mismatch/force (exit 2) cover the early-return branch,
+- fetcher and parser failure cases cover the `except Exception` path,
+- no-H1 case covers the `if not sections` early return,
+- stale-cleanup with and without a pre-existing README.md cover both sides of the `if stale.name == "README.md"` branch,
+- `_extract_overview_paragraph` is exercised via two tests: one where the first section has a real description, one where it falls through to the generic fallback.
 
 ## 9. Implementation Notes
 
@@ -561,3 +646,11 @@ uv run pytest -q
 - **Worktree**: `.claude/worktrees/task-07-orchestrator/`
 - **Merge target**: `ultraplan/nextseek-docs-ingestion`
 - **Merge condition**: all Section 8 checks pass; `__main__.py` coverage ≥ 95%; whole-package coverage ≥ 95%.
+
+## Spec Risk Notes (Phase 4)
+
+**Status**: vetted after revision.
+
+- **Fixed during Phase 4**: (1) The original logging test used `capsys.readouterr().err` to assert stderr activity, but `ingest()` intentionally does NOT call `logging.basicConfig` (only `main()` does). Without configured handlers, INFO-level log records are dropped and stderr would be empty — the test would fail. Switched to `caplog.set_level(logging.INFO, logger="build_tools.ingest_nextseek_docs")` which captures records directly from the logger. (2) Added `test_ingest_preserves_existing_readme_md_during_cleanup` to exercise the `if stale.name == "README.md": continue` branch (previously only the False side was hit). (3) Added `test_extract_overview_falls_back_when_first_section_is_empty_body` to exercise the fallback branch in `_extract_overview_paragraph`. (4) Removed the dead `if not sections: return ""` defensive branch from `_extract_overview_paragraph` — by construction (ingest's empty-section check returns 1 first), it's unreachable; keeping it would have been an untested line.
+- **Coverage trajectory**: 12 tests, each targeting a specific line or branch. Expected coverage ≥ 95%.
+- **Risk still present**: `main()` itself is tested only via the `test_cli_module_help_mentions_force_flag` subprocess invocation. Argparse's help generation is exercised there but the `return ingest(...)` line at the bottom of `main()` is hit only via the subprocess test. Coverage may report this as covered (subprocess test writes to coverage via pytest-cov's subprocess plugin) or uncovered (if subprocess coverage collection isn't configured). If `main()` comes in below 95% in practice, add a direct `main()` unit test that stubs `ingest` via monkeypatching — noted as a possible follow-up.

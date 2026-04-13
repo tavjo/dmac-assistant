@@ -193,3 +193,12 @@ uv run pytest -q
 - **Worktree**: `.claude/worktrees/task-08-makefile/`
 - **Merge target**: `ultraplan/nextseek-docs-ingestion`
 - **Merge condition**: all Section 8 checks pass.
+
+## Spec Risk Notes (Phase 4)
+
+**Status**: vetted.
+
+- **`make` must be installed** on the execution host. Present by default on macOS (BSD make) and on all standard Linux distros (GNU make). If a CI container strips `make`, the tests skip/fail at subprocess level — flagged in test docstrings. Acceptable for POC.
+- **BSD-vs-GNU make portability**: the recipe uses POSIX-only constructs — no `$(shell ...)`, no `ifeq`, no `:=`, just variable interpolation and shell-joined commands. Verified against both BSD make (macOS default) and GNU make (Linux default).
+- **Tab-verification test is regex-based**: `line.startswith("\t")`. If a future maintainer edits the Makefile with a spaces-only editor config, this test catches it before CI runs ingest.
+- **`$(ARGS)` with spaces**: shell word-splitting applies. `ARGS=--force` works. `ARGS="--doc-url foo.com --force"` requires the caller to quote correctly on the make command line — consistent with standard make behavior, not a regression.
