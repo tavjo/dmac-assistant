@@ -1,0 +1,15 @@
+"""Central constants for the NExtSEEK ingestion tool."""
+from __future__ import annotations
+
+from pathlib import Path
+
+BEGIN_MARKER = "<!-- BEGIN NEXTSEEK-DOCS (auto-generated) -->"
+END_MARKER = "<!-- END NEXTSEEK-DOCS (auto-generated) -->"
+
+DEFAULT_DOC_URL = (
+    "https://koch-institute-mit.gitbook.io/mit-data-management-analysis-core/"
+    "~gitbook/pdf?limit=100"
+)
+
+DEFAULT_DOCS_DIR = Path("docs/nextseek")
+DEFAULT_CLAUDE_MD_PATH = Path("container/CLAUDE.md")
