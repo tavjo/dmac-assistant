@@ -12,7 +12,6 @@ import pytest
 
 from build_tools.ingest_nextseek_docs import __main__ as orchestrator
 from build_tools.ingest_nextseek_docs.constants import BEGIN_MARKER, END_MARKER
-from build_tools.ingest_nextseek_docs.hashing import compute_content_hash
 from tests.conftest import make_synthetic_html
 
 
@@ -60,7 +59,10 @@ def test_ingest_exits_0_when_hash_matches(
     docs_dir = tmp_path / "docs" / "nextseek"
     docs_dir.mkdir(parents=True)
     md = _markdown([("A", "a-body.")])
-    (docs_dir / ".content-hash").write_text(compute_content_hash(md) + "\n")
+    sections = orchestrator.split_by_h1(md)
+    (docs_dir / ".content-hash").write_text(
+        orchestrator._compute_snapshot_hash(sections) + "\n"
+    )
     claude_md = tmp_path / "container" / "CLAUDE.md"
     _seed_claude_md(claude_md)
 
@@ -106,7 +108,10 @@ def test_ingest_force_true_overrides_hash_match(tmp_path: Path) -> None:
     docs_dir = tmp_path / "docs" / "nextseek"
     docs_dir.mkdir(parents=True)
     md = _markdown([("A", "a-body.")])
-    (docs_dir / ".content-hash").write_text(compute_content_hash(md) + "\n")
+    sections = orchestrator.split_by_h1(md)
+    (docs_dir / ".content-hash").write_text(
+        orchestrator._compute_snapshot_hash(sections) + "\n"
+    )
     claude_md = tmp_path / "container" / "CLAUDE.md"
     _seed_claude_md(claude_md)
 
@@ -330,3 +335,68 @@ def test_extract_overview_falls_back_when_first_section_is_empty_body(
     assert rc == 2
     content = claude_md.read_text()
     assert "covering 2 top-level sections" in content
+
+
+def test_snapshot_hash_ignores_section_order() -> None:
+    first = orchestrator.split_by_h1(_markdown([("A", "one."), ("B", "two.")]))
+    second = orchestrator.split_by_h1(_markdown([("B", "two."), ("A", "one.")]))
+
+    assert orchestrator._compute_snapshot_hash(first) == (
+        orchestrator._compute_snapshot_hash(second)
+    )
+
+
+def test_ingest_retries_until_snapshot_stabilizes(tmp_path: Path) -> None:
+    docs_dir = tmp_path / "docs" / "nextseek"
+    claude_md = tmp_path / "container" / "CLAUDE.md"
+    _seed_claude_md(claude_md)
+    markdowns = iter(
+        [
+            _markdown([("Welcome", "first body.")]),
+            _markdown([("Welcome", "final body.")]),
+            _markdown([("Welcome", "final body.")]),
+        ]
+    )
+
+    def parser(_: bytes) -> str:
+        return next(markdowns)
+
+    rc = orchestrator.ingest(
+        docs_dir=docs_dir,
+        claude_md_path=claude_md,
+        doc_url="fake",
+        force=False,
+        fetcher=_stub_fetcher(b"x"),
+        parser=parser,
+    )
+
+    assert rc == 2
+    assert "final body." in (docs_dir / "01-welcome.md").read_text()
+
+
+def test_ingest_fails_closed_when_snapshot_never_stabilizes(tmp_path: Path) -> None:
+    docs_dir = tmp_path / "docs" / "nextseek"
+    claude_md = tmp_path / "container" / "CLAUDE.md"
+    _seed_claude_md(claude_md)
+    markdowns = iter(
+        [
+            _markdown([("Welcome", "first body.")]),
+            _markdown([("Welcome", "second body.")]),
+            _markdown([("Welcome", "third body.")]),
+        ]
+    )
+
+    def parser(_: bytes) -> str:
+        return next(markdowns)
+
+    rc = orchestrator.ingest(
+        docs_dir=docs_dir,
+        claude_md_path=claude_md,
+        doc_url="fake",
+        force=False,
+        fetcher=_stub_fetcher(b"x"),
+        parser=parser,
+    )
+
+    assert rc == 1
+    assert not docs_dir.exists()

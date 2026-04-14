@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 EXIT_NO_CHANGE = 0
 EXIT_ERROR = 1
 EXIT_CHANGES_WRITTEN = 2
+MAX_STABILITY_ATTEMPTS = 3
 
 
 def ingest(
@@ -46,26 +47,22 @@ def ingest(
 ) -> int:
     """Run the full ingestion pipeline and return an exit code."""
     try:
-        logger.info("Fetching source from %s", doc_url)
-        source_bytes = fetcher(doc_url)
-        logger.info("Parsing %d bytes to markdown", len(source_bytes))
-        raw_markdown = parser(source_bytes)
+        snapshot = _load_stable_snapshot(
+            doc_url=doc_url,
+            fetcher=fetcher,
+            parser=parser,
+        )
+        if snapshot is None:
+            return EXIT_ERROR
 
-        content_hash = compute_content_hash(raw_markdown)
+        content_hash = snapshot.content_hash
+        sections = snapshot.sections
         hash_path = docs_dir / ".content-hash"
         stored_hash = read_stored_hash(hash_path)
 
         if stored_hash == content_hash and not force:
             sys.stdout.write("no changes\n")
             return EXIT_NO_CHANGE
-
-        sections = split_by_h1(raw_markdown)
-        if not sections:
-            logger.error(
-                "parser returned markdown with zero H1 sections; "
-                "markitdown output format may have changed"
-            )
-            return EXIT_ERROR
 
         docs_dir.mkdir(parents=True, exist_ok=True)
         for stale in docs_dir.glob("*.md"):
@@ -94,6 +91,84 @@ def ingest(
     except Exception:
         logger.exception("ingest failed")
         return EXIT_ERROR
+
+
+class _Snapshot:
+    """One stabilized ingest snapshot."""
+
+    def __init__(self, *, sections: list[Section], content_hash: str) -> None:
+        self.sections = sections
+        self.content_hash = content_hash
+
+
+def _load_stable_snapshot(
+    *,
+    doc_url: str,
+    fetcher: Callable[[str], bytes],
+    parser: Callable[[bytes], str],
+) -> _Snapshot | None:
+    """Fetch and parse until the section snapshot repeats, or give up safely."""
+    snapshots_by_hash: dict[str, _Snapshot] = {}
+
+    for attempt in range(1, MAX_STABILITY_ATTEMPTS + 1):
+        logger.info(
+            "Fetching source from %s (attempt %d/%d)",
+            doc_url,
+            attempt,
+            MAX_STABILITY_ATTEMPTS,
+        )
+        source_bytes = fetcher(doc_url)
+        logger.info("Parsing %d bytes to markdown", len(source_bytes))
+        raw_markdown = parser(source_bytes)
+        sections = split_by_h1(raw_markdown)
+        if not sections:
+            logger.warning(
+                "parser returned markdown with zero H1 sections on attempt %d/%d",
+                attempt,
+                MAX_STABILITY_ATTEMPTS,
+            )
+            continue
+
+        snapshot = _Snapshot(
+            sections=sections,
+            content_hash=_compute_snapshot_hash(sections),
+        )
+        if snapshot.content_hash in snapshots_by_hash:
+            if attempt > 1:
+                logger.info(
+                    "Source snapshot stabilized on attempt %d/%d",
+                    attempt,
+                    MAX_STABILITY_ATTEMPTS,
+                )
+            return snapshot
+        snapshots_by_hash[snapshot.content_hash] = snapshot
+
+    logger.error(
+        "source content did not stabilize across %d attempts; aborting without writes",
+        MAX_STABILITY_ATTEMPTS,
+    )
+    return None
+
+
+def _compute_snapshot_hash(sections: list[Section]) -> str:
+    """Hash a canonical, order-insensitive representation of the split sections."""
+    parts: list[str] = []
+    for section in sorted(sections, key=lambda item: (item.slug, item.title)):
+        parts.extend(
+            [
+                f"slug:{section.slug}",
+                f"title:{section.title}",
+                _normalize_for_hash(section.body),
+                "<<<END SECTION>>>",
+            ]
+        )
+    return compute_content_hash("\n".join(parts))
+
+
+def _normalize_for_hash(text: str) -> str:
+    """Normalize line endings and trailing whitespace before hashing."""
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(line.rstrip() for line in normalized.split("\n")).strip()
 
 
 def _extract_overview_paragraph(sections: list[Section]) -> str:
