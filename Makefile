@@ -1,4 +1,4 @@
-.PHONY: ingest-nextseek-docs image-preflight image-stage
+.PHONY: ingest-nextseek-docs image-preflight image-stage bats-check shellcheck-check
 
 ingest-nextseek-docs:
 	@uv run python -m build_tools.ingest_nextseek_docs $(ARGS); \
@@ -29,3 +29,9 @@ image-stage:
 	@uv run python -m build_tools.stage_plugins \
 	  --source $${HOME}/.claude/plugins/local/nextseek-api \
 	  --dest ./build_context
+
+bats-check:
+	@command -v bats >/dev/null 2>&1 || (echo 'Install bats: brew install bats-core' && exit 1)
+
+shellcheck-check:
+	@command -v shellcheck >/dev/null 2>&1 || (echo 'Install shellcheck: brew install shellcheck' && exit 1)
