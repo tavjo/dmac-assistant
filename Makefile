@@ -8,3 +8,10 @@ ingest-nextseek-docs:
 	  echo "NExtSEEK docs changed. Review the diff, commit, and rebuild the Docker image."; \
 	fi; \
 	exit $$code
+
+.PHONY: image-stage
+
+image-stage:
+	@uv run python -m build_tools.stage_plugins \
+	  --source $${HOME}/.claude/plugins/local/nextseek-api \
+	  --dest ./build_context

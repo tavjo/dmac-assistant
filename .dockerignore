@@ -1,0 +1,12 @@
+# Harden the Docker build context against common local leak vectors.
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.npmrc
+**/.pytest_cache
+**/.ruff_cache
+**/.coverage*
+**/.env
+**/.env.example
+.git
+.venv
