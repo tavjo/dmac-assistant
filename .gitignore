@@ -9,5 +9,11 @@ wheels/
 # Virtual environments
 .venv
 
+# Staged Docker build context
+build_context/
+
+# Local env file for live runs
+.env
+
 # Local Codex planning artifacts
 .codex/

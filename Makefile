@@ -1,4 +1,4 @@
-.PHONY: ingest-nextseek-docs image-preflight
+.PHONY: ingest-nextseek-docs image-preflight image-stage
 
 ingest-nextseek-docs:
 	@uv run python -m build_tools.ingest_nextseek_docs $(ARGS); \
@@ -24,3 +24,8 @@ image-preflight:
 	  echo "image-preflight: ingestion returned unexpected code $$code (ignored; warn-only)" >&2; \
 	fi; \
 	exit 0
+
+image-stage:
+	@uv run python -m build_tools.stage_plugins \
+	  --source $${HOME}/.claude/plugins/local/nextseek-api \
+	  --dest ./build_context
