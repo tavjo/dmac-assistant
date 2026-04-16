@@ -25,4 +25,5 @@ addopts = "--disable-socket -q --cov=build_tools --cov=tests.harness --cov-repor
 testpaths = ["tests"]
 markers = [
     "live: marks live end-to-end tests requiring ~/.env (deselect with '-m \"not live\"')",
+    "slow: marks slower local Docker build tests",
 ]
