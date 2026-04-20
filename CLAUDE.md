@@ -45,7 +45,7 @@ The container always sees `/data/projects/`; only the host side changes between 
 ## Headless Invocation
 
 ```
-claude --print --output-format stream-json --dangerously-skip-permissions [--resume --session-id <id>]
+claude --print --output-format stream-json --verbose --dangerously-skip-permissions [--resume --session-id <id>]
 ```
 
 Environment: `CLAUDE_CODE_USE_BEDROCK=1`, `AWS_REGION`, `AWS_BEARER_TOKEN_BEDROCK`, `NEXTSEEK_USERNAME`, `NEXTSEEK_PASSWORD`.

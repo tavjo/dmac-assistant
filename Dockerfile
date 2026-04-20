@@ -36,4 +36,4 @@ USER user
 WORKDIR /home/user
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["claude", "--print", "--output-format", "stream-json", "--dangerously-skip-permissions"]
+CMD ["claude", "--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"]
