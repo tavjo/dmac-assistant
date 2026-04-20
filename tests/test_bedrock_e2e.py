@@ -34,8 +34,20 @@ IMAGE = "dmac-assistant:poc"
 LIVE_TIMEOUT_SECONDS = 60
 
 
+def _allow_docker_unix_socket_only() -> None:
+    """Keep host networking gated while allowing docker-py's Unix socket."""
+    try:
+        import pytest_socket
+    except ImportError:
+        return
+
+    pytest_socket.enable_socket()
+    pytest_socket.disable_socket(allow_unix_socket=True)
+
+
 @pytest.fixture(scope="module")
 def docker_client():
+    _allow_docker_unix_socket_only()
     client = docker.from_env()
     try:
         client.ping()
@@ -88,6 +100,7 @@ def _run_claude_print(
     timeout: int = LIVE_TIMEOUT_SECONDS,
 ) -> ClaudeRunResult:
     """Start a Claude container, stream stdin in, and collect all outputs."""
+    _allow_docker_unix_socket_only()
     container = client.containers.create(
         IMAGE,
         command=[
@@ -97,6 +110,7 @@ def _run_claude_print(
             "stream-json",
             "--input-format",
             "text",
+            "--verbose",
             "--dangerously-skip-permissions",
         ],
         environment=env,
@@ -122,8 +136,24 @@ def _run_claude_print(
                 break
             time.sleep(0.5)
         else:
+            partial_logs = container.logs(stdout=True, stderr=True)
             container.kill()
-            raise TimeoutError(f"Claude Code did not exit within {timeout}s")
+            partial_text = partial_logs.decode("utf-8", errors="replace")
+            auth_markers = [
+                "ExpiredTokenException",
+                "UnauthorizedException",
+                "403",
+                "AccessDenied",
+            ]
+            if any(marker in partial_text for marker in auth_markers):
+                pytest.skip(
+                    "Bedrock auth failure (likely ADR-004 hourly token expiry): "
+                    f"{partial_text[:500]}"
+                )
+            raise TimeoutError(
+                f"Claude Code did not exit within {timeout}s; "
+                f"partial logs={partial_text[:1000]!r}"
+            )
 
         stdout_bytes = container.logs(stdout=True, stderr=False)
         stderr_bytes = container.logs(stdout=False, stderr=True)
