@@ -12,7 +12,7 @@ except ImportError:
     )
 
 import secrets
-import time
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -92,6 +92,24 @@ class ClaudeRunResult:
     exit_code: int
 
 
+_AUTH_ERROR_MARKERS = (
+    "ExpiredTokenException",
+    "UnauthorizedException",
+    "AccessDenied",
+    "Invalid API Key format",
+)
+
+
+def _maybe_skip_on_auth(*blobs: bytes) -> None:
+    """Skip (per ADR-004) when output shows a recognized Bedrock auth failure."""
+    joined = b"\n".join(b for b in blobs if b).decode("utf-8", errors="replace")
+    if any(marker in joined for marker in _AUTH_ERROR_MARKERS):
+        pytest.skip(
+            "Bedrock auth failure (likely ADR-004 hourly token expiry or "
+            f"malformed credential in --env-file): {joined[:500]}"
+        )
+
+
 def _run_claude_print(
     client: "docker.DockerClient",
     env: dict[str, str],
@@ -99,93 +117,62 @@ def _run_claude_print(
     prompt: str,
     timeout: int = LIVE_TIMEOUT_SECONDS,
 ) -> ClaudeRunResult:
-    """Start a Claude container, stream stdin in, and collect all outputs."""
-    _allow_docker_unix_socket_only()
-    container = client.containers.create(
+    """Run `claude --print` inside the image via `docker run -i`.
+
+    Uses the docker CLI rather than docker-py's `attach_socket` because the
+    library's hijacked-socket pattern does not reliably propagate stdin EOF
+    for the `claude --print --input-format text` workload: the claude process
+    blocks waiting for input that never arrives. ADR-006's docker-py
+    convention applies to the production bridge, not to test harnesses.
+    """
+    del client  # presence of `docker_client` fixture asserts image exists
+    cmd: list[str] = ["docker", "run", "--rm", "-i"]
+    for key, value in env.items():
+        cmd.extend(["-e", f"{key}={value}"])
+    for host_path, spec in mounts.items():
+        bind = spec["bind"]
+        mode = spec.get("mode", "rw")
+        cmd.extend(["-v", f"{host_path}:{bind}:{mode}"])
+    cmd.extend([
         IMAGE,
-        command=[
-            "claude",
-            "--print",
-            "--output-format",
-            "stream-json",
-            "--input-format",
-            "text",
-            "--verbose",
-            "--dangerously-skip-permissions",
-        ],
-        environment=env,
-        volumes=mounts,
-        stdin_open=True,
-        tty=False,
-        detach=True,
-    )
+        "claude",
+        "--print",
+        "--output-format",
+        "stream-json",
+        "--input-format",
+        "text",
+        "--verbose",
+        "--dangerously-skip-permissions",
+    ])
+
     try:
-        container.start()
-        sock = client.api.attach_socket(
-            container.id,
-            params={"stdin": 1, "stream": 1},
+        completed = subprocess.run(
+            cmd,
+            input=prompt.encode("utf-8") + b"\n",
+            capture_output=True,
+            timeout=timeout,
+            check=False,
         )
-        sock._sock.sendall(prompt.encode("utf-8") + b"\n")
-        sock._sock.shutdown(1)
-        sock.close()
+    except subprocess.TimeoutExpired as exc:
+        partial_stdout = exc.stdout or b""
+        partial_stderr = exc.stderr or b""
+        _maybe_skip_on_auth(partial_stderr, partial_stdout)
+        raise TimeoutError(
+            f"claude --print did not exit within {timeout}s; "
+            f"stdout={partial_stdout[:500]!r} stderr={partial_stderr[:500]!r}"
+        ) from exc
 
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            container.reload()
-            if container.status == "exited":
-                break
-            time.sleep(0.5)
-        else:
-            partial_logs = container.logs(stdout=True, stderr=True)
-            container.kill()
-            partial_text = partial_logs.decode("utf-8", errors="replace")
-            auth_markers = [
-                "ExpiredTokenException",
-                "UnauthorizedException",
-                "403",
-                "AccessDenied",
-            ]
-            if any(marker in partial_text for marker in auth_markers):
-                pytest.skip(
-                    "Bedrock auth failure (likely ADR-004 hourly token expiry): "
-                    f"{partial_text[:500]}"
-                )
-            raise TimeoutError(
-                f"Claude Code did not exit within {timeout}s; "
-                f"partial logs={partial_text[:1000]!r}"
-            )
+    _maybe_skip_on_auth(completed.stderr, completed.stdout)
 
-        stdout_bytes = container.logs(stdout=True, stderr=False)
-        stderr_bytes = container.logs(stdout=False, stderr=True)
-        container_logs_bytes = container.logs(stdout=True, stderr=True)
-        exit_code = container.wait(timeout=5)["StatusCode"]
-    finally:
-        try:
-            container.remove(force=True)
-        except Exception:
-            pass
-
-    stderr_text = stderr_bytes.decode("utf-8", errors="replace")
-    auth_markers = [
-        "ExpiredTokenException",
-        "UnauthorizedException",
-        "403",
-        "AccessDenied",
-    ]
-    if any(marker in stderr_text for marker in auth_markers):
-        pytest.skip(
-            "Bedrock auth failure (likely ADR-004 hourly token expiry): "
-            f"{stderr_text[:500]}"
-        )
-
-    assert exit_code == 0, (
-        f"claude --print failed: exit={exit_code}, stderr={stderr_text!r}"
+    assert completed.returncode == 0, (
+        f"claude --print failed: exit={completed.returncode}, "
+        f"stderr={completed.stderr.decode('utf-8', errors='replace')[:500]!r}"
     )
     return ClaudeRunResult(
-        stdout_bytes=stdout_bytes,
-        stderr_bytes=stderr_bytes,
-        container_logs_bytes=container_logs_bytes,
-        exit_code=exit_code,
+        stdout_bytes=completed.stdout,
+        stderr_bytes=completed.stderr,
+        container_logs_bytes=completed.stdout + b"\n" + completed.stderr,
+        exit_code=completed.returncode,
     )
 
 
@@ -195,10 +182,21 @@ def test_bedrock_inference_works(
     docker_client: "docker.DockerClient",
     container_mounts: dict[str, dict[str, str]],
 ) -> None:
-    """Verify a real Bedrock round-trip with fresh nonce and reasoning output."""
+    """Verify a real Bedrock round-trip with a fresh nonce.
+
+    Uses a literal-echo prompt per T07 spec. A prior math-question variant
+    with an 8-hex nonce triggered claude-code's tool-use heuristics — the
+    hex token pattern-matched as a git short-SHA and Claude went searching
+    instead of answering. The echo form is stable and proves "Bedrock was
+    actually hit" via both (a) fresh nonce in the response and (b) populated
+    usage.input_tokens in the final result event.
+    """
     del live_socket
-    nonce = secrets.token_hex(4)
-    prompt = f"In {nonce}, what is 17+28? Reply with just the number and nothing else."
+    nonce = secrets.token_hex(6)
+    marker = f"BEDROCK-PING-{nonce}"
+    prompt = (
+        f"Reply with exactly this single line and nothing else: {marker}"
+    )
 
     env = {var: live_env[var] for var in REQUIRED_VARS if var in live_env}
     env["CLAUDE_CODE_USE_BEDROCK"] = "1"
@@ -215,17 +213,20 @@ def test_bedrock_inference_works(
     for event in parse_stream(result.stdout_bytes, strict=False):
         parser.feed(event)
 
-    assert parser.contains_text("45"), (
-        f"Expected '45' in assistant output; "
-        f"got: {parser.assistant_texts!r}; usage: {parser.final_usage!r}"
-    )
-    assert parser.contains_text(nonce), (
-        "Nonce missing from assistant output - cache hit or stub response"
+    assert parser.contains_text(marker), (
+        f"Expected {marker!r} in assistant output - cache hit, stub, or "
+        f"Claude went off-script; got: {parser.assistant_texts!r}; "
+        f"usage: {parser.final_usage!r}"
     )
     if not parser.final_usage:
         pytest.fail(
             "No `usage` field found in result event; "
             f"raw stream head: {result.stdout_bytes[:2000]!r}"
+        )
+    if parser.final_usage.get("input_tokens", 0) == 0:
+        pytest.fail(
+            f"usage.input_tokens is zero - Bedrock was not actually hit: "
+            f"{parser.final_usage!r}"
         )
 
 
