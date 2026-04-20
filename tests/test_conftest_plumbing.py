@@ -141,9 +141,16 @@ def test_live_socket_is_session_scoped(
     result.assert_outcomes(passed=1)
 
 
-def test_terminal_hook_fails_session_when_env_loaded_but_no_live_passed(
+def test_terminal_hook_stays_silent_when_no_live_selected(
     pytester: pytest.Pytester, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Guard must not fire when the user intentionally runs only non-live tests.
+
+    With ~/.env loaded and zero live-marked tests selected (e.g., the user
+    passed ``-m "not live"`` or the suite simply has no live tests), the
+    guard must not fail the session. This is the canonical false-positive
+    the original implementation failed to avoid.
+    """
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     (fake_home / ".env").write_text(
@@ -165,13 +172,20 @@ def test_terminal_hook_fails_session_when_env_loaded_but_no_live_passed(
         )
     )
     result = pytester.runpytest("-v", "--no-cov", "-p", "no:cacheprovider")
-    assert result.ret != 0
-    result.stdout.fnmatch_lines(["*SESSION GUARD FAIL*no @pytest.mark.live tests actually ran*"])
+    result.assert_outcomes(passed=1)
+    assert result.ret == 0
+    assert "SESSION GUARD FAIL" not in result.stdout.str()
 
 
-def test_terminal_hook_counts_only_passed_live_call_phase(
+def test_terminal_hook_fails_when_live_selected_but_none_ran(
     pytester: pytest.Pytester, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Guard fires (non-zero exit) when live was selected but nothing passed.
+
+    Covers the "all-skipped-is-green" false positive — e.g., every live test
+    hit a skip branch despite ~/.env being loaded. The session must exit
+    non-zero so CI notices, not merely print a warning.
+    """
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     (fake_home / ".env").write_text(
@@ -197,7 +211,9 @@ def test_terminal_hook_counts_only_passed_live_call_phase(
     )
     result = pytester.runpytest("-v", "--no-cov", "-p", "no:cacheprovider")
     assert result.ret != 0
-    result.stdout.fnmatch_lines(["*SESSION GUARD FAIL*no @pytest.mark.live tests actually ran*"])
+    result.stdout.fnmatch_lines(
+        ["*SESSION GUARD FAIL*live tests were selected but none actually ran*"]
+    )
 
 
 def test_terminal_hook_passes_when_env_absent(

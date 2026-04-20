@@ -14,7 +14,11 @@ from build_tools.verify_env import REQUIRED_VARS, validate_env
 
 
 _ENV_FILE = Path(os.path.expanduser("~/.env"))
-_SESSION_LIVE_STATE: dict[str, object] = {"env_loaded": False, "live_ran": 0}
+_SESSION_LIVE_STATE: dict[str, object] = {
+    "env_loaded": False,
+    "live_selected": 0,
+    "live_ran": 0,
+}
 
 
 def _load_dotenv_file(path: Path) -> dict[str, str]:
@@ -139,9 +143,36 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         _SESSION_LIVE_STATE["env_loaded"] = True
 
 
+def pytest_collection_finish(session: pytest.Session) -> None:
+    _SESSION_LIVE_STATE["live_selected"] = sum(
+        1 for item in session.items if "live" in item.keywords
+    )
+
+
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if report.when == "call" and report.passed and "live" in report.keywords:
         _SESSION_LIVE_STATE["live_ran"] = int(_SESSION_LIVE_STATE["live_ran"]) + 1
+
+
+def _live_guard_should_fail() -> bool:
+    return (
+        bool(_SESSION_LIVE_STATE["env_loaded"])
+        and int(_SESSION_LIVE_STATE["live_selected"]) > 0
+        and int(_SESSION_LIVE_STATE["live_ran"]) == 0
+    )
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Force a non-zero exit code when live tests were selected but none ran.
+
+    `pytest_terminal_summary`-based enforcement does not affect pytest's
+    return code: the exit status is computed before that hook fires. Moving
+    the mutation into ``pytest_sessionfinish`` is the supported path
+    (pytest docs: "You can set session.exitstatus in this hook").
+    """
+    del exitstatus
+    if _live_guard_should_fail():
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 def pytest_terminal_summary(
@@ -150,10 +181,9 @@ def pytest_terminal_summary(
     config: pytest.Config,
 ) -> None:
     del exitstatus, config
-    if _SESSION_LIVE_STATE["env_loaded"] and int(_SESSION_LIVE_STATE["live_ran"]) == 0:
+    if _live_guard_should_fail():
         terminalreporter.write_line(
-            "SESSION GUARD FAIL: ~/.env loaded but no @pytest.mark.live tests "
-            "actually ran (passed call phase).",
+            "SESSION GUARD FAIL: ~/.env loaded and live tests were selected "
+            "but none actually ran (passed call phase). Exiting non-zero.",
             red=True,
         )
-        terminalreporter._session.exitstatus = pytest.ExitCode.TESTS_FAILED
