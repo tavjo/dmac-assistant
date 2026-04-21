@@ -405,6 +405,23 @@ def test_is_nextseek_invocation_rejects_substring_matches(cmd: str) -> None:
     assert not _is_nextseek_invocation(_bash_evt(cmd))
 
 
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "which nextseek-call",
+        "echo 'see the nextseek-call script at bin/'",
+    ],
+)
+def test_is_nextseek_invocation_known_edge_cases_accepted(cmd: str) -> None:
+    """Lock the acknowledged false-positives of the reviewer-specified
+    regex: an enum token appearing as a word in a non-invocation context
+    (``which X``, quoted docs) still returns True. This is the accepted
+    trade-off over the prior substring match; the contract is recorded
+    here so a future tighten cannot slip past review without a visibly
+    failing regression test."""
+    assert _is_nextseek_invocation(_bash_evt(cmd))
+
+
 def test_is_nextseek_invocation_accepts_mcp_style_tool_name() -> None:
     """Defensive branch: if a future plugin surfaces as its own tool name
     (MCP), accept any tool name containing ``nextseek``."""
