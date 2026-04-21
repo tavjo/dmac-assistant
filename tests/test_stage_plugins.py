@@ -173,7 +173,14 @@ def test_denylist_each_pattern_refuses(
     with pytest.raises(stage_plugins.DenylistViolation) as excinfo:
         stage_plugins.stage(src, dest)
 
-    assert relpath in str(excinfo.value)
+    # DD-39 (R-02 batch): when the offender lives inside a denylisted dir,
+    # the scan short-circuits and names the dir (not every nested file) so
+    # a real `.git/` or `.venv/` tree doesn't produce 145KB of output.
+    # Operator-facing signal: the top-level denylisted component is enough.
+    top = relpath.split("/", 1)[0]
+    assert top in str(excinfo.value), (
+        f"expected top-level denylisted component {top!r} in: {excinfo.value}"
+    )
     assert not dest.exists(), "build_context should not be created on refusal"
 
 
@@ -202,7 +209,27 @@ def test_denylist_inside_allowlisted_subtree_refuses(
 
     with pytest.raises(stage_plugins.DenylistViolation) as excinfo:
         stage_plugins.stage(src, dest)
-    assert relpath in str(excinfo.value)
+    # DD-39 (R-02 batch): offenders under a denylisted dir are reported by
+    # dir path (not per-file). For the file-only patterns in this matrix
+    # (``bin/foo.pyc`` etc.) the full relpath IS the offender.
+    if "/" in relpath:
+        parts = relpath.split("/")
+        # Find the first denylisted component (dir or glob-matching file).
+        from build_tools.stage_plugins import (
+            _is_denylisted_dir_name,
+            _is_denylisted_file_name,
+        )
+        expected: str | None = None
+        for i, part in enumerate(parts):
+            if _is_denylisted_dir_name(part) or _is_denylisted_file_name(part):
+                expected = "/".join(parts[: i + 1])
+                break
+        assert expected is not None, f"no denylisted component found in {relpath}"
+        assert expected in str(excinfo.value), (
+            f"expected {expected!r} in: {excinfo.value}"
+        )
+    else:
+        assert relpath in str(excinfo.value)
     assert not dest.exists()
 
 
@@ -219,10 +246,16 @@ def test_env_example_refused(tmp_path: Path) -> None:
 
 
 def test_denylist_reports_every_offender_not_fail_fast(tmp_path: Path) -> None:
+    """Every distinct denylisted top-level thing is reported (spec intent
+    is 'don't fail fast after the first offender', not 'enumerate every
+    nested file'). Per DD-39 the scan short-circuits on a denylisted dir
+    to avoid the 145KB-of-.git/ explosion — but it still catches all 6
+    planted offenders at their top-level-denylisted-component granularity.
+    """
     src = tmp_path / "src" / "nextseek-api"
     _seed_plugin(src)
-    offenders = [".git/HEAD", ".venv/lib/foo", ".mcp.json", "secrets.pem", ".env", ".coverage"]
-    for rel in offenders:
+    planted = [".git/HEAD", ".venv/lib/foo", ".mcp.json", "secrets.pem", ".env", ".coverage"]
+    for rel in planted:
         f = src / rel
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(b"x")
@@ -232,8 +265,9 @@ def test_denylist_reports_every_offender_not_fail_fast(tmp_path: Path) -> None:
         stage_plugins.stage(src, dest)
 
     msg = str(excinfo.value)
-    for rel in offenders:
-        assert rel in msg, f"offender {rel} not reported: {msg}"
+    expected_components = [rel.split("/", 1)[0] for rel in planted]
+    for component in expected_components:
+        assert component in msg, f"offender {component!r} not reported: {msg}"
     assert not dest.exists()
 
 
@@ -278,7 +312,13 @@ def test_symlink_inside_tree_resolves_ok(tmp_path: Path) -> None:
     assert (dest / "plugins" / "nextseek-api" / "bin" / "nextseek-call-alias").is_file()
 
 
-def test_symlink_to_directory_inside_tree_resolves_ok(tmp_path: Path) -> None:
+def test_symlink_to_directory_inside_tree_refused(tmp_path: Path) -> None:
+    """DD-38 (R-02): dir-symlinks are refused even when the target stays
+    inside the tree. ``shutil.copytree(symlinks=False)`` follows the link
+    and would copy denylisted content reachable only via the alias
+    (e.g. ``bin/alias -> ../docs/__pycache__``). File-symlinks remain
+    allowed (see ``test_symlink_inside_tree_resolves_ok``).
+    """
     src = tmp_path / "src" / "nextseek-api"
     _seed_plugin(src)
     (src / "bin" / "skills-alias").symlink_to(
@@ -286,8 +326,32 @@ def test_symlink_to_directory_inside_tree_resolves_ok(tmp_path: Path) -> None:
     )
     dest = tmp_path / "build_context"
 
-    stage_plugins.stage(src, dest)
-    assert (dest / "plugins" / "nextseek-api" / "bin" / "skills-alias" / "SKILL.md").is_file()
+    with pytest.raises(stage_plugins.DenylistViolation) as excinfo:
+        stage_plugins.stage(src, dest)
+    assert "bin/skills-alias" in str(excinfo.value)
+    assert "dir-symlink" in str(excinfo.value)
+    # Atomic refusal: dest must not be populated.
+    assert not (dest / "plugins" / "nextseek-api" / "bin" / "skills-alias").exists()
+
+
+def test_symlink_to_directory_smuggling_denylisted_content_refused(
+    tmp_path: Path,
+) -> None:
+    """Regression guard for the original reviewer finding: ``bin/alias``
+    points at a sibling path containing denylisted artifacts. Without the
+    R-02 fix the scanner would accept the link (target is inside root) and
+    ``shutil.copytree`` would pull the ``.pyc`` into the image.
+    """
+    src = tmp_path / "src" / "nextseek-api"
+    _seed_plugin(src)
+    hidden = src / "docs" / "__pycache__"
+    hidden.mkdir()
+    (hidden / "leak.pyc").write_bytes(b"\x00\x01")
+    (src / "bin" / "alias").symlink_to(hidden, target_is_directory=True)
+    dest = tmp_path / "build_context"
+
+    with pytest.raises(stage_plugins.DenylistViolation):
+        stage_plugins.stage(src, dest)
 
 
 def test_symlink_escaping_tree_refused(tmp_path: Path) -> None:
