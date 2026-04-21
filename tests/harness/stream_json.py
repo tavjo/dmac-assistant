@@ -40,10 +40,20 @@ def parse_stream(
 
 
 @dataclass
+class ToolUseEvent:
+    """One ``tool_use`` content block observed in an ``assistant`` event."""
+
+    id: str | None
+    name: str | None
+    input: dict[str, Any] | None
+
+
+@dataclass
 class StreamJSONParser:
     """Stateful accumulator over Claude stream-json events."""
 
     assistant_texts: list[str] = field(default_factory=list)
+    tool_uses: list[ToolUseEvent] = field(default_factory=list)
     final_usage: dict[str, Any] | None = None
     final_result: dict[str, Any] | None = None
 
@@ -53,10 +63,22 @@ class StreamJSONParser:
             message = event.get("message") or {}
             content = message.get("content") or []
             for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "text":
                     text = block.get("text")
                     if isinstance(text, str):
                         self.assistant_texts.append(text)
+                elif btype == "tool_use":
+                    raw_input = block.get("input")
+                    self.tool_uses.append(
+                        ToolUseEvent(
+                            id=block.get("id"),
+                            name=block.get("name"),
+                            input=raw_input if isinstance(raw_input, dict) else None,
+                        )
+                    )
         elif etype == "result":
             self.final_result = event
             usage = event.get("usage")
@@ -66,3 +88,7 @@ class StreamJSONParser:
     def contains_text(self, needle: str) -> bool:
         """Return True when any assistant text block contains ``needle``."""
         return any(needle in text for text in self.assistant_texts)
+
+    def tool_use_events(self) -> list[ToolUseEvent]:
+        """Return every observed ``tool_use`` block in order."""
+        return list(self.tool_uses)

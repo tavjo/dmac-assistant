@@ -8,6 +8,7 @@ import pytest
 from tests.harness.stream_json import (
     StreamJSONParseError,
     StreamJSONParser,
+    ToolUseEvent,
     parse_stream,
 )
 
@@ -147,6 +148,68 @@ def test_parser_ignores_unknown_event_types() -> None:
 def test_parse_stream_empty_input() -> None:
     assert list(parse_stream(b"")) == []
     assert list(parse_stream("")) == []
+
+
+def test_parser_captures_tool_use_events() -> None:
+    parser = StreamJSONParser()
+    parser.feed(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "calling plugin"},
+                    {
+                        "type": "tool_use",
+                        "id": "tool_1",
+                        "name": "nextseek-call",
+                        "input": {"op": "ListAssays"},
+                    },
+                ]
+            },
+        }
+    )
+    events = parser.tool_use_events()
+    assert len(events) == 1
+    assert events[0] == ToolUseEvent(
+        id="tool_1", name="nextseek-call", input={"op": "ListAssays"}
+    )
+    assert parser.assistant_texts == ["calling plugin"]
+
+
+def test_parser_tool_use_without_input_dict() -> None:
+    parser = StreamJSONParser()
+    parser.feed(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "t2",
+                        "name": "whatever",
+                        "input": "not-a-dict",
+                    }
+                ]
+            },
+        }
+    )
+    events = parser.tool_use_events()
+    assert len(events) == 1
+    assert events[0].input is None
+    assert events[0].name == "whatever"
+
+
+def test_parser_skips_non_dict_content_blocks() -> None:
+    """Defensive: malformed event with a non-dict content block must not crash."""
+    parser = StreamJSONParser()
+    parser.feed(
+        {
+            "type": "assistant",
+            "message": {"content": ["string-not-a-dict", {"type": "text", "text": "ok"}]},
+        }
+    )
+    assert parser.assistant_texts == ["ok"]
+    assert parser.tool_use_events() == []
 
 
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
