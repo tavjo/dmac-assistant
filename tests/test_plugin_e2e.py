@@ -46,6 +46,16 @@ from tests.harness.plugin_schema import parse_list_response
 from tests.harness.stream_json import StreamJSONParser, ToolUseEvent, parse_stream
 
 
+# H-3: match the actual baked-in script names, not any token containing
+# "nextseek-". A substring check would false-positive on `grep nextseek-*`,
+# `ls /app/plugins/nextseek-api/bin/`, or a comment mentioning the plugin
+# name. The regex enumerates the real executables shipped in the image's
+# PATH (DD-37) plus ``nextseek-session`` used by the SKILL.md docs.
+_NEXTSEEK_SCRIPT_RE = re.compile(
+    r"\bnextseek-(call|init|spec|exec|validate|vocab|session)\b"
+)
+
+
 def _is_nextseek_invocation(evt: ToolUseEvent) -> bool:
     """A tool_use event proves the nextseek-api plugin was actually called.
 
@@ -60,7 +70,7 @@ def _is_nextseek_invocation(evt: ToolUseEvent) -> bool:
         return True
     if evt.name == "Bash" and isinstance(evt.input, dict):
         cmd = evt.input.get("command")
-        if isinstance(cmd, str) and "nextseek-" in cmd:
+        if isinstance(cmd, str) and _NEXTSEEK_SCRIPT_RE.search(cmd):
             return True
     return False
 
@@ -340,6 +350,72 @@ def test_is_dev_url_rejects_gameable_hostnames(bogus_url: str) -> None:
 )
 def test_is_dev_url_accepts_real_dev_hostnames(ok_url: str) -> None:
     assert _is_dev_url(ok_url)
+
+
+# ---------- non-live unit tests for the plugin-invocation detector ----------
+
+
+def _bash_evt(command: str) -> ToolUseEvent:
+    """Convenience builder for tool_use dataclass fixtures."""
+    return ToolUseEvent(id="t-1", name="Bash", input={"command": command})
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "nextseek-call --env dev --op 'List Projects'",
+        "nextseek-init --env dev --assume-yes",
+        "nextseek-spec 'List Samples'",
+        "nextseek-validate --op foo",
+        "/app/plugins/nextseek-api/bin/nextseek-exec --op foo",
+        "cd /tmp && nextseek-vocab",
+    ],
+)
+def test_is_nextseek_invocation_matches_real_scripts(cmd: str) -> None:
+    """H-3: regex matches every script name the plugin actually ships."""
+    assert _is_nextseek_invocation(_bash_evt(cmd))
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # Trailing dash with no script name — the original substring check
+        # matched, the regex rejects.
+        "grep -R 'nextseek-' /app",
+        # `nextseek-api` is the plugin directory name, not a script name;
+        # the original substring check would have accepted this.
+        "ls /app/plugins/nextseek-api/bin/",
+        # Made-up name outside the script enum — substring would match,
+        # the enumerated regex rejects.
+        "echo 'plans to run nextseek-doesnotexist later'",
+        "cat /tmp/nextseek-whatever.log",
+        # `nextseek` alone (no hyphen) never matches.
+        "echo 'see the nextseek project for details'",
+    ],
+)
+def test_is_nextseek_invocation_rejects_substring_matches(cmd: str) -> None:
+    """H-3: commands that merely MENTION the plugin must not count as
+    invocations. Only the enumerated script names — word-bounded — qualify.
+
+    NOTE: a command like ``which nextseek-call`` still passes the regex
+    because ``nextseek-call`` is in the enum and appears as a word. That's
+    an acknowledged edge case of the reviewer-specified fix; the critical
+    false-positives being locked out here are the plugin-adjacent tokens
+    (``nextseek-``, ``nextseek-api``, ``nextseek-whatever``, etc.)."""
+    assert not _is_nextseek_invocation(_bash_evt(cmd))
+
+
+def test_is_nextseek_invocation_accepts_mcp_style_tool_name() -> None:
+    """Defensive branch: if a future plugin surfaces as its own tool name
+    (MCP), accept any tool name containing ``nextseek``."""
+    evt = ToolUseEvent(id="t-2", name="mcp__nextseek__list_projects", input={})
+    assert _is_nextseek_invocation(evt)
+
+
+def test_is_nextseek_invocation_rejects_non_bash_tool() -> None:
+    """Bash-path only — Read/Glob/Grep commands are not plugin invocations."""
+    evt = ToolUseEvent(id="t-3", name="Read", input={"file_path": "/app/plugins/nextseek-api/SKILL.md"})
+    assert not _is_nextseek_invocation(evt)
 
 
 # ---------- live tests ----------

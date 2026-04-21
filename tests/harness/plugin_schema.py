@@ -24,6 +24,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 _IDENTIFIER_KEYS = ("uid", "uuid", "id")
 
+# Only envelope keys that can hold *data records* get walked by
+# :meth:`ListResponse.has_any_record`. JSON:API error/meta keys (``errors``,
+# ``warnings``, ``links``, ``meta``, ``jsonapi``, ``included``) and arbitrary
+# unknown keys are deliberately excluded so a failure envelope like
+# ``{"errors": [{"id": "auth-001", "title": "Auth failed"}]}`` cannot satisfy
+# the DD-18 "got ≥1 record" intent.
+_DATA_EXTRA_KEYS = frozenset({"data", "samples", "items"})
+
 
 def _list_has_identifier_dicts(value: Any) -> bool:
     """True iff ``value`` is a non-empty list of dicts each carrying an
@@ -102,16 +110,20 @@ class ListResponse(BaseModel):
         legacy LIH list (``rows``), the JSON:API spec (``data: [...]``),
         and summary endpoints (``data: [{sample_type, n_samples,
         samples:[...]}]``). Beyond the ``records``/``count``/``total`` paths
-        already coalesced above, walk the model's extras for any non-empty
-        list of identifier-bearing dicts as a final fallback.
+        already coalesced above, walk a closed allowlist of data-carrying
+        extras keys (:data:`_DATA_EXTRA_KEYS`) for a non-empty list of
+        identifier-bearing dicts. The allowlist blocks a JSON:API error
+        envelope (``{"errors": [{"id": "auth-001", ...}]}``) from green-ing
+        a real failure; only ``data`` / ``samples`` / ``items`` are walked.
         """
         if self.records:
             return True
         n = self.count if self.count is not None else self.total
         if n is not None and n >= 1:
             return True
-        for value in (self.model_extra or {}).values():
-            if _list_has_identifier_dicts(value):
+        extras = self.model_extra or {}
+        for key in _DATA_EXTRA_KEYS:
+            if _list_has_identifier_dicts(extras.get(key)):
                 return True
         return False
 

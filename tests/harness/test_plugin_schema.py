@@ -212,6 +212,43 @@ def test_has_any_record_fallback_empty_list() -> None:
     assert r.has_any_record() is False
 
 
+def test_has_any_record_rejects_jsonapi_error_envelope() -> None:
+    """H-1 regression: a JSON:API error envelope carries identifier-shaped
+    dicts under ``errors`` but is a failure, not data. The extras-walk
+    allowlist must exclude ``errors`` so this doesn't green a real
+    authentication failure."""
+    payload = {
+        "errors": [
+            {"id": "auth-001", "title": "Authentication failed", "status": "401"},
+        ],
+        "jsonapi": {"version": "1.0"},
+    }
+    r = ListResponse.model_validate(payload)
+    assert r.has_any_record() is False
+
+
+def test_has_any_record_rejects_identifier_dicts_under_unknown_key() -> None:
+    """Only the closed allowlist (``data``/``samples``/``items``) is walked.
+    Identifier-shaped dicts under a novel key are NOT counted as records."""
+    payload = {"audit_events": [{"id": "evt-1"}, {"id": "evt-2"}]}
+    r = ListResponse.model_validate(payload)
+    assert r.has_any_record() is False
+
+
+def test_has_any_record_accepts_samples_key() -> None:
+    """Allowlist includes ``samples`` so summary-endpoint inner lists work."""
+    payload = {"samples": [{"uid": "SAMP-1"}]}
+    r = ListResponse.model_validate(payload)
+    assert r.has_any_record() is True
+
+
+def test_has_any_record_accepts_items_key() -> None:
+    """Allowlist includes ``items`` for REST-generic list responses."""
+    payload = {"items": [{"uid": "ITM-1"}]}
+    r = ListResponse.model_validate(payload)
+    assert r.has_any_record() is True
+
+
 def test_list_response_rejects_malformed_results() -> None:
     with pytest.raises(ValidationError):
         ListResponse.model_validate({"results": [{"not_uid": "x"}]})

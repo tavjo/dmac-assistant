@@ -180,11 +180,53 @@ def test_terminal_hook_stays_silent_when_no_live_selected(
 def test_terminal_hook_fails_when_live_selected_but_none_ran(
     pytester: pytest.Pytester, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Guard fires (non-zero exit) when live was selected but nothing passed.
+    """Guard fires (non-zero exit) when live was selected but every test
+    errored out before a call-phase pass OR skip — e.g., the env loaded,
+    tests were collected, but every one raised a non-Skipped exception
+    during setup. A guard-fire like this means something silently broke
+    the live-test surface (fixtures, collection, import) without
+    surfacing through pytest's own failure count.
 
-    Covers the "all-skipped-is-green" false positive — e.g., every live test
-    hit a skip branch despite ~/.env being loaded. The session must exit
-    non-zero so CI notices, not merely print a warning.
+    L-2 regression cover: a pure ``pytest.skip`` population does NOT
+    fire this guard (see :func:`test_terminal_hook_silent_when_all_live_skip`).
+    """
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    (fake_home / ".env").write_text(
+        "AWS_BEARER_TOKEN_BEDROCK=t\n"
+        "AWS_REGION=us-east-1\n"
+        "NEXTSEEK_USERNAME=u\n"
+        "NEXTSEEK_PASSWORD=p\n"
+        "NEXTSEEK_URL=https://nextseek-dev.example.mit.edu\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(fake_home))
+    pytester.makeconftest(_CONFTEST_SRC)
+    pytester.makepyfile(
+        test_failing_live=textwrap.dedent(
+            """
+            import pytest
+
+            @pytest.mark.live
+            def test_errors():
+                raise RuntimeError("simulated live-surface breakage")
+            """
+        )
+    )
+    result = pytester.runpytest("-v", "--no-cov", "-p", "no:cacheprovider")
+    assert result.ret != 0
+    result.stdout.fnmatch_lines(
+        ["*SESSION GUARD FAIL*live tests were selected but none actually ran*"]
+    )
+
+
+def test_terminal_hook_silent_when_all_live_skip(
+    pytester: pytest.Pytester, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """L-2 regression: ADR-004 hourly token expiry makes an all-skip outcome
+    the *correct* behavior. The guard must not fire red on a pure-skip
+    population; counting ``report.skipped`` alongside ``report.passed``
+    is what enforces this.
     """
     fake_home = tmp_path / "home"
     fake_home.mkdir()
@@ -204,16 +246,14 @@ def test_terminal_hook_fails_when_live_selected_but_none_ran(
             import pytest
 
             @pytest.mark.live
-            def test_skips():
-                pytest.skip("simulated skip")
+            def test_skips_at_call():
+                pytest.skip("simulated ADR-004 expired-token skip")
             """
         )
     )
     result = pytester.runpytest("-v", "--no-cov", "-p", "no:cacheprovider")
-    assert result.ret != 0
-    result.stdout.fnmatch_lines(
-        ["*SESSION GUARD FAIL*live tests were selected but none actually ran*"]
-    )
+    assert result.ret == 0, result.stdout.str()
+    assert "SESSION GUARD FAIL" not in result.stdout.str()
 
 
 def test_terminal_hook_passes_when_env_absent(

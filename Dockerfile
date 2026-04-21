@@ -27,11 +27,9 @@ RUN chmod 0755 /usr/local/bin/entrypoint.sh
 
 # DD-37: claude-code discovers CLAUDE.md from cwd / project tree, not /app/.
 # Symlink the image-baked spec into the WORKDIR so the in-container Claude
-# Code sees the plugin guidance. Also put the plugin's bin/ on PATH so
-# Claude can invoke `nextseek-call` etc. without spelling the full path.
+# Code sees the plugin guidance.
 RUN ln -sfn /app/CLAUDE.md /home/user/CLAUDE.md \
     && chown -h user:user /home/user/CLAUDE.md
-ENV PATH="/app/plugins/nextseek-api/bin:${PATH}"
 
 ENV UV_CACHE_DIR=/opt/uv-cache
 RUN mkdir -p /opt/uv-cache
@@ -39,6 +37,12 @@ RUN uv run --with httpx --with pydantic --with python-dotenv --with markitdown \
       python -c "import httpx, pydantic, dotenv, markitdown" \
     && chmod -R a+rwX /opt/uv-cache \
     && echo "uv cache pre-warmed at /opt/uv-cache"
+
+# DD-37 (PATH half, moved below pre-warm per L-4): put the plugin's bin/ on
+# PATH so Claude can invoke `nextseek-call` etc. without spelling the full
+# path. Placed AFTER the expensive uv pre-warm so a PATH tweak (e.g. adding
+# a second plugin's bin dir) does not invalidate the pre-warm cache layer.
+ENV PATH="/app/plugins/nextseek-api/bin:${PATH}"
 
 USER user
 WORKDIR /home/user

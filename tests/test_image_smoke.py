@@ -196,6 +196,61 @@ def test_no_seeded_secret_in_logs(tmp_path: Path, dummy_env: dict[str, str]) -> 
     assert CANARY_SECRET not in logs, f"canary leaked into container logs: {logs!r}"
 
 
+def test_entrypoint_plugin_discovery_symlinks_present(
+    tmp_path: Path,
+    dummy_env: dict[str, str],
+) -> None:
+    """H-2: DD-37 plugin-discovery regression lock.
+
+    claude-code 2.1.92 auto-discovers plugins only under
+    ``~/.claude/plugins/local/``. The image bakes the plugin tree at
+    ``/app/plugins/`` and the entrypoint is responsible for symlinking
+    each ``/app/plugins/<name>`` into ``~/.claude/plugins/local/<name>``
+    on every container start. Without those links the in-container
+    claude-code silently refuses to register the plugin — the T08
+    live happy-path test with a directive prompt can't distinguish
+    "plugin loaded and invoked" from "bash scripts found on PATH and
+    run directly", so the discovery signal needs its own hermetic cover.
+
+    This test uses an empty ``.claude`` mount (mirroring a fresh
+    per-user dir), runs the real entrypoint, then inspects the symlink
+    structure. Asserts:
+      * ``plugin.json`` resolves through the link to the baked tree.
+      * ``CLAUDE.md`` cwd-symlink is re-created if absent.
+    """
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+
+    with make_container(
+        image=IMAGE_TAG,
+        mounts={str(claude_dir): ("/home/user/.claude", "rw")},
+        env=dummy_env,
+        command=[
+            "sh",
+            "-c",
+            "set -e; "
+            "test -L /home/user/.claude/plugins/local/nextseek-api "
+            "&& test -f /home/user/.claude/plugins/local/nextseek-api/.claude-plugin/plugin.json "
+            "&& printf 'PLUGIN_TARGET=%s\\n' "
+            "\"$(readlink /home/user/.claude/plugins/local/nextseek-api)\" "
+            "&& test -L /home/user/CLAUDE.md "
+            "&& printf 'CLAUDEMD_TARGET=%s\\n' \"$(readlink /home/user/CLAUDE.md)\"",
+        ],
+    ) as container:
+        exit_code = container.wait()["StatusCode"]
+        logs = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
+
+    assert exit_code == 0, (
+        f"plugin-discovery structure absent after entrypoint; logs={logs!r}"
+    )
+    assert "PLUGIN_TARGET=/app/plugins/nextseek-api" in logs, (
+        f"nextseek-api symlink did not resolve to the baked tree; logs={logs!r}"
+    )
+    assert "CLAUDEMD_TARGET=/app/CLAUDE.md" in logs, (
+        f"CLAUDE.md cwd-symlink missing or wrong target; logs={logs!r}"
+    )
+
+
 def test_dockerfile_cmd_has_verbose_flag() -> None:
     """DD-31 regression lock: stream-json in --print mode requires --verbose.
 
