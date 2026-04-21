@@ -35,13 +35,16 @@ pytest.importorskip("xdist", reason="pytest-xdist required for live-serial tests
 import json
 import re
 import secrets
-import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
 import docker
 
+from tests.harness.live_runner import (
+    ClaudeRunResult,
+    allow_docker_unix_socket_only,
+    run_claude_print,
+)
 from tests.harness.plugin_schema import parse_list_response
 from tests.harness.stream_json import StreamJSONParser, ToolUseEvent, parse_stream
 
@@ -118,19 +121,9 @@ def nextseek_dev_url(live_env: dict[str, str]) -> str:
 
 # ---------- fixtures ----------
 
-def _allow_docker_unix_socket_only() -> None:
-    """Keep host networking gated while allowing docker-py's Unix socket."""
-    try:
-        import pytest_socket
-    except ImportError:
-        return
-    pytest_socket.enable_socket()
-    pytest_socket.disable_socket(allow_unix_socket=True)
-
-
 @pytest.fixture(scope="module")
 def docker_client():
-    _allow_docker_unix_socket_only()
+    allow_docker_unix_socket_only()
     client = docker.from_env()
     try:
         client.ping()
@@ -165,105 +158,10 @@ def container_mounts(tmp_path: Path) -> tuple[dict[str, dict[str, str]], str, Pa
     return mounts, user_id, claude_dir, scratch_dir
 
 
-@dataclass
-class ClaudeRunResult:
-    stdout_bytes: bytes
-    stderr_bytes: bytes
-    container_logs_bytes: bytes
-    exit_code: int
-
-
-_AUTH_ERROR_MARKERS = (
-    "ExpiredTokenException",
-    "UnauthorizedException",
-    "AccessDenied",
-    "Invalid API Key format",
-)
-
-
-def _maybe_skip_on_auth(*blobs: bytes) -> None:
-    """Skip (per ADR-004) when output shows a recognized Bedrock auth failure."""
-    joined = b"\n".join(b for b in blobs if b).decode("utf-8", errors="replace")
-    if any(marker in joined for marker in _AUTH_ERROR_MARKERS):
-        pytest.skip(
-            "Bedrock auth failure (likely ADR-004 hourly token expiry or "
-            f"malformed credential in --env-file): {joined[:500]}"
-        )
-
-
-def _run_claude_print(
-    client: "docker.DockerClient",
-    env: dict[str, str],
-    mounts: dict[str, dict[str, str]],
-    prompt: str,
-    timeout: int = LIVE_TIMEOUT_SECONDS,
-    extra_env: dict[str, str] | None = None,
-) -> ClaudeRunResult:
-    """Run `claude --print` inside the image via `docker run -i`.
-
-    Per DD-33, uses the docker CLI rather than docker-py's ``attach_socket``
-    because the library's hijacked-socket pattern does not propagate stdin
-    EOF for the ``claude --print --input-format text`` workload. ADR-006's
-    docker-py convention applies to the production bridge, not test
-    harnesses.
-
-    Per DD-31, ``--verbose`` is required for ``--output-format stream-json``
-    in claude-code 2.1.92; without it the CLI rejects the combination at
-    arg-validation time.
-
-    ``extra_env`` is merged over ``env`` (e.g., ``USE_DEV_API=1`` for DD-21
-    layer 2). Does NOT assert the return code so callers can probe expected
-    failure modes (e.g., the unauth-negative test).
-    """
-    del client  # presence of `docker_client` fixture asserts image exists
-    effective_env = dict(env)
-    if extra_env:
-        effective_env.update(extra_env)
-
-    cmd: list[str] = ["docker", "run", "--rm", "-i"]
-    for key, value in effective_env.items():
-        cmd.extend(["-e", f"{key}={value}"])
-    for host_path, spec in mounts.items():
-        bind = spec["bind"]
-        mode = spec.get("mode", "rw")
-        cmd.extend(["-v", f"{host_path}:{bind}:{mode}"])
-    cmd.extend([
-        IMAGE,
-        "claude",
-        "--print",
-        "--output-format",
-        "stream-json",
-        "--input-format",
-        "text",
-        "--verbose",
-        "--dangerously-skip-permissions",
-    ])
-
-    try:
-        completed = subprocess.run(
-            cmd,
-            input=prompt.encode("utf-8") + b"\n",
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        partial_stdout = exc.stdout or b""
-        partial_stderr = exc.stderr or b""
-        _maybe_skip_on_auth(partial_stderr, partial_stdout)
-        raise TimeoutError(
-            f"claude --print did not exit within {timeout}s; "
-            f"stdout={partial_stdout[:500]!r} stderr={partial_stderr[:500]!r}"
-        ) from exc
-
-    _maybe_skip_on_auth(completed.stderr, completed.stdout)
-
-    return ClaudeRunResult(
-        stdout_bytes=completed.stdout,
-        stderr_bytes=completed.stderr,
-        container_logs_bytes=completed.stdout + b"\n" + completed.stderr,
-        exit_code=completed.returncode,
-    )
+# ClaudeRunResult + run_claude_print + auth-skip helpers live in
+# tests/harness/live_runner.py (M-2 refactor). T08 callsites pass prompts
+# through the shared helper; the dev-API env toggle is either baked into
+# ``env`` by ``_live_env_for_plugin`` or passed via ``extra_env=``.
 
 
 def _live_env_for_plugin(live_env: dict[str, str]) -> dict[str, str]:
@@ -486,8 +384,9 @@ def test_plugin_invokes_list_endpoint(
         "--query-params '{\"page[size]\":\"1\"}'"
     )
 
-    result = _run_claude_print(
-        docker_client, env, mounts, prompt, timeout=LIVE_TIMEOUT_SECONDS
+    del docker_client  # fixture presence asserts image exists
+    result = run_claude_print(
+        env, mounts, prompt, timeout=LIVE_TIMEOUT_SECONDS
     )
 
     assert result.exit_code == 0, (
@@ -549,8 +448,9 @@ def test_unauth_request_fails_proving_creds_are_used(
         "dev study. Return whatever the plugin emits."
     )
 
-    result = _run_claude_print(
-        docker_client, env, mounts, prompt, timeout=LIVE_TIMEOUT_SECONDS
+    del docker_client  # fixture presence asserts image exists
+    result = run_claude_print(
+        env, mounts, prompt, timeout=LIVE_TIMEOUT_SECONDS
     )
     combined = (
         result.stdout_bytes
@@ -592,8 +492,9 @@ def test_plugin_credentials_never_logged(
     mounts, _, claude_dir, scratch_dir = container_mounts
     env = _live_env_for_plugin(live_env)
 
-    result = _run_claude_print(
-        docker_client, env, mounts,
+    del docker_client  # fixture presence asserts image exists
+    result = run_claude_print(
+        env, mounts,
         "Use nextseek-api to check the session status; say 'ok'.",
         timeout=LIVE_TIMEOUT_SECONDS,
     )
@@ -639,7 +540,8 @@ def test_plugin_user_id_isolation(
     assert Path(claude_bind_src).exists()
 
     env = _live_env_for_plugin(live_env)
-    result = _run_claude_print(
-        docker_client, env, mounts, "Say 'ok'.", timeout=LIVE_TIMEOUT_SECONDS
+    del docker_client  # fixture presence asserts image exists
+    result = run_claude_print(
+        env, mounts, "Say 'ok'.", timeout=LIVE_TIMEOUT_SECONDS
     )
     assert result.exit_code == 0
