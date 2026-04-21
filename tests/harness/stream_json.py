@@ -55,6 +55,7 @@ class StreamJSONParser:
     assistant_texts: list[str] = field(default_factory=list)
     tool_uses: list[ToolUseEvent] = field(default_factory=list)
     final_usage: dict[str, Any] | None = None
+    final_result: dict[str, Any] | None = None
 
     def feed(self, event: dict[str, Any]) -> None:
         etype = event.get("type")
@@ -79,6 +80,7 @@ class StreamJSONParser:
                         )
                     )
         elif etype == "result":
+            self.final_result = event
             usage = event.get("usage")
             if isinstance(usage, dict):
                 self.final_usage = usage

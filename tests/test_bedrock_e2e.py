@@ -11,6 +11,7 @@ except ImportError:
         allow_module_level=True,
     )
 
+import re
 import secrets
 import subprocess
 from dataclasses import dataclass
@@ -18,6 +19,10 @@ from pathlib import Path
 
 import docker
 import pytest
+
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 
 pytest.importorskip("xdist", reason="pytest-xdist required for live-serial tests")
 
@@ -228,6 +233,38 @@ def test_bedrock_inference_works(
             f"usage.input_tokens is zero - Bedrock was not actually hit: "
             f"{parser.final_usage!r}"
         )
+
+    # DD-34 stub-defeat signals: a minimal hand-crafted stub can fake echo +
+    # one usage field; faking this combined Bedrock result shape requires
+    # knowing the schema of a real response, which is a materially higher
+    # bar than the prior (4-line stub) exposure.
+    result_event = parser.final_result
+    assert result_event is not None, (
+        f"Stream has no `result` event - malformed run; "
+        f"raw stream head: {result.stdout_bytes[:2000]!r}"
+    )
+    assert result_event.get("is_error") is False, (
+        f"Result event marked as error: {result_event!r}"
+    )
+    assert result_event.get("stop_reason") == "end_turn", (
+        f"Expected stop_reason='end_turn'; got: "
+        f"{result_event.get('stop_reason')!r}"
+    )
+    session_id = result_event.get("session_id", "")
+    assert _UUID_RE.match(session_id), (
+        f"session_id does not match UUID shape (stub-defeat): {session_id!r}"
+    )
+    usage_keys = set(parser.final_usage.keys())
+    required_usage_keys = {
+        "input_tokens",
+        "output_tokens",
+        "cache_read_input_tokens",
+    }
+    missing = required_usage_keys - usage_keys
+    assert not missing, (
+        f"usage missing Bedrock-shape keys (stub-defeat): missing={missing}; "
+        f"got keys={sorted(usage_keys)}"
+    )
 
 
 def test_bedrock_token_never_logged(

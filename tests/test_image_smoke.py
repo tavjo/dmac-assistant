@@ -194,3 +194,31 @@ def test_no_seeded_secret_in_logs(tmp_path: Path, dummy_env: dict[str, str]) -> 
         logs = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
 
     assert CANARY_SECRET not in logs, f"canary leaked into container logs: {logs!r}"
+
+
+def test_dockerfile_cmd_has_verbose_flag() -> None:
+    """DD-31 regression lock: stream-json in --print mode requires --verbose.
+
+    claude-code 2.1.92 rejects `--print --output-format stream-json` without
+    `--verbose` at arg-validation time. A future CMD revert would only
+    surface during live runs (which CI may skip) — this hermetic file-read
+    catches it at every suite run. Hermetic by design (no docker daemon
+    call required), complementing the image-level smoke tests.
+    """
+    import re
+
+    repo_root = Path(__file__).resolve().parents[1]
+    dockerfile = repo_root / "Dockerfile"
+    text = dockerfile.read_text(encoding="utf-8")
+    match = re.search(r'^CMD\s+\[(.*)\]\s*$', text, flags=re.MULTILINE)
+    assert match, f"Dockerfile at {dockerfile} has no CMD line"
+    cmd_args = match.group(1)
+    assert '"--verbose"' in cmd_args, (
+        f"Dockerfile CMD is missing --verbose (DD-31): {cmd_args!r}"
+    )
+    assert '"stream-json"' in cmd_args, (
+        f"Dockerfile CMD is missing stream-json output format: {cmd_args!r}"
+    )
+    assert '"--print"' in cmd_args, (
+        f"Dockerfile CMD is missing --print mode: {cmd_args!r}"
+    )
