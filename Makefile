@@ -27,10 +27,25 @@ image-preflight:
 
 image-stage:
 	@src="$${NEXTSEEK_PLUGIN_SOURCE:-$${HOME}/.claude/plugins/local/nextseek-api}"; \
+	tmp="$$(mktemp -d)"; \
+	filtered="$$tmp/nextseek-api"; \
+	mkdir -p "$$filtered"; \
 	for entry in .claude-plugin bin commands skills docs pyproject.toml uv.lock README.md CHANGELOG.md; do \
-	  test -e "$$src/$$entry" || { echo "image-stage: missing $$src/$$entry" >&2; exit 1; }; \
+	  test -e "$$src/$$entry" || { echo "image-stage: missing $$src/$$entry" >&2; rm -rf "$$tmp"; exit 1; }; \
+	  cp -R "$$src/$$entry" "$$filtered/"; \
 	done; \
-	uv run python -m build_tools.stage_plugins --source "$$src" --dest ./build_context
+	uv run python -m build_tools.stage_plugins --source "$$filtered" --dest ./build_context; \
+	code="$$?"; \
+	rm -rf "$$tmp"; \
+	exit "$$code"
+
+# R-01 note: the above cp-to-$filtered is kept so the stager scans only the
+# allowlisted top-level entries — the plugin dev tree legitimately contains
+# .venv/ and .git/ which the old Makefile effectively skipped by never
+# copying them. The REMOVED behavior was the silent pre-strip of
+# pyc/__pycache__/.pytest_cache/.ruff_cache inside $filtered; those now
+# surface as DD-03 refusal via the stager (operator cleans via
+# `make clean-plugin-artifacts`).
 
 # Non-destructive helper: strips Python cache artifacts from the user's
 # plugin source tree. Required before `make image-stage` if the tree has
