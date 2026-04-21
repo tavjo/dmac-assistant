@@ -166,3 +166,81 @@ EOF
   [[ "$output" == *"SEEK_USER=canonical"* ]]
   [[ "$output" != *"SEEK_USER=bridge"* ]]
 }
+
+@test "claude_md_symlink_recreated_when_missing: DD-37 entrypoint symlinks /app/CLAUDE.md to WORKDIR" {
+  rm -f "$SETTINGS"
+  CLAUDE_SRC="$BATS_TEST_TMPDIR/app-claude.md"
+  CLAUDE_LINK="$BATS_TEST_TMPDIR/home-claude.md"
+  printf '# in-container CLAUDE.md\n' >"$CLAUDE_SRC"
+  rm -f "$CLAUDE_LINK"
+
+  ENTRYPOINT_CLAUDE_MD_SOURCE="$CLAUDE_SRC" \
+  ENTRYPOINT_CLAUDE_MD_LINK="$CLAUDE_LINK" \
+    run "$ENTRYPOINT" true
+  [ "$status" -eq 0 ]
+  [ -L "$CLAUDE_LINK" ]
+  [ "$(readlink "$CLAUDE_LINK")" = "$CLAUDE_SRC" ]
+}
+
+@test "claude_md_symlink_preserved_when_already_present: DD-37 idempotent" {
+  rm -f "$SETTINGS"
+  CLAUDE_SRC="$BATS_TEST_TMPDIR/app-claude.md"
+  CLAUDE_LINK="$BATS_TEST_TMPDIR/home-claude.md"
+  printf '# image-baked\n' >"$CLAUDE_SRC"
+  printf '# pre-existing override\n' >"$CLAUDE_LINK"
+
+  ENTRYPOINT_CLAUDE_MD_SOURCE="$CLAUDE_SRC" \
+  ENTRYPOINT_CLAUDE_MD_LINK="$CLAUDE_LINK" \
+    run "$ENTRYPOINT" true
+  [ "$status" -eq 0 ]
+  # Pre-existing file is left alone (not a symlink).
+  [ ! -L "$CLAUDE_LINK" ]
+  grep -q "pre-existing override" "$CLAUDE_LINK"
+}
+
+@test "plugin_symlinks_into_claude_local: DD-37 part B registers /app/plugins/* under ~/.claude/plugins/local/" {
+  rm -f "$SETTINGS"
+  PSRC="$BATS_TEST_TMPDIR/app-plugins"
+  PLINK="$BATS_TEST_TMPDIR/claude-plugins-local"
+  mkdir -p "$PSRC/foo-plugin" "$PSRC/bar-plugin"
+  rm -rf "$PLINK"
+
+  ENTRYPOINT_PLUGIN_SRC_ROOT="$PSRC" \
+  ENTRYPOINT_PLUGIN_LINK_ROOT="$PLINK" \
+    run "$ENTRYPOINT" true
+  [ "$status" -eq 0 ]
+  [ -L "$PLINK/foo-plugin" ]
+  [ -L "$PLINK/bar-plugin" ]
+  [ "$(readlink "$PLINK/foo-plugin")" = "$PSRC/foo-plugin" ]
+}
+
+@test "plugin_symlink_preserves_existing_user_overlay: DD-37 part B is non-clobbering" {
+  rm -f "$SETTINGS"
+  PSRC="$BATS_TEST_TMPDIR/app-plugins"
+  PLINK="$BATS_TEST_TMPDIR/claude-plugins-local"
+  mkdir -p "$PSRC/nextseek-api"
+  mkdir -p "$PLINK/nextseek-api"
+  printf 'user-override\n' >"$PLINK/nextseek-api/marker"
+
+  ENTRYPOINT_PLUGIN_SRC_ROOT="$PSRC" \
+  ENTRYPOINT_PLUGIN_LINK_ROOT="$PLINK" \
+    run "$ENTRYPOINT" true
+  [ "$status" -eq 0 ]
+  # Pre-existing real dir must be left untouched (not turned into a symlink).
+  [ ! -L "$PLINK/nextseek-api" ]
+  [ -d "$PLINK/nextseek-api" ]
+  grep -q "user-override" "$PLINK/nextseek-api/marker"
+}
+
+@test "claude_md_symlink_skipped_when_source_absent: DD-37 fails open" {
+  rm -f "$SETTINGS"
+  CLAUDE_SRC="$BATS_TEST_TMPDIR/missing-source.md"
+  CLAUDE_LINK="$BATS_TEST_TMPDIR/home-claude.md"
+  rm -f "$CLAUDE_SRC" "$CLAUDE_LINK"
+
+  ENTRYPOINT_CLAUDE_MD_SOURCE="$CLAUDE_SRC" \
+  ENTRYPOINT_CLAUDE_MD_LINK="$CLAUDE_LINK" \
+    run "$ENTRYPOINT" true
+  [ "$status" -eq 0 ]
+  [ ! -e "$CLAUDE_LINK" ]
+}
