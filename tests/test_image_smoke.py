@@ -251,6 +251,52 @@ def test_entrypoint_plugin_discovery_symlinks_present(
     )
 
 
+def test_plugin_manifest_validates_through_entrypoint_symlink(
+    tmp_path: Path,
+    dummy_env: dict[str, str],
+) -> None:
+    """R-04: DD-37 plugin-discovery stronger signal.
+
+    The sibling `test_entrypoint_plugin_discovery_symlinks_present` asserts
+    the symlink structure exists. This test additionally exercises
+    claude-code's OWN manifest reader via `claude plugin validate <path>`
+    against the symlinked path — proving:
+      * the symlink resolves to a readable plugin.json,
+      * the manifest satisfies claude-code's plugin schema (name, version,
+        etc.), and
+      * a future claude-code version that tightens the schema surfaces as a
+        test failure rather than silently-broken discovery.
+
+    This is hermetic (no Bedrock, no network) because `claude plugin
+    validate` is a pure file-read + schema check — exit 0 iff manifest
+    parses.
+    """
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+
+    with make_container(
+        image=IMAGE_TAG,
+        mounts={str(claude_dir): ("/home/user/.claude", "rw")},
+        env=dummy_env,
+        command=[
+            "claude",
+            "plugin",
+            "validate",
+            "/home/user/.claude/plugins/local/nextseek-api",
+        ],
+    ) as container:
+        exit_code = container.wait()["StatusCode"]
+        logs = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
+
+    assert exit_code == 0, (
+        f"claude plugin validate failed through symlink path; logs={logs!r}"
+    )
+    assert "Validation passed" in logs, (
+        f"plugin manifest read through entrypoint symlink but did not validate; "
+        f"logs={logs!r}"
+    )
+
+
 def test_dockerfile_cmd_has_verbose_flag() -> None:
     """DD-31 regression lock: stream-json in --print mode requires --verbose.
 

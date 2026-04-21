@@ -1,4 +1,4 @@
-.PHONY: ingest-nextseek-docs image-preflight image-stage bats-check shellcheck-check image-check-docker image-build image-e2e
+.PHONY: ingest-nextseek-docs image-preflight image-stage clean-plugin-artifacts bats-check shellcheck-check image-check-docker image-build image-e2e
 
 ingest-nextseek-docs:
 	@uv run python -m build_tools.ingest_nextseek_docs $(ARGS); \
@@ -27,19 +27,22 @@ image-preflight:
 
 image-stage:
 	@src="$${NEXTSEEK_PLUGIN_SOURCE:-$${HOME}/.claude/plugins/local/nextseek-api}"; \
-	tmp="$$(mktemp -d)"; \
-	filtered="$$tmp/nextseek-api"; \
-	mkdir -p "$$filtered"; \
 	for entry in .claude-plugin bin commands skills docs pyproject.toml uv.lock README.md CHANGELOG.md; do \
-	  test -e "$$src/$$entry" || { echo "image-stage: missing $$src/$$entry" >&2; rm -rf "$$tmp"; exit 1; }; \
-	  cp -R "$$src/$$entry" "$$filtered/"; \
+	  test -e "$$src/$$entry" || { echo "image-stage: missing $$src/$$entry" >&2; exit 1; }; \
 	done; \
-	find "$$filtered" \( -name __pycache__ -o -name .pytest_cache -o -name .ruff_cache \) -exec rm -rf {} +; \
-	find "$$filtered" \( -name '*.pyc' -o -name '*.pyo' \) -delete; \
-	uv run python -m build_tools.stage_plugins --source "$$filtered" --dest ./build_context; \
-	code="$$?"; \
-	rm -rf "$$tmp"; \
-	exit "$$code"
+	uv run python -m build_tools.stage_plugins --source "$$src" --dest ./build_context
+
+# Non-destructive helper: strips Python cache artifacts from the user's
+# plugin source tree. Required before `make image-stage` if the tree has
+# leftover .pyc/__pycache__/.pytest_cache/.ruff_cache entries from dev work.
+# Per DD-03 the stager refuses such artifacts; this target makes the cleanup
+# an explicit, operator-invoked action instead of a silent pre-strip.
+clean-plugin-artifacts:
+	@src="$${NEXTSEEK_PLUGIN_SOURCE:-$${HOME}/.claude/plugins/local/nextseek-api}"; \
+	echo "Cleaning Python cache artifacts under $$src ..."; \
+	find "$$src" \( -name __pycache__ -o -name .pytest_cache -o -name .ruff_cache \) -prune -exec rm -rf {} + 2>/dev/null || true; \
+	find "$$src" \( -name '*.pyc' -o -name '*.pyo' \) -delete 2>/dev/null || true; \
+	echo "Done."
 
 bats-check:
 	@command -v bats >/dev/null 2>&1 || (echo 'Install bats: brew install bats-core' && exit 1)

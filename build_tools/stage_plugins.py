@@ -176,7 +176,12 @@ def _scan_entry(
 
     if entry.is_dir():
         if entry_is_denylisted:
+            # Short-circuit: flag the denylisted directory itself and stop.
+            # Recursing into `.git/`, `.venv/`, `__pycache__/`, etc. produces
+            # tens of thousands of offender entries that bury the signal.
+            # The directory name alone is sufficient operator feedback.
             denylist_offenders.append(rel)
+            return
         for child in sorted(entry.iterdir(), key=lambda item: item.name):
             _scan_entry(
                 child,
@@ -185,7 +190,7 @@ def _scan_entry(
                 denylist_offenders=denylist_offenders,
                 unexpected_top_level_entries=unexpected_top_level_entries,
                 top_level=False,
-                deny_ancestor=entry_is_denylisted,
+                deny_ancestor=False,
             )
         return
 
@@ -213,6 +218,17 @@ def _scan_symlink(
 
     if not resolved.is_relative_to(root):
         denylist_offenders.append(f"{rel} -> {resolved.as_posix()}")
+        return
+
+    # DD-38 (R-02): dir-symlinks inside the tree are refused. _scan_symlink
+    # does not recurse into the resolved target, but ``perform_stage``'s
+    # ``shutil.copytree(symlinks=False)`` DOES follow them and would silently
+    # copy denylisted content reachable only via the link (e.g.
+    # ``bin/alias -> ../docs/__pycache__``). Refusing dir-symlinks closes
+    # that bypass while leaving file-symlinks (common ``bin/script`` alias
+    # use case) untouched.
+    if resolved.is_dir():
+        denylist_offenders.append(f"{rel} -> {resolved.as_posix()} (dir-symlink)")
 
 
 def _is_denylisted_path(path: Path) -> bool:
