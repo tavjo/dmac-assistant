@@ -120,6 +120,7 @@ def test_rw_mount_accepts_writes(tmp_path: Path, dummy_env: dict[str, str]) -> N
 LAYOUT_PATHS = [
     "/app/CLAUDE.md",
     "/app/docs/nextseek-api/README.md",
+    "/app/docs/nextseek/README.md",
     "/app/plugins/nextseek-api",
     "/app/plugins/nextseek-api/skills/nextseek-api/SKILL.md",
     "/usr/local/bin/entrypoint.sh",

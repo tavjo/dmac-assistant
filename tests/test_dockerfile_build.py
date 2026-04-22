@@ -78,7 +78,8 @@ def test_layout_contract_paths_present(built_image: str) -> None:
     script = (
         "set -e; "
         "for p in /app/CLAUDE.md /app/docs/nextseek-api/README.md "
-        "/app/plugins/nextseek-api /usr/local/bin/entrypoint.sh; do "
+        "/app/docs/nextseek/README.md /app/plugins/nextseek-api "
+        "/usr/local/bin/entrypoint.sh; do "
         'test -e "$p" || { echo MISSING:$p >&2; exit 2; }; '
         "done; "
         "echo OK"

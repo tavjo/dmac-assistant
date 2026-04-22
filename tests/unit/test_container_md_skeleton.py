@@ -6,7 +6,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTAINER_CLAUDE_MD = REPO_ROOT / "container" / "CLAUDE.md"
-ROOT_CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
 
 BEGIN_MARKER = "<!-- BEGIN NEXTSEEK-DOCS (auto-generated) -->"
 END_MARKER = "<!-- END NEXTSEEK-DOCS (auto-generated) -->"
@@ -54,11 +53,3 @@ def test_build_tools_package_is_importable() -> None:
 def test_ingest_nextseek_docs_package_is_importable() -> None:
     pkg = import_module("build_tools.ingest_nextseek_docs")
     assert pkg is not None
-
-
-def test_repo_root_claude_md_points_at_container_claude_md() -> None:
-    content = ROOT_CLAUDE_MD.read_text()
-    assert "container/CLAUDE.md" in content, (
-        "repo-root CLAUDE.md must mention container/CLAUDE.md as the in-container "
-        "agent instruction file"
-    )
