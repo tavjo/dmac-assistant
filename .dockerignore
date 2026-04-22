@@ -8,5 +8,8 @@
 **/.coverage*
 **/.env
 **/.env.example
+**/.env.prod
+**/.env.dev
 .git
 .venv
+

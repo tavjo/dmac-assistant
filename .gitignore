@@ -17,3 +17,10 @@ build_context/
 
 # Local Codex planning artifacts
 .codex/
+.claude/
+CLAUDE.md
+cursor/
+.env.*
+!.env.example
+.coverage
+
