@@ -20,7 +20,7 @@ RUN npm install -g @anthropic-ai/claude-code@2.1.92
 RUN useradd -m -u 1001 -s /bin/sh user
 
 COPY build_context/plugins/ /app/plugins/
-COPY build_context/docs/ /app/docs/
+COPY docs/nextseek/ /app/docs/
 COPY container/CLAUDE.md /app/CLAUDE.md
 COPY container/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh

@@ -23,4 +23,5 @@ cursor/
 .env.*
 !.env.example
 .coverage
+docs/superpowers/
 
