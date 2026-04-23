@@ -18,15 +18,28 @@ def _example_value(name: str, contents: str) -> str:
     raise AssertionError(f"{name} not found in .env.example")
 
 
-def _allow_unix_socket_only() -> None:
-    """Permit local socketpair usage while keeping outbound network disabled."""
+@pytest.fixture
+def allow_unix_socket_only():
+    """Permit local socketpair usage for the test; restore the strict default on teardown.
+
+    The repo-wide `--disable-socket` default in `pyproject.toml` blocks every socket
+    family, including `AF_UNIX`. FastAPI's `TestClient` uses a socketpair under the
+    hood, so bridge unit tests need `AF_UNIX` allowed for the duration of the test
+    body only. Teardown re-asserts the strict default so no later test in the same
+    worker inherits a relaxed state.
+    """
     try:
         import pytest_socket
     except ImportError:
+        yield
         return
 
     pytest_socket.enable_socket()
     pytest_socket.disable_socket(allow_unix_socket=True)
+    try:
+        yield
+    finally:
+        pytest_socket.disable_socket()
 
 
 def test_dmac_assistant_package_is_importable() -> None:
@@ -45,13 +58,12 @@ def test_app_module_exposes_fastapi_app_object() -> None:
     assert isinstance(app, FastAPI)
 
 
-def test_health_endpoint_returns_ok() -> None:
+def test_health_endpoint_returns_ok(allow_unix_socket_only) -> None:
     """/health is the one endpoint T01 ships. Shape is fixed: {"status": "ok"}."""
     from fastapi.testclient import TestClient
 
     from dmac_assistant.app import app
 
-    _allow_unix_socket_only()
     with TestClient(app) as client:
         response = client.get("/health")
 

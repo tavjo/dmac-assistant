@@ -5,8 +5,6 @@ route. Later waves wire the WebSocket bridge onto the same FastAPI app.
 """
 from __future__ import annotations
 
-import os
-
 from fastapi import FastAPI
 
 
@@ -20,6 +18,8 @@ def health() -> dict[str, str]:
 
 
 if __name__ == "__main__":  # pragma: no cover
+    import os
+
     import uvicorn
 
     uvicorn.run(
