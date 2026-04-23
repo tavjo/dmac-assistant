@@ -76,6 +76,31 @@ class ContainerSpec(BaseModel):
             f"name={self.name!r})"
         )
 
+    __str__ = __repr__
+
+    def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Dump with sensitive env keys redacted.
+
+        Pydantic's default model_dump bypasses __repr__, so without this
+        override any operational logging that serializes the spec would leak
+        NEXTSEEK_PASSWORD / AWS_BEARER_TOKEN_BEDROCK. Redaction applied here
+        keeps the serialization contract aligned with __repr__.
+        """
+        data = super().model_dump(*args, **kwargs)
+        env = data.get("environment")
+        if isinstance(env, dict):
+            data["environment"] = {
+                k: ("<REDACTED>" if k in _REDACTED_ENV_KEYS else v)
+                for k, v in env.items()
+            }
+        return data
+
+    def model_dump_json(self, *args: Any, **kwargs: Any) -> str:
+        """JSON dump with sensitive env keys redacted (see model_dump)."""
+        import json
+
+        return json.dumps(self.model_dump())
+
 
 class BridgeAttachSocket:
     """Thin wrapper over docker-py's hijacked attach socket.
@@ -124,7 +149,10 @@ class BridgeAttachSocket:
         while len(buf) < size:
             chunk = self._raw.recv(size - len(buf))
             if not chunk:
-                return None if not buf else bytes(buf).ljust(size, b"\x00")[:len(buf)]
+                # Partial-frame EOF: return None so callers treat it as a clean
+                # end-of-stream. Returning a short buffer would crash read_frame's
+                # struct.unpack when the 8-byte header is truncated.
+                return None
             buf.extend(chunk)
         return bytes(buf)
 

@@ -111,6 +111,11 @@ def test_live_bridge_attach_demuxes_stdout(live_identity, live_config):
         # Any stdout/stderr frame (or None on fast auth-fail EOF) is acceptable
         # for the wrapper-plumbing proof; the load-bearing assertion is that
         # we never surface Docker's raw 8-byte stdcopy header.
+        #
+        # Frame-presence is best-effort — a live daemon without Bedrock
+        # credentials may exit before writing to stdout. T07 owns the
+        # load-bearing frame-content assertion under the @live_bridge harness
+        # with valid creds; here we only prove the wrapper plumbing.
         if frame is not None:
             stream, payload = frame
             assert stream in ("stdout", "stderr")

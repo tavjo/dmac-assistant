@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import struct
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from docker.errors import APIError, NotFound
@@ -158,25 +159,49 @@ def test_build_container_spec_injects_bridge_and_user_env(identity, config):
     assert spec.environment["CLAUDE_CODE_USE_BEDROCK"] == "1"
 
 
-def test_container_spec_repr_redacts_sensitive_values(identity, config):
+def test_container_spec_repr_redacts_sensitive_values(tmp_path, config):
+    # Unique canary sentinel for the password so we can grep the spec output
+    # for exact leakage (C-1). Also covers H-4 serialization paths.
+    canary_pw = "CANARY-PW-XYZ-8F2A"
+    canary_bearer = "CANARY-BEARER-QQQ-1234"
+    ident = AuthenticatedIdentity(
+        user_id="alice",
+        password=SecretStr(canary_pw),
+        projects=["proj-a", "proj-b"],
+    )
     spec = build_container_spec(
-        identity, config, image=IMAGE, session_id=None, bridge_env=BRIDGE_ENV
+        ident,
+        config,
+        image=IMAGE,
+        session_id=None,
+        bridge_env={"AWS_REGION": "us-east-1", "AWS_BEARER_TOKEN_BEDROCK": canary_bearer},
     )
     text = repr(spec)
-    assert "s3cret" not in text
-    assert "bearer-abc" not in text
+    assert canary_pw not in text
+    assert canary_bearer not in text
     assert "REDACTED" in text
     # non-sensitive values still visible
     assert "alice" in text
 
+    # H-4: model_dump and model_dump_json must also redact
+    dumped = spec.model_dump()
+    assert dumped["environment"]["NEXTSEEK_PASSWORD"] == "<REDACTED>"
+    assert dumped["environment"]["AWS_BEARER_TOKEN_BEDROCK"] == "<REDACTED>"
+    assert canary_pw not in json.dumps(dumped)
+    assert canary_bearer not in json.dumps(dumped)
+
+    dumped_json = spec.model_dump_json()
+    assert canary_pw not in dumped_json
+    assert canary_bearer not in dumped_json
+    assert "<REDACTED>" in dumped_json
+
+    # __str__ also redacted (should equal __repr__)
+    assert canary_pw not in str(spec)
+
 
 def test_build_container_spec_rejects_invalid_user_id(config):
-    bad = AuthenticatedIdentity(
-        user_id="alice",  # passes pydantic, bypass below
-        password=SecretStr("s3cret"),
-        projects=["proj-a"],
-    )
-    # Force-replace the attribute by constructing a shim object
+    # Shim that bypasses pydantic validation on AuthenticatedIdentity to prove
+    # containers.py applies its own defense-in-depth user_id check (R-08).
     class _Shim:
         user_id = "../evil"
         password = SecretStr("s3cret")
@@ -186,7 +211,6 @@ def test_build_container_spec_rejects_invalid_user_id(config):
         build_container_spec(
             _Shim(), config, image=IMAGE, session_id=None, bridge_env=BRIDGE_ENV
         )
-    del bad
 
 
 def test_start_container_passes_expected_run_kwargs(identity, config):
@@ -283,6 +307,16 @@ def test_bridge_attach_socket_eof_returns_none():
     assert sock.read_frame() is None
 
 
+def test_bridge_attach_socket_partial_header_eof_returns_none():
+    # C-2: a truncated header (< 8 bytes followed by EOF) must return None
+    # cleanly rather than corrupt-padding up to 8 bytes and crashing
+    # struct.unpack in read_frame.
+    sock = BridgeAttachSocket(_FakeSocket(b"\x01\x00\x00\x00"))  # 4 of 8 bytes
+    assert sock.read_frame() is None
+
+
+
+
 def test_bridge_attach_socket_stdin_helpers():
     fake = _FakeSocket(b"")
     sock = BridgeAttachSocket(fake)
@@ -309,6 +343,26 @@ def test_stop_and_remove_reraises_unrelated_api_errors():
         stop_and_remove(container)
 
 
+def test_stop_and_remove_reraises_api_error_from_remove():
+    # H-2: stop() succeeds but remove() raises APIError — must re-raise.
+    container = MagicMock()
+    container.stop.return_value = None
+    container.remove.side_effect = APIError("cannot remove")
+    with pytest.raises(APIError):
+        stop_and_remove(container)
+    container.stop.assert_called_once()
+    container.remove.assert_called_once()
+
+
+def test_stop_and_remove_swallows_not_found_from_remove():
+    # H-2 companion: stop() succeeds, remove() raises NotFound — must swallow.
+    container = MagicMock()
+    container.stop.return_value = None
+    container.remove.side_effect = NotFound("already gone")
+    stop_and_remove(container)  # no raise
+    container.remove.assert_called_once()
+
+
 @pytest.fixture
 def allow_unix_socket_only():
     try:
@@ -325,27 +379,73 @@ def allow_unix_socket_only():
 
 
 def test_async_wrappers_delegate_via_to_thread(identity, config, allow_unix_socket_only):
+    # H-3: patch asyncio.to_thread to verify that it IS the delegation
+    # mechanism used by the async wrappers (not just that the end result
+    # is correct). The patched version records the call and still delegates
+    # to the real asyncio.to_thread so end-to-end behavior is preserved.
     client = MagicMock()
     fake_container = MagicMock()
     client.containers.run.return_value = fake_container
     raw = MagicMock()
     fake_container.attach_socket.return_value = raw
 
-    async def run_all():
-        c = await async_start_container(
-            identity,
-            image=IMAGE,
-            session_id=None,
-            bridge_env=BRIDGE_ENV,
-            config=config,
-            client=client,
-        )
-        assert c is fake_container
-        wrapped = await async_attach(fake_container)
-        assert isinstance(wrapped, BridgeAttachSocket)
-        await async_stop_and_remove(fake_container)
+    real_to_thread = asyncio.to_thread
+    recorded_calls: list[tuple] = []
 
-    asyncio.run(run_all())
+    async def spying_to_thread(func, /, *args, **kwargs):
+        recorded_calls.append((func, args, kwargs))
+        return await real_to_thread(func, *args, **kwargs)
+
+    with patch(
+        "dmac_assistant.containers.asyncio.to_thread",
+        side_effect=spying_to_thread,
+    ) as mock_to_thread:
+
+        async def run_all():
+            c = await async_start_container(
+                identity,
+                image=IMAGE,
+                session_id=None,
+                bridge_env=BRIDGE_ENV,
+                config=config,
+                client=client,
+            )
+            assert c is fake_container
+            wrapped = await async_attach(fake_container)
+            assert isinstance(wrapped, BridgeAttachSocket)
+            await async_stop_and_remove(fake_container)
+
+        asyncio.run(run_all())
+
+        # Three wrappers -> three to_thread calls
+        assert mock_to_thread.call_count == 3
+
+    # Assert each delegated to the correct sync function
+    from dmac_assistant.containers import (
+        start_container as _sync_start,
+        attach as _sync_attach,
+        stop_and_remove as _sync_stop,
+    )
+
+    funcs = [call[0] for call in recorded_calls]
+    assert funcs[0] is _sync_start
+    assert funcs[1] is _sync_attach
+    assert funcs[2] is _sync_stop
+
+    # Sync call args preserved through to_thread
+    start_args, start_kwargs = recorded_calls[0][1], recorded_calls[0][2]
+    assert start_args == (identity,)
+    assert start_kwargs["image"] == IMAGE
+    assert start_kwargs["client"] is client
+
+    attach_args = recorded_calls[1][1]
+    assert attach_args == (fake_container,)
+
+    stop_args, stop_kwargs = recorded_calls[2][1], recorded_calls[2][2]
+    assert stop_args == (fake_container,)
+    assert stop_kwargs == {"timeout": 5}
+
+    # End-to-end side effects still occurred
     assert client.containers.run.called
     assert fake_container.stop.called
     assert fake_container.remove.called
