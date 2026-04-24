@@ -1,4 +1,4 @@
-.PHONY: ingest-nextseek-docs image-preflight image-stage clean-plugin-artifacts bats-check shellcheck-check image-check-docker image-build image-e2e
+.PHONY: ingest-nextseek-docs image-preflight image-stage clean-plugin-artifacts bats-check shellcheck-check image-check-docker image-build image-e2e capture-streamjson-fixture
 
 ingest-nextseek-docs:
 	@uv run python -m build_tools.ingest_nextseek_docs $(ARGS); \
@@ -82,3 +82,6 @@ image-build: image-check-docker image-preflight image-stage
 
 image-e2e: image-build
 	@uv run pytest tests/test_bedrock_e2e.py tests/test_plugin_e2e.py -v -p no:xdist
+
+capture-streamjson-fixture: image-check-docker
+	@uv run python scripts/capture_streamjson_init.py

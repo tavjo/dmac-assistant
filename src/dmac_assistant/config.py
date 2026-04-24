@@ -1,0 +1,140 @@
+"""Configuration loading for the DMAC bridge."""
+from __future__ import annotations
+
+import json
+import os
+import re
+from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
+
+
+_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+_DEV_MODE_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+_DEV_DEFAULT_CLAUDE_USERS_ROOT = Path("~/dmac-dev/claude-users").expanduser()
+_DEV_DEFAULT_SCRATCH_ROOT = Path("~/dmac-dev/scratch").expanduser()
+_DEV_DEFAULT_DROPBOX_ROOT = Path("~/Library/CloudStorage/Dropbox/DMAC_Data").expanduser()
+
+
+class ConfigError(ValueError):
+    """Raised when bridge configuration cannot be loaded safely."""
+
+
+class UserRecord(BaseModel):
+    """One configured DMAC user."""
+
+    model_config = ConfigDict(frozen=True)
+
+    password: SecretStr
+    projects: list[str] = Field(min_length=1)
+
+    @field_validator("projects")
+    @classmethod
+    def _validate_projects(cls, value: list[str]) -> list[str]:
+        if not all(isinstance(project, str) and project.strip() for project in value):
+            raise ValueError("projects must contain at least one non-empty string")
+        return value
+
+
+class BridgeConfig(BaseModel):
+    """Typed bridge configuration loaded from the process environment."""
+
+    model_config = ConfigDict(frozen=True)
+
+    users: dict[str, UserRecord]
+    claude_users_root: Path
+    scratch_root: Path
+    dropbox_root: Path
+    bridge_host: str = "127.0.0.1"
+    bridge_port: int = 8000
+
+    @field_validator("users")
+    @classmethod
+    def _validate_users(cls, value: dict[str, UserRecord]) -> dict[str, UserRecord]:
+        if not value:
+            raise ValueError("DMAC_USERS must define at least one user")
+        return value
+
+    @field_validator("bridge_host")
+    @classmethod
+    def _validate_bridge_host(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("DMAC_BRIDGE_HOST must not be empty")
+        return value
+
+    @field_validator("bridge_port")
+    @classmethod
+    def _validate_bridge_port(cls, value: int) -> int:
+        if not 1 <= value <= 65535:
+            raise ValueError("DMAC_BRIDGE_PORT must be between 1 and 65535")
+        return value
+
+
+def _is_dev_mode() -> bool:
+    return os.environ.get("DMAC_DEV_MODE", "").strip().lower() in _DEV_MODE_TRUE_VALUES
+
+
+def _required_path(name: str, default: Path | None = None) -> Path:
+    raw = os.environ.get(name)
+    if raw is not None and raw.strip():
+        return Path(raw)
+    if default is not None and _is_dev_mode():
+        return default
+    raise ConfigError(f"{name} is required")
+
+
+def _load_users(raw_users: str) -> dict[str, UserRecord]:
+    try:
+        parsed = json.loads(raw_users)
+    except json.JSONDecodeError as exc:
+        raise ConfigError("DMAC_USERS contains invalid JSON") from exc
+
+    if not isinstance(parsed, dict):
+        raise ConfigError("DMAC_USERS must decode to an object")
+    if not parsed:
+        raise ConfigError("DMAC_USERS must define at least one user")
+
+    for user_id in parsed:
+        if not isinstance(user_id, str) or not _USER_ID_RE.fullmatch(user_id):
+            raise ConfigError("DMAC_USERS contains an invalid user_id")
+
+    try:
+        return {
+            user_id: UserRecord.model_validate(user_data)
+            for user_id, user_data in parsed.items()
+        }
+    except ValidationError as exc:
+        raise ConfigError("DMAC_USERS contains invalid user records") from exc
+
+
+def load_config() -> BridgeConfig:
+    """Load bridge configuration from the environment."""
+
+    raw_users = os.environ.get("DMAC_USERS")
+    if raw_users is None:
+        raise ConfigError("DMAC_USERS is required")
+
+    try:
+        return BridgeConfig(
+            users=_load_users(raw_users),
+            claude_users_root=_required_path(
+                "DMAC_CLAUDE_USERS_ROOT",
+                default=_DEV_DEFAULT_CLAUDE_USERS_ROOT,
+            ),
+            scratch_root=_required_path(
+                "DMAC_SCRATCH_ROOT",
+                default=_DEV_DEFAULT_SCRATCH_ROOT,
+            ),
+            dropbox_root=_required_path(
+                "DMAC_DROPBOX_ROOT",
+                default=_DEV_DEFAULT_DROPBOX_ROOT,
+            ),
+            bridge_host=os.environ.get("DMAC_BRIDGE_HOST", "127.0.0.1"),
+            bridge_port=int(os.environ.get("DMAC_BRIDGE_PORT", "8000")),
+        )
+    except ValueError as exc:
+        if isinstance(exc, ConfigError):
+            raise
+        raise ConfigError("Bridge configuration is invalid") from exc
