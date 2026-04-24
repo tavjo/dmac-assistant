@@ -217,6 +217,7 @@ async def chat_ws(
             "AWS_BEARER_TOKEN_BEDROCK": os.environ.get(
                 "AWS_BEARER_TOKEN_BEDROCK", ""
             ),
+            "NEXTSEEK_URL": os.environ.get("NEXTSEEK_URL", ""),
         }
         try:
             start_task = asyncio.create_task(

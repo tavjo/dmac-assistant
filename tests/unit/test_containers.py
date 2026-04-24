@@ -29,6 +29,7 @@ IMAGE = "dmac-assistant:poc"
 BRIDGE_ENV = {
     "AWS_REGION": "us-east-1",
     "AWS_BEARER_TOKEN_BEDROCK": "bearer-abc",
+    "NEXTSEEK_URL": "https://nextseek-dev.example.mit.edu",
 }
 
 
@@ -156,6 +157,10 @@ def test_build_container_spec_injects_bridge_and_user_env(identity, config):
     assert spec.environment["NEXTSEEK_PASSWORD"] == "s3cret"
     assert spec.environment["AWS_REGION"] == "us-east-1"
     assert spec.environment["AWS_BEARER_TOKEN_BEDROCK"] == "bearer-abc"
+    assert (
+        spec.environment["NEXTSEEK_URL"]
+        == "https://nextseek-dev.example.mit.edu"
+    )
     assert spec.environment["CLAUDE_CODE_USE_BEDROCK"] == "1"
 
 
@@ -288,6 +293,19 @@ class _FakeSocket:
         self.closed = True
 
 
+class _SocketIOWrapper:
+    def __init__(self, sock: _FakeSocket) -> None:
+        self._sock = sock
+        self.closed = False
+
+    def read(self, n: int) -> bytes:
+        return self._sock.recv(n)
+
+    def close(self) -> None:
+        self.closed = True
+        self._sock.close()
+
+
 def test_bridge_attach_socket_demuxes_stdout_frame():
     frame = _make_frame(1, b"hello")
     sock = BridgeAttachSocket(_FakeSocket(frame))
@@ -326,6 +344,20 @@ def test_bridge_attach_socket_stdin_helpers():
     assert fake.shutdown_called == 1
     sock.close()
     assert fake.closed is True
+
+
+def test_bridge_attach_socket_supports_socketio_wrappers():
+    wrapped_socket = _FakeSocket(_make_frame(1, b"hello"))
+    wrapper = _SocketIOWrapper(wrapped_socket)
+    sock = BridgeAttachSocket(wrapper)
+
+    assert sock.read_frame() == ("stdout", b"hello")
+    sock.send_stdin(b"hi")
+    assert wrapped_socket.sent == b"hi"
+    sock.close_stdin()
+    assert wrapped_socket.shutdown_called == 1
+    sock.close()
+    assert wrapper.closed is True
 
 
 def test_stop_and_remove_is_idempotent_on_not_found():

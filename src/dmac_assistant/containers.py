@@ -133,12 +133,12 @@ class BridgeAttachSocket:
 
     # ----------------------------------------------------------------- write
     def send_stdin(self, data: bytes) -> None:
-        self._raw.sendall(data)
+        self._transport().sendall(data)
 
     def close_stdin(self) -> None:
         # 1 == SHUT_WR; avoid importing socket just for the constant so tests
         # can drop in a minimal fake.
-        self._raw.shutdown(1)
+        self._transport().shutdown(1)
 
     def close(self) -> None:
         self._raw.close()
@@ -147,7 +147,7 @@ class BridgeAttachSocket:
     def _recv_exact(self, size: int) -> bytes | None:
         buf = bytearray()
         while len(buf) < size:
-            chunk = self._raw.recv(size - len(buf))
+            chunk = self._read_chunk(size - len(buf))
             if not chunk:
                 # Partial-frame EOF: return None so callers treat it as a clean
                 # end-of-stream. Returning a short buffer would crash read_frame's
@@ -155,6 +155,22 @@ class BridgeAttachSocket:
                 return None
             buf.extend(chunk)
         return bytes(buf)
+
+    def _read_chunk(self, size: int) -> bytes:
+        if hasattr(self._raw, "read"):
+            return self._raw.read(size)
+        return self._transport().recv(size)
+
+    def _transport(self) -> Any:
+        """Return the recv/send/shutdown-capable socket-like transport.
+
+        docker-py often returns a ``SocketIO`` wrapper from ``attach_socket``.
+        That wrapper exposes the real socket under ``._sock``; read/write
+        operations that mutate the stream target the underlying transport, while
+        reads go through the file-like wrapper when it exists so docker-py can
+        manage any buffering correctly.
+        """
+        return getattr(self._raw, "_sock", self._raw)
 
 
 # -------------------------------------------------------------------- helpers
@@ -198,6 +214,8 @@ def _build_environment(
         env["AWS_REGION"] = bridge_env["AWS_REGION"]
     if "AWS_BEARER_TOKEN_BEDROCK" in bridge_env:
         env["AWS_BEARER_TOKEN_BEDROCK"] = bridge_env["AWS_BEARER_TOKEN_BEDROCK"]
+    if "NEXTSEEK_URL" in bridge_env:
+        env["NEXTSEEK_URL"] = bridge_env["NEXTSEEK_URL"]
     return env
 
 
