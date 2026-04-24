@@ -135,6 +135,22 @@ def wait_for_assistant_text(ws: Any, *, timeout_s: float = 30.0) -> str:
     raise AssertionError("timed out waiting for assistant_message content")
 
 
+def wait_for_session_ended(ws: Any, *, timeout_s: float = 30.0) -> str:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        frame = receive_json_with_timeout(
+            ws, timeout_s=max(0.1, deadline - time.monotonic())
+        )
+        assert_no_resume_failed(frame)
+        if frame.get("type") == "session_ended":
+            session_id = frame.get("session_id")
+            assert isinstance(session_id, str) and session_id
+            return session_id
+        if frame.get("type") == "error":
+            raise AssertionError(frame)
+    raise AssertionError("timed out waiting for session_ended")
+
+
 def find_user_container(user_id: str):
     allow_docker_unix_socket_only()
     client = docker.from_env(timeout=5)
@@ -171,6 +187,23 @@ def _clear_labeled_user_containers(user_id: str) -> None:
             pass
 
 
+def _wait_for_no_user_containers(
+    user_id: str, *, timeout_s: float = 15.0
+) -> None:
+    allow_docker_unix_socket_only()
+    client = docker.from_env(timeout=5)
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        matches = client.containers.list(
+            all=True,
+            filters={"label": [f"dmac.bridge=1", f"dmac.user_id={user_id}"]},
+        )
+        if not matches:
+            return
+        time.sleep(0.25)
+    raise AssertionError("expected prior bridge container to be cleaned up")
+
+
 def test_resume_roundtrip_same_session_id(
     monkeypatch: pytest.MonkeyPatch,
     live_env: dict[str, str],
@@ -203,7 +236,12 @@ def test_resume_roundtrip_same_session_id(
             session_id_1 = wait_for_session_started(ws)
             first_reply = wait_for_assistant_text(ws, timeout_s=60.0)
             assert remembered in first_reply
+            ended_session_id = wait_for_session_ended(ws, timeout_s=60.0)
+            assert ended_session_id == session_id_1
 
+    _wait_for_no_user_containers(user_id, timeout_s=30.0)
+
+    with TestClient(app) as client:
         with client.websocket_connect(
             "/ws/chat",
             headers={"Authorization": f"Bearer {token}"},

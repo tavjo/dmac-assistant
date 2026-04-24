@@ -233,6 +233,22 @@ def _result_event() -> bytes:
     return (json.dumps({"type": "result", "subtype": "success"}) + "\n").encode()
 
 
+def _stdin_user_event(content: str) -> bytes:
+    return (
+        json.dumps(
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": content,
+                },
+            },
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode()
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -1143,7 +1159,7 @@ def test_subsequent_user_messages_are_forwarded_to_stdin(
             ws.send_json("not-a-dict")
             # Give the relay task a moment to pick them up.
             for _ in range(40):
-                if any(b"second" in w for w in gated.stdin_writes):
+                if any(b'"content":"second"' in w for w in gated.stdin_writes):
                     break
                 time.sleep(0.01)
 
@@ -1155,8 +1171,8 @@ def test_subsequent_user_messages_are_forwarded_to_stdin(
                     break
 
     writes = b"".join(gated.stdin_writes)
-    assert b"first\n" in writes
-    assert b"second\n" in writes
+    assert _stdin_user_event("first") in writes
+    assert _stdin_user_event("second") in writes
 
 
 def test_internal_exception_during_run_emits_internal_error_frame(

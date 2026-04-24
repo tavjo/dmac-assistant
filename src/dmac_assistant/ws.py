@@ -22,6 +22,8 @@ Invariants (spec §3):
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
 import os
 from pathlib import Path
@@ -176,11 +178,21 @@ async def _read_frame(attach_socket: Any) -> tuple[str, bytes] | None:
 
 
 async def _send_stdin_line(attach_socket: Any, content: str) -> bool:
-    """Write one newline-terminated user message to container stdin."""
+    """Write one Claude stream-json user event to container stdin."""
+    payload = json.dumps(
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": content,
+            },
+        },
+        separators=(",", ":"),
+    )
     try:
         await asyncio.to_thread(
             attach_socket.send_stdin,
-            (content + "\n").encode("utf-8"),
+            (payload + "\n").encode("utf-8"),
         )
         return True
     except Exception:  # pragma: no cover - error behavior asserted at callers
@@ -322,7 +334,17 @@ async def chat_ws(
         try:
             # 6. Drive the container->client read loop.
             while True:
-                frame = await _read_frame(attach_socket)
+                frame_task = asyncio.create_task(_read_frame(attach_socket))
+                done, pending = await asyncio.wait(
+                    {frame_task, relay_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if relay_task in done:
+                    frame_task.cancel()
+                    for pending_task in pending:
+                        pending_task.cancel()
+                    break
+                frame = frame_task.result()
                 if frame is None:
                     break
                 stream_name, payload = frame
@@ -345,6 +367,10 @@ async def chat_ws(
                         requested_session_id=requested_session_id,
                         parser=parser,
                     )
+                    if session_ended_emitted:
+                        break
+                if session_ended_emitted:
+                    break
 
             # Clean EOF: flush parser + emit synthetic session_ended if none.
             for event in parser.flush():
@@ -361,6 +387,8 @@ async def chat_ws(
                     requested_session_id=requested_session_id,
                     parser=parser,
                 )
+                if session_ended_emitted:
+                    break
 
             if session_started_emitted and not session_ended_emitted:
                 await _send_json_safe(
@@ -373,10 +401,8 @@ async def chat_ws(
                 session_ended_emitted = True
         finally:
             relay_task.cancel()
-            try:
-                await relay_task
-            except (asyncio.CancelledError, Exception):  # pragma: no cover — race cleanup
-                pass
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait_for(relay_task, timeout=0.2)
 
     except asyncio.CancelledError:  # pragma: no cover — server-shutdown branch
         raise
