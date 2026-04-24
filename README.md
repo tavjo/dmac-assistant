@@ -20,3 +20,9 @@ make bats-check
 make shellcheck-check
 uv run pytest
 ```
+
+## Running the bridge
+
+The FastAPI bridge POC lives under `src/dmac_assistant/`.
+See [`docs/bridge/README.md`](docs/bridge/README.md) for local setup, auth flow,
+and the `/ws/chat` protocol.
