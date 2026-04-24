@@ -234,6 +234,10 @@ async def chat_ws(
     current_session_id: str | None = None
     session_started_emitted = False
     session_ended_emitted = False
+    # Shared single-element box so the relay task can signal "a new turn
+    # started" to the outer loop. Drives the EOF synthetic session_ended:
+    # we only emit one on clean socket close if a turn was still in flight.
+    awaiting_end: list[bool] = [False]
     requested_session_id: str | None = None
     start_task: asyncio.Task[Any] | None = None
 
@@ -332,10 +336,11 @@ async def chat_ws(
             )
             await websocket.close(code=1011)
             return
+        awaiting_end[0] = True
 
         # 5. Launch the client->container relay task.
         relay_task = asyncio.create_task(
-            _relay_client_to_container(websocket, attach_socket)
+            _relay_client_to_container(websocket, attach_socket, awaiting_end)
         )
 
         try:
@@ -373,6 +378,7 @@ async def chat_ws(
                         current_session_id=current_session_id,
                         requested_session_id=requested_session_id,
                         parser=parser,
+                        awaiting_end=awaiting_end,
                     )
 
             # Clean EOF: flush parser + emit synthetic session_ended if none.
@@ -389,9 +395,10 @@ async def chat_ws(
                     current_session_id=current_session_id,
                     requested_session_id=requested_session_id,
                     parser=parser,
+                    awaiting_end=awaiting_end,
                 )
 
-            if session_started_emitted and not session_ended_emitted:
+            if session_started_emitted and awaiting_end[0]:
                 await _send_json_safe(
                     websocket,
                     {
@@ -400,6 +407,7 @@ async def chat_ws(
                     },
                 )
                 session_ended_emitted = True
+                awaiting_end[0] = False
         finally:
             relay_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -477,6 +485,7 @@ async def _dispatch_event(
     current_session_id: str | None,
     requested_session_id: str | None,
     parser: StreamJsonParser,
+    awaiting_end: list[bool],
 ) -> tuple[bool, bool, str | None]:
     """Emit the WS frames for a single parser event and update state."""
     # system/init: drives session_started + resume-mismatch ordering.
@@ -537,11 +546,12 @@ async def _dispatch_event(
         await _send_json_safe(websocket, frame)
         if frame.get("type") == "session_ended":
             session_ended_emitted = True
+            awaiting_end[0] = False
     return session_started_emitted, session_ended_emitted, current_session_id
 
 
 async def _relay_client_to_container(
-    websocket: WebSocket, attach_socket: Any
+    websocket: WebSocket, attach_socket: Any, awaiting_end: list[bool]
 ) -> None:
     """Forward subsequent ``user_message`` frames from the client to stdin."""
     try:
@@ -557,5 +567,6 @@ async def _relay_client_to_container(
             ns = bool(frame.get("new_session", False))
             if not await _send_stdin_line(attach_socket, content, new_session=ns):
                 return
+            awaiting_end[0] = True
     except (WebSocketDisconnect, asyncio.CancelledError, RuntimeError, ValueError):
         return

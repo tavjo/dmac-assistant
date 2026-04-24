@@ -244,6 +244,116 @@ def test_malformed_init_closes_1011(
     assert exc.value.code == 1011
 
 
+def test_client_disconnect_mid_turn_tears_down_cleanly(
+    allow_unix_socket_only,
+    configured_env,
+    monkeypatch: pytest.MonkeyPatch,
+    token_store: TokenStore,
+) -> None:
+    """Client closes the WS mid-stream; bridge stops container exactly once."""
+    sid = "88888888-8888-8888-8888-888888888888"
+    frames = [
+        ("stdout", _init_event(sid)),
+        ("stdout", _assistant_text_event("partial")),
+        None,
+    ]
+    app, state = _make_app(monkeypatch, token_store=token_store, frames=frames)
+    token = _issued_token(token_store)
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/ws/chat", subprotocols=["dmac.bearer", token]
+        ) as ws:
+            ws.send_json(
+                {"type": "user_message", "content": "q", "new_session": True}
+            )
+            ws.receive_json()
+            ws.close()
+    assert len(state["stop_calls"]) == 1
+
+
+def test_error_frame_emitted_without_close_on_transient_error(
+    allow_unix_socket_only,
+    configured_env,
+    monkeypatch: pytest.MonkeyPatch,
+    token_store: TokenStore,
+) -> None:
+    """A malformed stream-json line emits {type:error} but the socket stays open."""
+    sid = "99999999-9999-9999-9999-999999999999"
+    frames = [
+        ("stdout", _init_event(sid)),
+        ("stdout", b"this is not valid json\n"),
+        ("stdout", _assistant_text_event("recovered")),
+        ("stdout", _result_event()),
+        None,
+    ]
+    app, _ = _make_app(monkeypatch, token_store=token_store, frames=frames)
+    token = _issued_token(token_store)
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/ws/chat", subprotocols=["dmac.bearer", token]
+        ) as ws:
+            ws.send_json(
+                {"type": "user_message", "content": "q", "new_session": True}
+            )
+            seen: list[dict] = []
+            saw_error = False
+            while True:
+                m = ws.receive_json()
+                seen.append(m)
+                if m.get("type") == "error":
+                    saw_error = True
+                if m.get("type") == "session_ended":
+                    break
+    assert saw_error, f"expected an error frame, saw: {[m.get('type') for m in seen]}"
+    assistant_texts = [
+        m.get("content") for m in seen if m.get("type") == "assistant_message"
+    ]
+    assert "recovered" in assistant_texts
+
+
+def test_session_ended_state_resets_between_turns(
+    allow_unix_socket_only,
+    configured_env,
+    monkeypatch: pytest.MonkeyPatch,
+    token_store: TokenStore,
+) -> None:
+    """Turn 2 EOF without a result still yields a synthetic session_ended.
+
+    Catches the bug where ``session_ended_emitted`` stays ``True`` after turn 1
+    and silently suppresses the synthetic end-of-stream emission for turn 2.
+    """
+    sid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    frames = [
+        ("stdout", _init_event(sid)),
+        ("stdout", _assistant_text_event("t1")),
+        ("stdout", _result_event()),
+        ("stdout", _assistant_text_event("t2-partial")),
+        None,
+    ]
+    app, _ = _make_app(monkeypatch, token_store=token_store, frames=frames)
+    token = _issued_token(token_store)
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/ws/chat", subprotocols=["dmac.bearer", token]
+        ) as ws:
+            ws.send_json(
+                {"type": "user_message", "content": "q1", "new_session": True}
+            )
+            while ws.receive_json().get("type") != "session_ended":
+                pass
+            ws.send_json({"type": "user_message", "content": "q2"})
+            saw_ended_turn2 = False
+            try:
+                while True:
+                    m = ws.receive_json()
+                    if m.get("type") == "session_ended":
+                        saw_ended_turn2 = True
+                        break
+            except WebSocketDisconnect:
+                pass
+    assert saw_ended_turn2, "turn 2 EOF did not yield a synthetic session_ended"
+
+
 def test_new_session_true_mid_socket_re_emits_session_started(
     allow_unix_socket_only,
     configured_env,
