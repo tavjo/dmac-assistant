@@ -7,8 +7,13 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from dmac_assistant.auth import router as auth_router
+from dmac_assistant.ws import router as ws_router
+
 
 app = FastAPI(title="DMAC Assistant Bridge", version="0.1.0")
+app.include_router(auth_router)
+app.include_router(ws_router, prefix="/ws", tags=["ws"])
 
 
 @app.get("/health")

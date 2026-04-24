@@ -71,8 +71,8 @@ def test_health_endpoint_returns_ok(allow_unix_socket_only) -> None:
     assert response.json() == {"status": "ok"}
 
 
-def test_health_endpoint_is_the_only_route_in_bootstrap() -> None:
-    """Guard against later-wave endpoints leaking into the bootstrap task."""
+def test_post_t06_app_exposes_health_login_and_ws_chat() -> None:
+    """After T06, the bridge exposes /health, /auth/login, and /ws/chat."""
     from dmac_assistant.app import app
 
     user_paths = {
@@ -81,9 +81,9 @@ def test_health_endpoint_is_the_only_route_in_bootstrap() -> None:
     framework_defaults = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
     app_routes = user_paths - framework_defaults
 
-    assert app_routes == {"/health"}, (
-        f"T01 must expose /health only; found {app_routes}. "
-        f"Adding endpoints to app.py belongs to a later task."
+    assert app_routes == {"/health", "/auth/login", "/ws/chat"}, (
+        f"post-T06 app must expose /health, /auth/login, and /ws/chat; "
+        f"found {app_routes}."
     )
 
 
