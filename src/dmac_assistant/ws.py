@@ -177,18 +177,23 @@ async def _read_frame(attach_socket: Any) -> tuple[str, bytes] | None:
     return await asyncio.to_thread(attach_socket.read_frame)
 
 
-async def _send_stdin_line(attach_socket: Any, content: str) -> bool:
+async def _send_stdin_line(
+    attach_socket: Any,
+    content: str,
+    *,
+    new_session: bool = False,
+) -> bool:
     """Write one Claude stream-json user event to container stdin."""
-    payload = json.dumps(
-        {
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": content,
-            },
+    envelope: dict[str, Any] = {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": content,
         },
-        separators=(",", ":"),
-    )
+    }
+    if new_session:
+        envelope["new_session"] = True
+    payload = json.dumps(envelope, separators=(",", ":"))
     try:
         await asyncio.to_thread(
             attach_socket.send_stdin,
@@ -318,7 +323,9 @@ async def chat_ws(
             return
 
         # 4. Forward the first user message to Claude's stdin.
-        if not await _send_stdin_line(attach_socket, first_content):
+        if not await _send_stdin_line(
+            attach_socket, first_content, new_session=new_session
+        ):
             log.warning("stdin write failed on first frame")
             await _send_json_safe(
                 websocket, {"type": "error", "reason": "internal"}
@@ -367,10 +374,6 @@ async def chat_ws(
                         requested_session_id=requested_session_id,
                         parser=parser,
                     )
-                    if session_ended_emitted:
-                        break
-                if session_ended_emitted:
-                    break
 
             # Clean EOF: flush parser + emit synthetic session_ended if none.
             for event in parser.flush():
@@ -387,8 +390,6 @@ async def chat_ws(
                     requested_session_id=requested_session_id,
                     parser=parser,
                 )
-                if session_ended_emitted:
-                    break
 
             if session_started_emitted and not session_ended_emitted:
                 await _send_json_safe(
@@ -490,6 +491,7 @@ async def _dispatch_event(
                 # Stream-contract violation: init event without session_id.
                 # Surfaced to the outer relay loop which owns WS lifecycle.
                 raise _InitMalformed()
+            previous_session_id = current_session_id
             current_session_id = actual
             if (
                 requested_session_id is not None
@@ -505,6 +507,19 @@ async def _dispatch_event(
                     },
                 )
             if not session_started_emitted:
+                await _send_json_safe(
+                    websocket,
+                    {
+                        "type": "session_started",
+                        "session_id": actual,
+                    },
+                )
+                session_started_emitted = True
+            elif (
+                previous_session_id is not None
+                and actual != previous_session_id
+            ):
+                # New Claude session mid-socket (e.g. user_message with new_session: true).
                 await _send_json_safe(
                     websocket,
                     {
@@ -539,7 +554,8 @@ async def _relay_client_to_container(
             content = frame.get("content")
             if not isinstance(content, str):
                 continue
-            if not await _send_stdin_line(attach_socket, content):
+            ns = bool(frame.get("new_session", False))
+            if not await _send_stdin_line(attach_socket, content, new_session=ns):
                 return
     except (WebSocketDisconnect, asyncio.CancelledError, RuntimeError, ValueError):
         return
