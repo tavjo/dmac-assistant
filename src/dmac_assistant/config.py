@@ -6,6 +6,7 @@ import os
 import re
 from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
 
 
@@ -15,6 +16,9 @@ _DEV_MODE_TRUE_VALUES = {"1", "true", "yes", "on"}
 _DEV_DEFAULT_CLAUDE_USERS_ROOT = Path("~/dmac-dev/claude-users").expanduser()
 _DEV_DEFAULT_SCRATCH_ROOT = Path("~/dmac-dev/scratch").expanduser()
 _DEV_DEFAULT_DROPBOX_ROOT = Path("~/Library/CloudStorage/Dropbox/DMAC_Data").expanduser()
+
+# Repo root (…/dmac_assistant): .env is loaded from here regardless of process cwd.
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 class ConfigError(ValueError):
@@ -112,6 +116,7 @@ def _load_users(raw_users: str) -> dict[str, UserRecord]:
 def load_config() -> BridgeConfig:
     """Load bridge configuration from the environment."""
 
+    load_dotenv(_REPO_ROOT / ".env", override=False)
     raw_users = os.environ.get("DMAC_USERS")
     if raw_users is None:
         raise ConfigError("DMAC_USERS is required")

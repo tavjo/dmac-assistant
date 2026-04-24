@@ -14,7 +14,7 @@ GOOD_USERS = {
 
 
 @pytest.fixture
-def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+def clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> pytest.MonkeyPatch:
     """Strip all bridge variables so each test sets only what it needs."""
     for var in (
         "DMAC_DEV_MODE",
@@ -26,6 +26,12 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
         "DMAC_BRIDGE_PORT",
     ):
         monkeypatch.delenv(var, raising=False)
+    # Avoid loading the developer's real repo `.env` into tests (would defeat delenv).
+    import dmac_assistant.config as config_mod
+
+    isolated = tmp_path / "no_dotenv_here"
+    isolated.mkdir()
+    monkeypatch.setattr(config_mod, "_REPO_ROOT", isolated, raising=False)
     return monkeypatch
 
 
@@ -268,3 +274,166 @@ def test_load_config_rejects_non_integer_bridge_port(clean_env: pytest.MonkeyPat
 
     with pytest.raises(ConfigError, match="Bridge configuration is invalid"):
         load_config()
+
+
+def test_load_config_reads_env_from_repo_root_dotenv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`.env` at anchored repo root loads DMAC_USERS even when cwd is elsewhere."""
+    dotenv_home = tmp_path / "repo"
+    dotenv_home.mkdir()
+    users = {"from-dotenv": {"password": "pw", "projects": ["p1"]}}
+    env_body = (
+        f"DMAC_DEV_MODE=1\n"
+        f"DMAC_USERS={json.dumps(users)}\n"
+        f"DMAC_CLAUDE_USERS_ROOT=./cu\n"
+        f"DMAC_SCRATCH_ROOT=./sc\n"
+        f"DMAC_DROPBOX_ROOT=./db\n"
+    )
+    (dotenv_home / ".env").write_text(env_body, encoding="utf-8")
+
+    for var in (
+        "DMAC_DEV_MODE",
+        "DMAC_USERS",
+        "DMAC_CLAUDE_USERS_ROOT",
+        "DMAC_SCRATCH_ROOT",
+        "DMAC_DROPBOX_ROOT",
+        "DMAC_BRIDGE_HOST",
+        "DMAC_BRIDGE_PORT",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    workdir = tmp_path / "elsewhere"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    import dmac_assistant.config as config_mod
+
+    monkeypatch.setattr(config_mod, "_REPO_ROOT", dotenv_home, raising=False)
+
+    from dmac_assistant.config import load_config
+
+    cfg = load_config()
+    assert "from-dotenv" in cfg.users
+
+
+def test_real_env_wins_over_dotenv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shell env beats .env when values disagree (override=False)."""
+    dotenv_home = tmp_path / "repo"
+    dotenv_home.mkdir()
+    file_users = {"file-user": {"password": "pw", "projects": ["p1"]}}
+    (dotenv_home / ".env").write_text(
+        f"DMAC_DEV_MODE=1\nDMAC_USERS={json.dumps(file_users)}\n"
+        "DMAC_CLAUDE_USERS_ROOT=./cu\nDMAC_SCRATCH_ROOT=./sc\nDMAC_DROPBOX_ROOT=./db\n",
+        encoding="utf-8",
+    )
+
+    for var in (
+        "DMAC_DEV_MODE",
+        "DMAC_USERS",
+        "DMAC_CLAUDE_USERS_ROOT",
+        "DMAC_SCRATCH_ROOT",
+        "DMAC_DROPBOX_ROOT",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    env_users = {"env-user": {"password": "pw2", "projects": ["p2"]}}
+    monkeypatch.setenv("DMAC_DEV_MODE", "1")
+    monkeypatch.setenv("DMAC_USERS", json.dumps(env_users))
+
+    import dmac_assistant.config as config_mod
+
+    monkeypatch.setattr(config_mod, "_REPO_ROOT", dotenv_home, raising=False)
+
+    from dmac_assistant.config import load_config
+
+    cfg = load_config()
+    assert set(cfg.users) == {"env-user"}
+
+
+def test_no_dotenv_file_still_works(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing .env at anchored path is fine when os.environ supplies config."""
+    empty_root = tmp_path / "no-env-file"
+    empty_root.mkdir()
+
+    for var in (
+        "DMAC_DEV_MODE",
+        "DMAC_USERS",
+        "DMAC_CLAUDE_USERS_ROOT",
+        "DMAC_SCRATCH_ROOT",
+        "DMAC_DROPBOX_ROOT",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    monkeypatch.setenv("DMAC_DEV_MODE", "1")
+    monkeypatch.setenv("DMAC_USERS", json.dumps(GOOD_USERS))
+
+    import dmac_assistant.config as config_mod
+
+    monkeypatch.setattr(config_mod, "_REPO_ROOT", empty_root, raising=False)
+
+    from dmac_assistant.config import load_config
+
+    cfg = load_config()
+    assert set(cfg.users) == {"alice", "bob-1"}
+
+
+def test_missing_users_still_raises_with_dotenv_miss(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No DMAC_USERS in env or .env still raises (fix must not hide misconfig)."""
+    empty_root = tmp_path / "no-users"
+    empty_root.mkdir()
+
+    for var in (
+        "DMAC_DEV_MODE",
+        "DMAC_USERS",
+        "DMAC_CLAUDE_USERS_ROOT",
+        "DMAC_SCRATCH_ROOT",
+        "DMAC_DROPBOX_ROOT",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    import dmac_assistant.config as config_mod
+
+    monkeypatch.setattr(config_mod, "_REPO_ROOT", empty_root, raising=False)
+
+    from dmac_assistant.config import ConfigError, load_config
+
+    with pytest.raises(ConfigError, match="DMAC_USERS"):
+        load_config()
+
+
+def test_dotenv_loaded_before_config_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """load_dotenv runs before the DMAC_USERS guard so misconfig still loads .env first."""
+    import dmac_assistant.config as config_mod
+
+    dotenv_calls: list[object] = []
+
+    def recording_load_dotenv(*args: object, **kwargs: object) -> bool:
+        dotenv_calls.append((args, kwargs))
+        return False
+
+    monkeypatch.setattr(config_mod, "load_dotenv", recording_load_dotenv)
+
+    for var in ("DMAC_USERS",):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(config_mod, "_REPO_ROOT", tmp_path, raising=False)
+
+    from dmac_assistant.config import ConfigError, load_config
+
+    with pytest.raises(ConfigError, match="DMAC_USERS"):
+        load_config()
+
+    assert dotenv_calls, "load_dotenv must run before ConfigError for missing DMAC_USERS"
