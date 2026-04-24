@@ -142,6 +142,18 @@ async def _read_frame(attach_socket: Any) -> tuple[str, bytes] | None:
     return await asyncio.to_thread(attach_socket.read_frame)
 
 
+async def _send_stdin_line(attach_socket: Any, content: str) -> bool:
+    """Write one newline-terminated user message to container stdin."""
+    try:
+        await asyncio.to_thread(
+            attach_socket.send_stdin,
+            (content + "\n").encode("utf-8"),
+        )
+        return True
+    except Exception:  # pragma: no cover - error behavior asserted at callers
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------------
@@ -168,6 +180,7 @@ async def chat_ws(
     session_started_emitted = False
     session_ended_emitted = False
     requested_session_id: str | None = None
+    start_task: asyncio.Task[Any] | None = None
 
     try:
         # 2. Load config + read the first client frame.
@@ -206,13 +219,32 @@ async def chat_ws(
             ),
         }
         try:
-            container = await async_start_container(
-                identity,
-                image=DEFAULT_IMAGE,
-                session_id=requested_session_id,
-                bridge_env=bridge_env,
-                config=config,
+            start_task = asyncio.create_task(
+                async_start_container(
+                    identity,
+                    image=DEFAULT_IMAGE,
+                    session_id=requested_session_id,
+                    bridge_env=bridge_env,
+                    config=config,
+                )
             )
+            done, _ = await asyncio.wait(
+                {start_task}, return_when=asyncio.ALL_COMPLETED
+            )
+            container = done.pop().result()
+            start_task = None
+        except asyncio.CancelledError:
+            if start_task is not None:
+                try:
+                    done, _ = await asyncio.wait(
+                        {start_task}, return_when=asyncio.ALL_COMPLETED
+                    )
+                    container = done.pop().result()
+                except Exception:
+                    container = None
+                finally:
+                    start_task = None
+            raise
         except BaseException:
             # Do not log the exception detail — it may quote env values.
             log.warning("container start failed")
@@ -235,10 +267,13 @@ async def chat_ws(
             return
 
         # 4. Forward the first user message to Claude's stdin.
-        try:
-            attach_socket.send_stdin((first_content + "\n").encode("utf-8"))
-        except Exception:
-            log.debug("stdin write failed on first frame")
+        if not await _send_stdin_line(attach_socket, first_content):
+            log.warning("stdin write failed on first frame")
+            await _send_json_safe(
+                websocket, {"type": "error", "reason": "internal"}
+            )
+            await websocket.close(code=1011)
+            return
 
         # 5. Launch the client->container relay task.
         relay_task = asyncio.create_task(
@@ -343,6 +378,13 @@ async def chat_ws(
             except Exception:  # pragma: no cover — close-during-shutdown race
                 pass
     finally:
+        if start_task is not None:
+            try:
+                started_container = await start_task
+                if container is None:
+                    container = started_container
+            except Exception:  # pragma: no cover — startup already failed/cancelled
+                pass
         if attach_socket is not None:
             try:
                 await asyncio.to_thread(attach_socket.close)
@@ -432,12 +474,7 @@ async def _relay_client_to_container(
             content = frame.get("content")
             if not isinstance(content, str):
                 continue
-            try:
-                await asyncio.to_thread(
-                    attach_socket.send_stdin,
-                    (content + "\n").encode("utf-8"),
-                )
-            except Exception:  # pragma: no cover — stdin race with cleanup
+            if not await _send_stdin_line(attach_socket, content):
                 return
     except (WebSocketDisconnect, asyncio.CancelledError, RuntimeError, ValueError):
         return

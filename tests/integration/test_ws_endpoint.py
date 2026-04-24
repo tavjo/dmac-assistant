@@ -19,7 +19,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from dmac_assistant.auth import (
     AuthenticatedIdentity,
@@ -142,6 +142,40 @@ class _FakeAttachSocket:
 class _FakeContainer:
     def __init__(self, container_id: str = "cid-123") -> None:
         self.id = container_id
+
+
+class _DirectWebSocket:
+    """Tiny async double for directly driving ``chat_ws`` in cancellation tests."""
+
+    def __init__(
+        self,
+        *,
+        token: str,
+        first_frame: dict[str, Any],
+    ) -> None:
+        self.headers = {"authorization": f"Bearer {token}"}
+        self._first_frame = first_frame
+        self.client_state = WebSocketState.CONNECTING
+        self.sent: list[dict[str, Any]] = []
+        self.close_codes: list[int] = []
+
+    async def accept(self) -> None:
+        self.client_state = WebSocketState.CONNECTED
+
+    async def close(self, code: int = 1000) -> None:
+        self.close_codes.append(code)
+        self.client_state = WebSocketState.DISCONNECTED
+
+    async def receive_json(self) -> dict[str, Any]:
+        if self._first_frame is not None:
+            frame = self._first_frame
+            self._first_frame = None
+            return frame
+        self.client_state = WebSocketState.DISCONNECTED
+        raise WebSocketDisconnect(code=1001)
+
+    async def send_json(self, frame: dict[str, Any]) -> None:
+        self.sent.append(frame)
 
 
 def _init_event(session_id: str) -> bytes:
@@ -575,7 +609,7 @@ def test_session_started_precedes_assistant_frames(
     )
 
 
-def test_disconnect_path_closes_socket_and_stops_container(
+def test_clean_stream_completion_closes_socket_and_stops_container(
     allow_unix_socket_only,
     configured_env,
     monkeypatch: pytest.MonkeyPatch,
@@ -612,6 +646,73 @@ def test_disconnect_path_closes_socket_and_stops_container(
     assert state["fake_socket"].closed, "attach socket must be closed on disconnect"
 
 
+def test_client_disconnect_while_relay_is_active_closes_socket_and_stops_container(
+    allow_unix_socket_only,
+    configured_env,
+    monkeypatch: pytest.MonkeyPatch,
+    token_store: TokenStore,
+) -> None:
+    async def _exercise() -> None:
+        from dmac_assistant import ws as ws_module
+
+        disconnected = asyncio.Event()
+
+        class _BlockingSocket(_FakeAttachSocket):
+            def read_frame(self) -> tuple[str, bytes] | None:
+                if self.frames:
+                    return self.frames.pop(0)
+                while not disconnected.is_set():
+                    import time
+
+                    time.sleep(0.01)
+                return None
+
+        class _DisconnectingWebSocket(_DirectWebSocket):
+            async def receive_json(self) -> dict[str, Any]:
+                try:
+                    return await super().receive_json()
+                finally:
+                    if self._first_frame is None:
+                        disconnected.set()
+
+        container = _FakeContainer()
+        sock = _BlockingSocket([("stdout", _init_event("sess-live"))])
+        stop_calls: list[Any] = []
+
+        async def _fake_start(identity, *, image, session_id, bridge_env, config):
+            return container
+
+        async def _fake_attach(c):
+            return sock
+
+        async def _fake_stop(c, *, timeout: int = 5):
+            stop_calls.append(c)
+
+        monkeypatch.setattr(ws_module, "async_start_container", _fake_start)
+        monkeypatch.setattr(ws_module, "async_attach", _fake_attach)
+        monkeypatch.setattr(ws_module, "async_stop_and_remove", _fake_stop)
+
+        websocket = _DisconnectingWebSocket(
+            token=_issued_token(token_store),
+            first_frame={
+                "type": "user_message",
+                "content": "hi",
+                "new_session": True,
+            },
+        )
+
+        await ws_module.chat_ws(websocket, token_store=token_store)
+
+        assert stop_calls == [container]
+        assert sock.closed
+        assert websocket.sent in (
+            [],
+            [{"type": "session_started", "session_id": "sess-live"}],
+        )
+
+    asyncio.run(_exercise())
+
+
 def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
     """Poll ``predicate`` until it holds or ``timeout`` elapses."""
     import time as _time
@@ -623,43 +724,60 @@ def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
         _time.sleep(0.01)
 
 
-def test_cancellation_during_startup_still_stops_container(
+def test_cancellation_during_startup_waits_for_container_and_cleans_up(
     allow_unix_socket_only,
     configured_env,
     monkeypatch: pytest.MonkeyPatch,
     token_store: TokenStore,
 ) -> None:
-    """Container-start failure path: spec §3 — close 1011 + cleanup."""
+    """True cancellation path: startup is in flight, then task is cancelled."""
 
-    class _BoomError(RuntimeError):
-        pass
+    async def _exercise() -> None:
+        from dmac_assistant import ws as ws_module
 
-    app, state = _make_app(
-        monkeypatch,
-        token_store=token_store,
-        frames=[None],
-        start_raises=_BoomError("boom"),
-    )
-    token = _issued_token(token_store)
+        startup_gate = asyncio.Event()
+        container_created = asyncio.Event()
+        container = _FakeContainer("cid-cancel")
+        stop_calls: list[Any] = []
 
-    with TestClient(app) as client:
-        with pytest.raises(WebSocketDisconnect) as exc:
-            with client.websocket_connect(
-                "/ws/chat", headers={"Authorization": f"Bearer {token}"}
-            ) as ws:
-                ws.send_json(
-                    {"type": "user_message", "content": "hi", "new_session": True}
-                )
-                # The bridge should emit container_start_failed then close 1011.
-                frame = ws.receive_json()
-                assert frame == {
-                    "type": "error",
-                    "reason": "container_start_failed",
-                }
-                ws.receive_json()
-    assert exc.value.code == 1011
-    # start raised, so attach never happened — no socket to close, no container to stop.
-    assert state["stop_calls"] == []
+        async def _fake_start(identity, *, image, session_id, bridge_env, config):
+            container_created.set()
+            await startup_gate.wait()
+            return container
+
+        async def _fake_attach(c):
+            raise AssertionError("attach must not run after startup cancellation")
+
+        async def _fake_stop(c, *, timeout: int = 5):
+            stop_calls.append(c)
+
+        monkeypatch.setattr(ws_module, "async_start_container", _fake_start)
+        monkeypatch.setattr(ws_module, "async_attach", _fake_attach)
+        monkeypatch.setattr(ws_module, "async_stop_and_remove", _fake_stop)
+
+        websocket = _DirectWebSocket(
+            token=_issued_token(token_store),
+            first_frame={
+                "type": "user_message",
+                "content": "hi",
+                "new_session": True,
+            },
+        )
+
+        task = asyncio.create_task(
+            ws_module.chat_ws(websocket, token_store=token_store)
+        )
+        await container_created.wait()
+        task.cancel()
+        startup_gate.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert stop_calls == [container]
+        assert websocket.close_codes == [1000]
+
+    asyncio.run(_exercise())
 
 
 def test_stream_event_to_ws_frames_ignores_non_dict_blocks_and_unknown_types() -> None:
@@ -808,13 +926,13 @@ def test_attach_failure_after_successful_start_closes_1011_and_stops_container(
     assert state["stop_calls"]
 
 
-def test_stdin_write_failure_on_first_frame_is_swallowed(
+def test_first_message_stdin_write_failure_emits_internal_and_closes_1011(
     allow_unix_socket_only,
     configured_env,
     monkeypatch: pytest.MonkeyPatch,
     token_store: TokenStore,
 ) -> None:
-    """If send_stdin raises, the bridge keeps running the read loop."""
+    """The first user message must not be silently dropped."""
     frames: list[tuple[str, bytes] | None] = [
         ("stdout", _init_event("sess-Y")),
         ("stdout", _result_event()),
@@ -829,14 +947,23 @@ def test_stdin_write_failure_on_first_frame_is_swallowed(
     token = _issued_token(token_store)
 
     with TestClient(app) as client:
-        with client.websocket_connect(
-            "/ws/chat", headers={"Authorization": f"Bearer {token}"}
-        ) as ws:
-            ws.send_json({"type": "user_message", "content": "hi", "new_session": True})
-            assert ws.receive_json()["type"] == "session_started"
-            assert ws.receive_json()["type"] == "session_ended"
-            with pytest.raises(WebSocketDisconnect):
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(
+                "/ws/chat", headers={"Authorization": f"Bearer {token}"}
+            ) as ws:
+                ws.send_json(
+                    {"type": "user_message", "content": "hi", "new_session": True}
+                )
+                assert ws.receive_json() == {
+                    "type": "error",
+                    "reason": "internal",
+                }
                 ws.receive_json()
+
+    assert exc.value.code == 1011
+    _wait_until(lambda: bool(state["stop_calls"]))
+    assert state["stop_calls"]
+    assert state["fake_socket"].closed
 
 
 def test_trailing_partial_line_surfaces_as_stream_json_error(
