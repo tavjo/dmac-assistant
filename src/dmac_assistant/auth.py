@@ -8,7 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict, SecretStr
 
-from dmac_assistant.config import BridgeConfig, UserRecord, load_config
+from dmac_assistant.config import BridgeConfig, ConfigError, UserRecord, load_config
 
 
 class AuthenticationError(ValueError):
@@ -107,7 +107,13 @@ _TOKEN_STORE = TokenStore()
 
 def get_config() -> BridgeConfig:
     """Dependency wrapper around config loading."""
-    return load_config()
+    try:
+        return load_config()
+    except ConfigError as err:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"bridge misconfigured: {err}",
+        ) from err
 
 
 def get_token_store() -> TokenStore:

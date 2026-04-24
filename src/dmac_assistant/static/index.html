@@ -532,6 +532,25 @@
       statusEl.className = "chip " + kind;
     }
 
+    /** Enable/disable chat composer when WebSocket is not OPEN (e.g. reconnecting). */
+    function setInputReady(ready) {
+      const msgInput = $("msg");
+      const sendBtn = $("send-btn");
+      if (!msgInput || !sendBtn) return;
+      msgInput.disabled = !ready;
+      sendBtn.disabled = !ready;
+      if (!ready && ws != null && ws.readyState !== WebSocket.OPEN) {
+        const t = statusText.textContent || "";
+        if (!t.startsWith("reconnecting")) {
+          statusText.dataset.prevHint = t;
+          setStatus("reconnecting…", "error");
+        }
+      } else if (ready && statusText && statusText.textContent === "reconnecting…") {
+        const prev = statusText.dataset.prevHint;
+        if (prev) setStatus(prev, "connected");
+      }
+    }
+
     function addRow(kind, body, meta) {
       const row = document.createElement("div");
       row.className = "row " + kind;
@@ -575,7 +594,16 @@
         });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
-          throw new Error(body.detail || `HTTP ${res.status}`);
+          let detailMsg;
+          const d = body.detail;
+          if (typeof d === "string") {
+            detailMsg = d;
+          } else if (Array.isArray(d)) {
+            detailMsg = d.map((x) => (typeof x === "object" && x.msg ? x.msg : JSON.stringify(x))).join("; ");
+          } else {
+            detailMsg = `HTTP ${res.status}`;
+          }
+          throw new Error(detailMsg);
         }
         const data = await res.json();
         token = data.token;
@@ -590,14 +618,23 @@
       }
     });
 
+    setInputReady(false);
+
     function connectWs() {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
       const url = `${proto}//${location.host}/ws/chat`;
       setStatus("connecting…");
+      setInputReady(false);
       ws = new WebSocket(url, ["dmac.bearer", token]);
-      ws.addEventListener("open",  () => setStatus("connected", "connected"));
+      ws.addEventListener("open",  () => {
+        setStatus("connected", "connected");
+        setInputReady(true);
+      });
       ws.addEventListener("error", () => setStatus("connection error", "error"));
-      ws.addEventListener("close", (ev) => setStatus(`closed · ${ev.code}`, "error"));
+      ws.addEventListener("close", (ev) => {
+        setInputReady(false);
+        setStatus(`closed · ${ev.code}`, "error");
+      });
       ws.addEventListener("message", (ev) => {
         let frame;
         try { frame = JSON.parse(ev.data); }

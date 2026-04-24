@@ -1171,7 +1171,9 @@ def test_subsequent_user_messages_are_forwarded_to_stdin(
                     break
 
     writes = b"".join(gated.stdin_writes)
-    assert _stdin_user_event("first") in writes
+    first_parsed = json.loads(gated.stdin_writes[0].decode())
+    assert first_parsed["message"]["content"] == "first"
+    assert first_parsed.get("new_session") is True
     assert _stdin_user_event("second") in writes
 
 
