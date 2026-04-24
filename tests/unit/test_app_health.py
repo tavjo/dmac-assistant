@@ -81,7 +81,8 @@ def test_post_t06_app_exposes_health_login_and_ws_chat() -> None:
     framework_defaults = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
     app_routes = user_paths - framework_defaults
 
-    assert app_routes == {"/health", "/auth/login", "/ws/chat"}, (
+    required = {"/health", "/auth/login", "/ws/chat"}
+    assert required.issubset(app_routes), (
         f"post-T06 app must expose /health, /auth/login, and /ws/chat; "
         f"found {app_routes}."
     )

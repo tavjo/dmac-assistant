@@ -409,6 +409,47 @@ def test_invalid_bearer_token_closes_4401(
     assert exc.value.code == 4401
 
 
+def test_subprotocol_bearer_token_authenticates_browser_client(
+    allow_unix_socket_only,
+    configured_env,
+    monkeypatch: pytest.MonkeyPatch,
+    token_store: TokenStore,
+) -> None:
+    """Browsers cannot set Authorization on WS upgrades, so the bridge also
+    accepts a token smuggled via ``Sec-WebSocket-Protocol: dmac.bearer, <tok>``.
+    Valid token -> auth passes (we reach the bad-handshake path, proving
+    4401 did not fire) and the server echoes ``dmac.bearer`` back."""
+    app, _state = _make_app(monkeypatch, token_store=token_store, frames=[None])
+    token = _issued_token(token_store)
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/ws/chat", subprotocols=["dmac.bearer", token]
+        ) as ws:
+            assert ws.accepted_subprotocol == "dmac.bearer"
+            ws.send_json({"type": "not_a_message", "content": "x"})
+            frame = ws.receive_json()
+            assert frame == {"type": "error", "reason": "bad_handshake"}
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_json()
+    assert exc.value.code == 4400
+
+
+def test_subprotocol_bearer_with_bad_token_closes_4401(
+    allow_unix_socket_only,
+    configured_env,
+    monkeypatch: pytest.MonkeyPatch,
+    token_store: TokenStore,
+) -> None:
+    app, _state = _make_app(monkeypatch, token_store=token_store, frames=[None])
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(
+                "/ws/chat", subprotocols=["dmac.bearer", "nope"]
+            ):
+                pass
+    assert exc.value.code == 4401
+
+
 def test_first_frame_must_be_user_message(
     allow_unix_socket_only,
     configured_env,

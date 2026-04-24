@@ -46,6 +46,11 @@ log = logging.getLogger(__name__)
 DEFAULT_IMAGE = "dmac-assistant:poc"
 CWD = "/home/user"
 
+# Subprotocol name used by browser clients that cannot set an Authorization
+# header on the WS upgrade. Client passes ["dmac.bearer", "<token>"] as the
+# subprotocol list; server echoes "dmac.bearer" back on accept().
+BEARER_SUBPROTOCOL = "dmac.bearer"
+
 
 class _InitMalformed(Exception):
     """Raised when a system/init event has no usable ``session_id``.
@@ -63,16 +68,44 @@ class _InitMalformed(Exception):
 # ---------------------------------------------------------------------------
 
 
+def _extract_subprotocol_token(websocket: WebSocket) -> str | None:
+    """Return a bearer token smuggled via the ``Sec-WebSocket-Protocol`` header.
+
+    Browsers cannot set ``Authorization`` on the WS upgrade, so the demo UI
+    passes ``new WebSocket(url, ["dmac.bearer", "<token>"])``. Starlette
+    exposes the requested subprotocols on ``websocket.scope["subprotocols"]``.
+    The token is accepted only when the protocol list begins with
+    ``dmac.bearer`` followed by a non-empty token entry.
+    """
+    subprotocols = websocket.scope.get("subprotocols") or []
+    if len(subprotocols) >= 2 and subprotocols[0] == BEARER_SUBPROTOCOL:
+        token = subprotocols[1]
+        if isinstance(token, str) and token:
+            return token
+    return None
+
+
 def _verify_websocket_identity(
     websocket: WebSocket, token_store: TokenStore
-):
+) -> tuple[Any, str | None]:
+    """Authenticate the upgrade.
+
+    Returns ``(identity, accept_subprotocol)``. ``accept_subprotocol`` is the
+    subprotocol name the server must echo on ``accept()`` when the client
+    authenticated via ``Sec-WebSocket-Protocol``; ``None`` for header auth.
+    """
     authorization = websocket.headers.get("authorization")
-    if not authorization:
-        raise AuthenticationError("missing authorization header")
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        raise AuthenticationError("invalid authorization header")
-    return token_store.verify(token)
+    if authorization:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            raise AuthenticationError("invalid authorization header")
+        return token_store.verify(token), None
+
+    subprotocol_token = _extract_subprotocol_token(websocket)
+    if subprotocol_token is not None:
+        return token_store.verify(subprotocol_token), BEARER_SUBPROTOCOL
+
+    raise AuthenticationError("missing authorization header")
 
 
 def stream_event_to_ws_frames(
@@ -166,12 +199,17 @@ async def chat_ws(
 ) -> None:
     # 1. Authenticate BEFORE accepting the upgrade.
     try:
-        identity = _verify_websocket_identity(websocket, token_store)
+        identity, accept_subprotocol = _verify_websocket_identity(
+            websocket, token_store
+        )
     except AuthenticationError:
         await websocket.close(code=4401)
         return
 
-    await websocket.accept()
+    if accept_subprotocol is not None:
+        await websocket.accept(subprotocol=accept_subprotocol)
+    else:
+        await websocket.accept()
 
     container: Any = None
     attach_socket: Any = None
