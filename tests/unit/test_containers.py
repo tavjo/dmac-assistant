@@ -126,6 +126,8 @@ def test_build_container_spec_uses_base_command_without_resume(identity, config)
     assert spec.command == [
         "claude",
         "--print",
+        "--input-format",
+        "stream-json",
         "--output-format",
         "stream-json",
         "--verbose",
@@ -252,10 +254,18 @@ def test_start_container_passes_expected_run_kwargs(identity, config):
 def test_attach_wraps_socket_in_bridge_attach_socket():
     container = MagicMock()
     raw = MagicMock()
+    log_stream = iter([b'{"type":"system","subtype":"init"}\n'])
     container.attach_socket.return_value = raw
+    container.logs.return_value = log_stream
     wrapped = attach(container)
     assert isinstance(wrapped, BridgeAttachSocket)
     container.attach_socket.assert_called_once()
+    container.logs.assert_called_once_with(
+        stream=True,
+        follow=True,
+        stdout=True,
+        stderr=False,
+    )
     # params include stdin/stdout/stderr/stream
     params = container.attach_socket.call_args.kwargs["params"]
     assert params["stdin"] == 1
@@ -358,6 +368,17 @@ def test_bridge_attach_socket_supports_socketio_wrappers():
     assert wrapped_socket.shutdown_called == 1
     sock.close()
     assert wrapper.closed is True
+
+
+def test_bridge_attach_socket_can_read_from_log_stream():
+    sock = BridgeAttachSocket(
+        _FakeSocket(b""),
+        stdout_stream=iter([b"hello", b"world"]),
+    )
+
+    assert sock.read_frame() == ("stdout", b"hello")
+    assert sock.read_frame() == ("stdout", b"world")
+    assert sock.read_frame() is None
 
 
 def test_stop_and_remove_is_idempotent_on_not_found():

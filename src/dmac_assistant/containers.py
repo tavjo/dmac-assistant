@@ -39,6 +39,8 @@ _REDACTED_ENV_KEYS = frozenset({"NEXTSEEK_PASSWORD", "AWS_BEARER_TOKEN_BEDROCK"}
 _BASE_COMMAND: tuple[str, ...] = (
     "claude",
     "--print",
+    "--input-format",
+    "stream-json",
     "--output-format",
     "stream-json",
     "--verbose",
@@ -110,8 +112,14 @@ class BridgeAttachSocket:
     needs for relaying WebSocket messages.
     """
 
-    def __init__(self, raw_socket: Any) -> None:
+    def __init__(
+        self,
+        raw_socket: Any,
+        *,
+        stdout_stream: Any | None = None,
+    ) -> None:
         self._raw = raw_socket
+        self._stdout_stream = stdout_stream
 
     # ------------------------------------------------------------------ read
     def read_frame(self) -> tuple[str, bytes] | None:
@@ -119,6 +127,8 @@ class BridgeAttachSocket:
 
         Returns ("stdout", payload), ("stderr", payload), or None on EOF.
         """
+        if self._stdout_stream is not None:
+            return self._read_log_chunk()
         header = self._recv_exact(8)
         if header is None:
             return None
@@ -141,9 +151,20 @@ class BridgeAttachSocket:
         self._transport().shutdown(1)
 
     def close(self) -> None:
+        if self._stdout_stream is not None and hasattr(self._stdout_stream, "close"):
+            self._stdout_stream.close()
         self._raw.close()
 
     # ---------------------------------------------------------------- helper
+    def _read_log_chunk(self) -> tuple[str, bytes] | None:
+        try:
+            payload = next(self._stdout_stream)
+        except StopIteration:
+            return None
+        if not isinstance(payload, bytes):
+            payload = bytes(payload)
+        return "stdout", payload
+
     def _recv_exact(self, size: int) -> bytes | None:
         buf = bytearray()
         while len(buf) < size:
@@ -290,15 +311,17 @@ def start_container(
 
 
 def attach(container: Container) -> BridgeAttachSocket:
-    """Attach to the container's stdio and wrap the hijacked socket."""
+    """Open stdin via attach_socket and stdout via the working logs stream."""
     raw = container.attach_socket(
         params={"stdin": 1, "stdout": 1, "stderr": 1, "stream": 1}
     )
-    # docker-py returns a SocketIO-ish object; the underlying socket is usually
-    # under `._sock`. Both attach paths (raw socket / SocketIO) expose recv /
-    # sendall / shutdown / close that BridgeAttachSocket relies on, so we pass
-    # the object through as-is and let the wrapper call its methods.
-    return BridgeAttachSocket(raw)
+    stdout_stream = container.logs(
+        stream=True,
+        follow=True,
+        stdout=True,
+        stderr=False,
+    )
+    return BridgeAttachSocket(raw, stdout_stream=stdout_stream)
 
 
 def stop_and_remove(container: Container, *, timeout: int = 5) -> None:
