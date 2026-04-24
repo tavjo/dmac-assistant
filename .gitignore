@@ -24,4 +24,7 @@ cursor/
 !.env.example
 .coverage
 docs/superpowers/
-
+.playwright-mcp/
+.codex/
+.claude/
+.cursor/
