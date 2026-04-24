@@ -187,10 +187,41 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     return code: the exit status is computed before that hook fires. Moving
     the mutation into ``pytest_sessionfinish`` is the supported path
     (pytest docs: "You can set session.exitstatus in this hook").
+
+    Also sweeps any leftover bridge containers by label. Per-test `finally`
+    blocks miss containers when pytest is SIGKILL'd, the docker daemon
+    hiccups mid-teardown, or a test error path bypasses cleanup. The sweep
+    is label-scoped (`dmac.bridge=1`) so it never touches unrelated
+    containers.
     """
     del exitstatus
     if _live_guard_should_fail():
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    _sweep_orphan_bridge_containers()
+
+
+def _sweep_orphan_bridge_containers() -> None:
+    """Best-effort: force-remove any surviving `dmac.bridge=1` containers."""
+    try:
+        import docker as _docker
+    except ImportError:
+        return
+    try:
+        client = _docker.from_env(timeout=5)
+        client.ping()
+    except Exception:
+        return
+    try:
+        orphans = client.containers.list(
+            all=True, filters={"label": ["dmac.bridge=1"]}
+        )
+    except Exception:
+        return
+    for container in orphans:
+        try:
+            container.remove(force=True)
+        except Exception:  # noqa: BLE001 — best-effort, swallow quietly
+            pass
 
 
 def pytest_terminal_summary(

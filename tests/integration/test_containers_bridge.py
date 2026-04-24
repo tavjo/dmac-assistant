@@ -68,6 +68,16 @@ def live_identity() -> AuthenticatedIdentity:
     )
 
 
+@pytest.mark.skip(
+    reason=(
+        "Obsoleted by T07 live gate. This test drives the docker-py "
+        "`attach_socket` read path which is silent against Docker 29.4.0 "
+        "(see scripts/diagnostics/t07_autopsy/README.md probe C) and "
+        "read_frame() blocks forever on recv() with no timeout. The "
+        "wrapper-plumbing and frame-content contracts are proven by "
+        "tests/integration/test_resume_e2e.py under @live_bridge."
+    )
+)
 def test_live_bridge_attach_demuxes_stdout(live_identity, live_config):
     if not _docker_available():
         pytest.skip("docker daemon not reachable")
