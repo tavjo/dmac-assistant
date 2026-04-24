@@ -14,7 +14,7 @@ from dmac_assistant.auth import (
     router,
     verify_token_dependency,
 )
-from dmac_assistant.config import BridgeConfig, UserRecord
+from dmac_assistant.config import BridgeConfig, ConfigError, UserRecord
 
 
 @pytest.fixture
@@ -244,3 +244,83 @@ def test_login_route_rejects_bad_credentials(
 
     assert response.status_code == 401
     assert response.json()["detail"] == "invalid credentials"
+
+
+def test_login_returns_503_with_detail_on_config_error(
+    allow_unix_socket_only,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    def boom():
+        raise ConfigError("DMAC_USERS is required")
+
+    monkeypatch.setattr("dmac_assistant.auth.load_config", boom)
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_token_store] = lambda: TokenStore()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/auth/login",
+            json={"user_id": "x", "password": "y"},
+        )
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail.startswith("bridge misconfigured:")
+    assert "DMAC_USERS" in detail
+
+
+def test_login_returns_503_when_config_error_message_empty(
+    allow_unix_socket_only,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    def boom():
+        raise ConfigError("")
+
+    monkeypatch.setattr("dmac_assistant.auth.load_config", boom)
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_token_store] = lambda: TokenStore()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/auth/login",
+            json={"user_id": "x", "password": "y"},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "bridge misconfigured: "
+
+
+def test_other_endpoints_unaffected_by_config_error(
+    allow_unix_socket_only,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GET /health stays 200 when login would fail on ConfigError."""
+    from fastapi.testclient import TestClient
+
+    from dmac_assistant.app import app as bridge_app
+
+    def boom():
+        raise ConfigError("DMAC_USERS is required")
+
+    monkeypatch.setattr("dmac_assistant.auth.load_config", boom)
+
+    with TestClient(bridge_app) as client:
+        health = client.get("/health")
+        login = client.post(
+            "/auth/login",
+            json={"user_id": "alice", "password": "s3cret-alice"},
+        )
+
+    assert health.status_code == 200
+    assert health.json() == {"status": "ok"}
+    assert login.status_code == 503
