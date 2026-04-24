@@ -143,10 +143,12 @@ def test_build_container_spec_appends_resume_tokens_in_order(identity, config):
         session_id="abc-123",
         bridge_env=BRIDGE_ENV,
     )
-    assert spec.command[-4:] == [
+    # Claude 2.1.92: `--resume <uuid>` takes the session id as value.
+    # Combining `--session-id` with `--resume` is rejected unless
+    # `--fork-session` is set, so the bridge must use the value form.
+    assert spec.command[-3:] == [
         "--dangerously-skip-permissions",
         "--resume",
-        "--session-id",
         "abc-123",
     ]
 
@@ -389,11 +391,17 @@ def test_stop_and_remove_is_idempotent_on_not_found():
     stop_and_remove(container)
 
 
-def test_stop_and_remove_reraises_unrelated_api_errors():
+def test_stop_and_remove_proceeds_to_remove_when_stop_fails():
+    # Teardown invariant: `claude --input-format stream-json` blocks on stdin,
+    # so SIGTERM via container.stop() can time out and raise APIError. The
+    # remove(force=True) call MUST still run — it sends SIGKILL and is the
+    # real teardown primitive. Swallow stop() APIErrors, proceed to remove.
     container = MagicMock()
-    container.stop.side_effect = APIError("daemon blew up")
-    with pytest.raises(APIError):
-        stop_and_remove(container)
+    container.stop.side_effect = APIError("SIGTERM timed out")
+    container.remove.return_value = None
+    stop_and_remove(container)  # no raise
+    container.stop.assert_called_once()
+    container.remove.assert_called_once_with(force=True)
 
 
 def test_stop_and_remove_reraises_api_error_from_remove():

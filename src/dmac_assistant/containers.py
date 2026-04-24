@@ -8,7 +8,7 @@ Owns four things (see task-05-containers spec):
 
 DD-07: project mounts are `ro`; `/data/scratch` and `/home/user/.claude` are `rw`.
 DD-13: every run uses working_dir="/home/user" so resume targets the correct cwd.
-DD-14: T05 only appends `--resume --session-id <uuid>`; mismatch detection is T06.
+DD-14: T05 only appends `--resume <uuid>`; mismatch detection is T06.
 R-02 split: T05 proves mount assembly; T07 does the live EROFS assertion.
 R-03: ContainerSpec.__repr__ redacts sensitive env keys by name.
 """
@@ -243,7 +243,13 @@ def _build_environment(
 def _build_command(session_id: str | None) -> list[str]:
     command = list(_BASE_COMMAND)
     if session_id:
-        command.extend(["--resume", "--session-id", session_id])
+        # Claude 2.1.92: `--resume <uuid>` takes the session id as its value.
+        # `--session-id` is a separate flag (for pre-assigning a UUID to a
+        # NEW session) and cannot be combined with --resume unless
+        # --fork-session is also set; combining them emits
+        # "--session-id can only be used with --continue or --resume if
+        # --fork-session is also specified" and exits nonzero.
+        command.extend(["--resume", session_id])
     return command
 
 
@@ -327,20 +333,27 @@ def attach(container: Container) -> BridgeAttachSocket:
 def stop_and_remove(container: Container, *, timeout: int = 5) -> None:
     """Best-effort stop + remove.
 
-    Swallows only genuine "not found" errors; all other APIError traffic is
-    re-raised so that operational failures are visible.
+    `remove(force=True)` MUST run even if `stop()` fails. `claude` in
+    `--input-format stream-json` mode blocks on stdin, which means SIGTERM
+    frequently times out and docker-py raises an APIError — if that short-
+    circuits the remove call, the container is left alive and the next
+    resume reconnect sees a stale sibling under the same label.
+    `remove(force=True)` sends SIGKILL unconditionally and is the real
+    teardown primitive.
     """
     try:
         container.stop(timeout=timeout)
     except NotFound:
         pass
-    except APIError:
-        raise
+    except APIError as exc:
+        # Log only the exception type (R-03: APIError body may echo env).
+        log.warning("container.stop failed: %s", type(exc).__name__)
     try:
         container.remove(force=True)
     except NotFound:
         pass
-    except APIError:
+    except APIError as exc:
+        log.error("container.remove failed: %s", type(exc).__name__)
         raise
 
 
