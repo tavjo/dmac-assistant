@@ -29,6 +29,7 @@ IMAGE = "dmac-assistant:poc"
 BRIDGE_ENV = {
     "AWS_REGION": "us-east-1",
     "AWS_BEARER_TOKEN_BEDROCK": "bearer-abc",
+    "NEXTSEEK_URL": "https://nextseek-dev.example.mit.edu",
 }
 
 
@@ -125,6 +126,8 @@ def test_build_container_spec_uses_base_command_without_resume(identity, config)
     assert spec.command == [
         "claude",
         "--print",
+        "--input-format",
+        "stream-json",
         "--output-format",
         "stream-json",
         "--verbose",
@@ -156,6 +159,10 @@ def test_build_container_spec_injects_bridge_and_user_env(identity, config):
     assert spec.environment["NEXTSEEK_PASSWORD"] == "s3cret"
     assert spec.environment["AWS_REGION"] == "us-east-1"
     assert spec.environment["AWS_BEARER_TOKEN_BEDROCK"] == "bearer-abc"
+    assert (
+        spec.environment["NEXTSEEK_URL"]
+        == "https://nextseek-dev.example.mit.edu"
+    )
     assert spec.environment["CLAUDE_CODE_USE_BEDROCK"] == "1"
 
 
@@ -247,10 +254,18 @@ def test_start_container_passes_expected_run_kwargs(identity, config):
 def test_attach_wraps_socket_in_bridge_attach_socket():
     container = MagicMock()
     raw = MagicMock()
+    log_stream = iter([b'{"type":"system","subtype":"init"}\n'])
     container.attach_socket.return_value = raw
+    container.logs.return_value = log_stream
     wrapped = attach(container)
     assert isinstance(wrapped, BridgeAttachSocket)
     container.attach_socket.assert_called_once()
+    container.logs.assert_called_once_with(
+        stream=True,
+        follow=True,
+        stdout=True,
+        stderr=False,
+    )
     # params include stdin/stdout/stderr/stream
     params = container.attach_socket.call_args.kwargs["params"]
     assert params["stdin"] == 1
@@ -286,6 +301,19 @@ class _FakeSocket:
 
     def close(self) -> None:
         self.closed = True
+
+
+class _SocketIOWrapper:
+    def __init__(self, sock: _FakeSocket) -> None:
+        self._sock = sock
+        self.closed = False
+
+    def read(self, n: int) -> bytes:
+        return self._sock.recv(n)
+
+    def close(self) -> None:
+        self.closed = True
+        self._sock.close()
 
 
 def test_bridge_attach_socket_demuxes_stdout_frame():
@@ -326,6 +354,31 @@ def test_bridge_attach_socket_stdin_helpers():
     assert fake.shutdown_called == 1
     sock.close()
     assert fake.closed is True
+
+
+def test_bridge_attach_socket_supports_socketio_wrappers():
+    wrapped_socket = _FakeSocket(_make_frame(1, b"hello"))
+    wrapper = _SocketIOWrapper(wrapped_socket)
+    sock = BridgeAttachSocket(wrapper)
+
+    assert sock.read_frame() == ("stdout", b"hello")
+    sock.send_stdin(b"hi")
+    assert wrapped_socket.sent == b"hi"
+    sock.close_stdin()
+    assert wrapped_socket.shutdown_called == 1
+    sock.close()
+    assert wrapper.closed is True
+
+
+def test_bridge_attach_socket_can_read_from_log_stream():
+    sock = BridgeAttachSocket(
+        _FakeSocket(b""),
+        stdout_stream=iter([b"hello", b"world"]),
+    )
+
+    assert sock.read_frame() == ("stdout", b"hello")
+    assert sock.read_frame() == ("stdout", b"world")
+    assert sock.read_frame() is None
 
 
 def test_stop_and_remove_is_idempotent_on_not_found():
