@@ -1124,3 +1124,174 @@ def test_error_frames_and_logs_do_not_contain_canaries(
     streams.extend(record.getMessage() for record in caplog.records)
     hits = scan_for_canaries(streams, [], ALL_CANARIES + [CANARY_SECRET])
     assert hits == [], f"canary leak detected: {hits}"
+
+
+def test_relay_loop_exception_does_not_leak_canaries_in_logs_or_frames(
+    allow_unix_socket_only,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    bridge_config: BridgeConfig,
+    tmp_path: Path,
+) -> None:
+    """R-03: relay-loop `log.exception` path must not leak env/credentials.
+
+    Drives the bridge PAST container-start and PAST attach into the relay
+    loop, then injects an exception whose args carry ``CANARY_SECRET``.
+    Asserts neither caplog records nor WS frames contain any canary.
+    """
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", CANARY_SECRET)
+    monkeypatch.setenv(
+        "DMAC_USERS",
+        json.dumps(
+            {
+                "alice": {
+                    "password": ALL_CANARIES[2],
+                    "projects": ["proj-a"],
+                }
+            }
+        ),
+    )
+    monkeypatch.setenv("DMAC_CLAUDE_USERS_ROOT", str(bridge_config.claude_users_root))
+    monkeypatch.setenv("DMAC_SCRATCH_ROOT", str(bridge_config.scratch_root))
+    monkeypatch.setenv("DMAC_DROPBOX_ROOT", str(bridge_config.dropbox_root))
+
+    poisoned_config = BridgeConfig(
+        users={
+            "alice": UserRecord(
+                password=ALL_CANARIES[2], projects=["proj-a"]
+            )
+        },
+        claude_users_root=bridge_config.claude_users_root,
+        scratch_root=bridge_config.scratch_root,
+        dropbox_root=bridge_config.dropbox_root,
+        bridge_host="127.0.0.1",
+        bridge_port=8000,
+    )
+    store = TokenStore()
+    store.issue(user_id="alice", password=ALL_CANARIES[2], config=poisoned_config)
+
+    # Build an attach socket whose read_frame raises with CANARY_SECRET in
+    # the exception args — this is exactly the kind of APIError body that
+    # would leak if we used `log.exception` / `str(exc)`.
+    from dmac_assistant import ws as ws_module
+
+    class _LeakySocket(_FakeAttachSocket):
+        def read_frame(self) -> tuple[str, bytes] | None:
+            raise RuntimeError(f"boom {CANARY_SECRET}")
+
+    container = _FakeContainer()
+    sock = _LeakySocket([])
+    stop_calls: list[Any] = []
+
+    async def _fake_start(identity, *, image, session_id, bridge_env, config):
+        return container
+
+    async def _fake_attach(c):
+        return sock
+
+    async def _fake_stop(c, *, timeout: int = 5):
+        stop_calls.append(c)
+
+    monkeypatch.setattr(ws_module, "async_start_container", _fake_start)
+    monkeypatch.setattr(ws_module, "async_attach", _fake_attach)
+    monkeypatch.setattr(ws_module, "async_stop_and_remove", _fake_stop)
+
+    app = FastAPI()
+    app.include_router(auth_router)
+    app.include_router(ws_module.router, prefix="/ws", tags=["ws"])
+    app.dependency_overrides[get_token_store] = lambda: store
+
+    ws_frames_seen: list[dict[str, Any]] = []
+    with caplog.at_level(logging.DEBUG, logger="dmac_assistant.ws"):
+        with TestClient(app) as client:
+            try:
+                with client.websocket_connect(
+                    "/ws/chat",
+                    headers={"Authorization": f"Bearer {_issued_token(store)}"},
+                ) as ws:
+                    ws.send_json(
+                        {"type": "user_message", "content": "hi", "new_session": True}
+                    )
+                    while True:
+                        try:
+                            ws_frames_seen.append(ws.receive_json())
+                        except WebSocketDisconnect:
+                            break
+            except WebSocketDisconnect:
+                pass
+
+    # Scan both WS frame payloads AND every caplog record (message, args,
+    # exc_text) for the canaries. If a future maintainer flips back to
+    # `log.exception`, exc_text will pick up the traceback text.
+    streams: list[bytes | str] = [json.dumps(f) for f in ws_frames_seen]
+    for record in caplog.records:
+        streams.append(record.getMessage())
+        if record.exc_text:
+            streams.append(record.exc_text)
+        for arg in record.args or ():
+            streams.append(str(arg))
+    hits = scan_for_canaries(streams, [], ALL_CANARIES + [CANARY_SECRET])
+    assert hits == [], f"relay-loop canary leak detected: {hits}"
+    # Confirm we actually reached the relay loop (read_frame raised).
+    _wait_until(lambda: bool(stop_calls))
+    assert stop_calls, "relay loop must run cleanup after the exception"
+
+
+def test_malformed_init_event_without_session_id_emits_stream_json_error_and_closes_1011(
+    allow_unix_socket_only,
+    configured_env,
+    monkeypatch: pytest.MonkeyPatch,
+    token_store: TokenStore,
+) -> None:
+    """Spec §3: session_started MUST precede assistant/tool frames.
+
+    A system/init event that carries no `session_id` is a stream-contract
+    violation by the container. The bridge must surface this as a
+    stream_json_error, close 1011, run cleanup, and NOT forward any
+    subsequent assistant/tool frames.
+    """
+    malformed_init = (
+        json.dumps(
+            {
+                "type": "system",
+                "subtype": "init",
+                # intentionally NO session_id
+                "model": "claude-sonnet-4-6",
+                "cwd": "/home/user",
+                "tools": [],
+            }
+        )
+        + "\n"
+    ).encode()
+
+    frames: list[tuple[str, bytes] | None] = [
+        ("stdout", malformed_init),
+        ("stdout", _assistant_text_event("should not be forwarded")),
+        ("stdout", _result_event()),
+        None,
+    ]
+    app, state = _make_app(monkeypatch, token_store=token_store, frames=frames)
+    token = _issued_token(token_store)
+
+    received: list[dict[str, Any]] = []
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(
+                "/ws/chat", headers={"Authorization": f"Bearer {token}"}
+            ) as ws:
+                ws.send_json(
+                    {"type": "user_message", "content": "hi", "new_session": True}
+                )
+                while True:
+                    received.append(ws.receive_json())
+    assert exc.value.code == 1011
+
+    types_seen = [f["type"] for f in received]
+    reasons = [f.get("reason") for f in received if f.get("type") == "error"]
+    assert "stream_json_error" in reasons, received
+    assert "session_started" not in types_seen, received
+    assert "assistant_message" not in types_seen, received
+    # cleanup must run
+    _wait_until(lambda: bool(state["stop_calls"]))
+    assert state["stop_calls"]

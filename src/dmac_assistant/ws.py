@@ -47,6 +47,17 @@ DEFAULT_IMAGE = "dmac-assistant:poc"
 CWD = "/home/user"
 
 
+class _InitMalformed(Exception):
+    """Raised when a system/init event has no usable ``session_id``.
+
+    The message is intentionally static so it cannot carry dynamic content
+    (env values, stream bytes, etc.) into any log record.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("init event missing session_id")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -297,8 +308,32 @@ async def chat_ws(
         raise
     except WebSocketDisconnect:  # pragma: no cover — outer race
         pass
-    except Exception:
-        log.exception("unhandled error in ws bridge")
+    except _InitMalformed:
+        # Stream-contract violation by the container. Message is static so
+        # it cannot carry canaries; type name is safe.
+        log.error("ws bridge: malformed init event (no session_id)", exc_info=False)
+        await _send_json_safe(
+            websocket,
+            {
+                "type": "error",
+                "reason": "stream_json_error",
+                "detail": "init event missing session_id",
+            },
+        )
+        if websocket.client_state == WebSocketState.CONNECTED:
+            try:
+                await websocket.close(code=1011)
+            except Exception:  # pragma: no cover — close-during-shutdown race
+                pass
+    except Exception as exc:
+        # R-03: never log str(exc)/repr(exc)/exc.args/exc_info=True — docker
+        # APIError bodies can echo env values including AWS_BEARER_TOKEN_BEDROCK
+        # and the user's NExtSEEK password. Only the exception type name is safe.
+        log.error(
+            "unhandled error in ws bridge: %s",
+            type(exc).__name__,
+            exc_info=False,
+        )
         await _send_json_safe(
             websocket, {"type": "error", "reason": "internal"}
         )
@@ -344,30 +379,33 @@ async def _dispatch_event(
             and payload.get("subtype") == "init"
         ):
             actual = parser.session_id or payload.get("session_id")
-            if isinstance(actual, str):
-                current_session_id = actual
-                if (
-                    requested_session_id is not None
-                    and requested_session_id != actual
-                ):
-                    await _send_json_safe(
-                        websocket,
-                        {
-                            "type": "error",
-                            "reason": "resume_failed",
-                            "requested": requested_session_id,
-                            "actual": actual,
-                        },
-                    )
-                if not session_started_emitted:
-                    await _send_json_safe(
-                        websocket,
-                        {
-                            "type": "session_started",
-                            "session_id": actual,
-                        },
-                    )
-                    session_started_emitted = True
+            if not isinstance(actual, str) or not actual:
+                # Stream-contract violation: init event without session_id.
+                # Surfaced to the outer relay loop which owns WS lifecycle.
+                raise _InitMalformed()
+            current_session_id = actual
+            if (
+                requested_session_id is not None
+                and requested_session_id != actual
+            ):
+                await _send_json_safe(
+                    websocket,
+                    {
+                        "type": "error",
+                        "reason": "resume_failed",
+                        "requested": requested_session_id,
+                        "actual": actual,
+                    },
+                )
+            if not session_started_emitted:
+                await _send_json_safe(
+                    websocket,
+                    {
+                        "type": "session_started",
+                        "session_id": actual,
+                    },
+                )
+                session_started_emitted = True
             return session_started_emitted, session_ended_emitted, current_session_id
 
     # All other events (assistant, tool_use, result, parser errors).
