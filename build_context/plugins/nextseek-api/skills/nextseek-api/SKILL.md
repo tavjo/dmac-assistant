@@ -241,7 +241,7 @@ nextseek-spec --env prod --operation-id AdvancedSearchSamples --print-example
 
 ```
 Write-safety check: I'm about to execute POST /samples/advanced_search/ with path_params={} body={"filters":[{"field":"sample_type","op":"eq","value":"D.SEQ"},{"field":"project_id","op":"eq","value":"SRP"}]}
-This will modify live data. Type "confirm" to proceed, anything else to abort.
+This is a non-GET call and may modify live data (advanced_search is read-only on the server but still gated conservatively). Type "confirm" to proceed, anything else to abort.
 ```
 
 Wait for the user's next plain-text `user_message`. Only add `--confirmed-write` if that message contains the literal substring `confirm` (case-insensitive). Otherwise reply `Aborted per user; no call made.` and return to the query loop.
@@ -431,7 +431,7 @@ Protocol:
 
    ```
    Write-safety check: I'm about to execute {METHOD} {endpoint} with path_params={...} body={...}
-   This will modify live data. Type "confirm" to proceed, anything else to abort.
+   This is a non-GET call and may modify live data (some endpoints like advanced_search are read-only on the server but still gated conservatively). Type "confirm" to proceed, anything else to abort.
    ```
 
 2. Wait for the user's next plain-text `user_message`.
