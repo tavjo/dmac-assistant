@@ -78,3 +78,20 @@ def test_model_dump_redacts_gcp_api_key(tmp_path):
         bridge_env={"GCP_API_KEY": "secret-gcp-value"})
     dumped = spec.model_dump()
     assert dumped["environment"]["GCP_API_KEY"] == "<REDACTED>"
+
+
+def test_data_output_mounted_ro(tmp_path):
+    spec = build_container_spec(_identity(), _config(tmp_path),
+        image="t:1", session_id=None, bridge_env={})
+    expected_host = str(tmp_path / "output" / "alice")
+    assert expected_host in spec.volumes
+    assert spec.volumes[expected_host] == {"bind": "/data/output", "mode": "ro"}
+
+
+def test_no_mount_path_collisions(tmp_path):
+    spec = build_container_spec(_identity(), _config(tmp_path),
+        image="t:1", session_id=None, bridge_env={})
+    binds = [v["bind"] for v in spec.volumes.values()]
+    assert "/data/output" in binds
+    assert "/data/scratch" in binds
+    assert len(binds) == len(set(binds))

@@ -56,6 +56,7 @@ _CONTAINER_WORKING_DIR = "/home/user"
 _CONTAINER_CLAUDE_HOME = "/home/user/.claude"
 _CONTAINER_SCRATCH = "/data/scratch"
 _CONTAINER_PROJECTS_PREFIX = "/data/projects"
+_CONTAINER_OUTPUT = "/data/output"
 
 
 class ContainerSpec(BaseModel):
@@ -224,6 +225,10 @@ def _build_volumes(
     volumes[str(config.claude_users_root / identity.user_id / ".claude")] = {
         "bind": _CONTAINER_CLAUDE_HOME,
         "mode": "rw",
+    }
+    volumes[str(config.output_root / identity.user_id)] = {
+        "bind": _CONTAINER_OUTPUT,
+        "mode": "ro",
     }
     return volumes
 
