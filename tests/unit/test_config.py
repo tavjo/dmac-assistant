@@ -42,6 +42,7 @@ def _set_good_env(
     claude_users_root: str = "./var/claude-users",
     scratch_root: str = "./var/scratch",
     dropbox_root: str = "/tmp/dropbox-fake",
+    output_root: str = "/tmp/output-fake",
     bridge_host: str = "127.0.0.1",
     bridge_port: str = "8000",
 ) -> None:
@@ -49,6 +50,7 @@ def _set_good_env(
     monkeypatch.setenv("DMAC_CLAUDE_USERS_ROOT", claude_users_root)
     monkeypatch.setenv("DMAC_SCRATCH_ROOT", scratch_root)
     monkeypatch.setenv("DMAC_DROPBOX_ROOT", dropbox_root)
+    monkeypatch.setenv("DMAC_OUTPUT_ROOT", output_root)
     monkeypatch.setenv("DMAC_BRIDGE_HOST", bridge_host)
     monkeypatch.setenv("DMAC_BRIDGE_PORT", bridge_port)
 
@@ -97,6 +99,7 @@ def test_bridge_config_rejects_empty_users_directly() -> None:
             claude_users_root="./var/claude-users",
             scratch_root="./var/scratch",
             dropbox_root="./dropbox",
+            output_root="./output",
         )
 
 

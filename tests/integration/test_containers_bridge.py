@@ -51,13 +51,15 @@ def live_config(tmp_path) -> BridgeConfig:
     scratch = tmp_path / "scratch" / "alice"
     claude_root = tmp_path / "claude-users" / "alice" / ".claude"
     project = dropbox / "proj-a"
-    for p in (project, scratch, claude_root):
+    output = tmp_path / "output"
+    for p in (project, scratch, claude_root, output):
         p.mkdir(parents=True, exist_ok=True)
     return BridgeConfig(
         users={"alice": UserRecord(password="s3cret", projects=["proj-a"])},
         claude_users_root=tmp_path / "claude-users",
         scratch_root=tmp_path / "scratch",
         dropbox_root=dropbox,
+        output_root=output,
     )
 
 

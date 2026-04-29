@@ -38,7 +38,8 @@ def config(tmp_path) -> BridgeConfig:
     dropbox = tmp_path / "Dropbox"
     scratch = tmp_path / "scratch"
     claude_users = tmp_path / "claude-users"
-    for p in (dropbox, scratch, claude_users):
+    output = tmp_path / "output"
+    for p in (dropbox, scratch, claude_users, output):
         p.mkdir(parents=True, exist_ok=True)
     return BridgeConfig(
         users={
@@ -47,6 +48,7 @@ def config(tmp_path) -> BridgeConfig:
         claude_users_root=claude_users,
         scratch_root=scratch,
         dropbox_root=dropbox,
+        output_root=output,
     )
 
 
@@ -85,13 +87,15 @@ def test_build_container_spec_preserves_space_containing_project_paths(tmp_path)
     dropbox = tmp_path / "Dropbox With Spaces"
     scratch = tmp_path / "scratch"
     claude_users = tmp_path / "claude-users"
-    for p in (dropbox, scratch, claude_users):
+    output = tmp_path / "output"
+    for p in (dropbox, scratch, claude_users, output):
         p.mkdir(parents=True, exist_ok=True)
     cfg = BridgeConfig(
         users={"alice": UserRecord(password="s3cret", projects=["proj with space"])},
         claude_users_root=claude_users,
         scratch_root=scratch,
         dropbox_root=dropbox,
+        output_root=output,
     )
     ident = AuthenticatedIdentity(
         user_id="alice", password=SecretStr("s3cret"), projects=["proj with space"]
