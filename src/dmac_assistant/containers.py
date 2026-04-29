@@ -34,7 +34,12 @@ log = logging.getLogger(__name__)
 # private _USER_ID_RE, so we mirror the anchored pattern here rather than
 # importing a nonexistent public symbol.
 _USER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
-_REDACTED_ENV_KEYS = frozenset({"NEXTSEEK_PASSWORD", "AWS_BEARER_TOKEN_BEDROCK"})
+_REDACTED_ENV_KEYS = frozenset({
+    "NEXTSEEK_PASSWORD",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "NEO4J_PASSWORD",
+    "GCP_API_KEY",
+})
 
 _BASE_COMMAND: tuple[str, ...] = (
     "claude",
@@ -237,6 +242,9 @@ def _build_environment(
         env["AWS_BEARER_TOKEN_BEDROCK"] = bridge_env["AWS_BEARER_TOKEN_BEDROCK"]
     if "NEXTSEEK_URL" in bridge_env:
         env["NEXTSEEK_URL"] = bridge_env["NEXTSEEK_URL"]
+    for forwarded_key in ("GCP_API_KEY", "NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD"):
+        if forwarded_key in bridge_env:
+            env[forwarded_key] = bridge_env[forwarded_key]
     return env
 
 
