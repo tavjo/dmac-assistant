@@ -203,3 +203,71 @@ def test_plugin_discovery_survives_ingestion(tmp_path: Path) -> None:
     assert final.count(BEGIN_MARKER) == 1
     assert final.count(END_MARKER) == 1
     assert final.index(plugin_discovery) < final.index(BEGIN_MARKER)
+
+
+def test_python_314_install_precedes_uv_sync() -> None:
+    """Plan A · T0 R4 ordering: `uv python install 3.14` MUST appear before
+    any `uv sync` or `uv pip install` line in the Dockerfile.
+
+    R4-NEW-4 directive: compare CHARACTER OFFSETS, not line indices, so a
+    future maintainer who chains `uv python install 3.14 && uv sync` onto
+    the same logical RUN line still passes. The assertion is "first
+    occurrence of `uv python install 3.14` precedes first occurrence of
+    `uv sync` or `uv pip install` in the file as a whole."
+    """
+    import re
+
+    dockerfile = REPO_ROOT / "Dockerfile"
+    text = dockerfile.read_text(encoding="utf-8")
+
+    install_match = re.search(r"uv python install 3\.14", text)
+    assert install_match is not None, (
+        "Dockerfile is missing `uv python install 3.14`. Plan A T0 R4 "
+        "requires this line before any uv sync / uv pip install."
+    )
+
+    consumer_match = re.search(r"uv (sync|pip install)", text)
+    if consumer_match is not None:
+        assert install_match.start() < consumer_match.start(), (
+            f"`uv python install 3.14` (offset {install_match.start()}) "
+            f"appears AFTER first `uv {consumer_match.group(1)}` "
+            f"(offset {consumer_match.start()}). Plan A T0 R4 ordering "
+            "invariant violated."
+        )
+
+
+def test_python_314_symlink_uses_uv_python_find_not_glob() -> None:
+    """Plan A · T0 R4 (resolves R3-2): the symlink target MUST come from
+    `uv python find 3.14`, not a glob like `/opt/uv/python/cpython-3.14*`.
+    """
+    import re
+
+    dockerfile = REPO_ROOT / "Dockerfile"
+    text = dockerfile.read_text(encoding="utf-8")
+
+    assert "uv python find 3.14" in text, (
+        "Dockerfile must invoke `uv python find 3.14` to resolve the "
+        "interpreter path deterministically. R3-2: glob-based ENV is "
+        "non-deterministic and forbidden."
+    )
+    assert re.search(r"cpython-3\.14\*", text) is None, (
+        "Dockerfile contains a glob over `cpython-3.14*`. R3-2 forbids "
+        "glob expansion in ENV/RUN — use `$(uv python find 3.14)` instead."
+    )
+
+
+def test_dmac_python_env_set_to_well_known_path() -> None:
+    """Plan A · T0 R4: `ENV DMAC_PYTHON` MUST point at the well-known
+    symlink path `/usr/local/bin/python3.14`, not at an opaque uv path.
+    """
+    import re
+
+    dockerfile = REPO_ROOT / "Dockerfile"
+    text = dockerfile.read_text(encoding="utf-8")
+
+    match = re.search(r"^ENV\s+DMAC_PYTHON=(\S+)", text, flags=re.MULTILINE)
+    assert match is not None, "Dockerfile missing `ENV DMAC_PYTHON=...`."
+    assert match.group(1) == "/usr/local/bin/python3.14", (
+        f"DMAC_PYTHON points at {match.group(1)!r}; T0 R4 requires "
+        "`/usr/local/bin/python3.14` so callers don't depend on uv internals."
+    )
