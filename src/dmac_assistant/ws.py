@@ -26,6 +26,7 @@ import contextlib
 import json
 import logging
 import os
+import re as _re
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,25 @@ CWD = "/home/user"
 # header on the WS upgrade. Client passes ["dmac.bearer", "<token>"] as the
 # subprotocol list; server echoes "dmac.bearer" back on accept().
 BEARER_SUBPROTOCOL = "dmac.bearer"
+
+# T3 / H3: anchored user_id pattern used by ensure_user_output_dir. Mirrors
+# the defense-in-depth pattern in containers.py (config.py does not export
+# _USER_ID_RE publicly; see R-08).
+_USER_ID_RE_OUTPUT = _re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
+def ensure_user_output_dir(output_root: Path, user_id: str) -> Path:
+    """Idempotently create <output_root>/<user_id>/.
+
+    Called at session start before the container is launched, so the
+    bind mount has a real source. H3 — without this the Docker API
+    fails with 'invalid mount config: bind source path does not exist'.
+    """
+    if not _USER_ID_RE_OUTPUT.fullmatch(user_id):
+        raise ValueError(f"invalid user_id: {user_id!r}")
+    target = output_root / user_id
+    target.mkdir(parents=True, exist_ok=True)
+    return target
 
 
 class _InitMalformed(Exception):
@@ -278,6 +298,11 @@ async def chat_ws(
             ),
             "NEXTSEEK_URL": os.environ.get("NEXTSEEK_URL", ""),
         }
+        # H3 / T3: ensure the per-user host dirs exist BEFORE Docker creates
+        # the bind mounts. Without this, the first login for a brand-new user
+        # fails with `invalid mount config: bind source path does not exist`.
+        ensure_user_output_dir(config.output_root, identity.user_id)  # pragma: no cover  # T6 covers this end-to-end
+        (config.scratch_root / identity.user_id).mkdir(parents=True, exist_ok=True)  # pragma: no cover  # T6 covers this end-to-end
         try:
             start_task = asyncio.create_task(
                 async_start_container(
