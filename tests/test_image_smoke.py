@@ -324,3 +324,58 @@ def test_dockerfile_cmd_has_verbose_flag() -> None:
     assert '"--print"' in cmd_args, (
         f"Dockerfile CMD is missing --print mode: {cmd_args!r}"
     )
+
+
+def test_python_resolves_to_314(dummy_env: dict[str, str]) -> None:
+    """Plan A · T0: bare `python` MUST resolve to 3.14 inside the image."""
+    with make_container(
+        image=IMAGE_TAG,
+        mounts={},
+        env=dummy_env,
+        command=["-c", "python -c 'import sys; print(sys.version_info[:2])'"],
+        entrypoint_override=["sh"],
+    ) as container:
+        exit_code = container.wait()["StatusCode"]
+        logs = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
+
+    assert exit_code == 0, f"`python` invocation failed: {logs!r}"
+    assert "(3, 14)" in logs, (
+        f"`python` did not resolve to 3.14; got logs={logs!r}. "
+        "Plan A T0 R4 PATH-first symlink invariant violated."
+    )
+
+
+def test_python314_alias_resolves_to_314(dummy_env: dict[str, str]) -> None:
+    """Plan A · T0: explicit `python3.14` alias MUST also resolve to 3.14."""
+    with make_container(
+        image=IMAGE_TAG,
+        mounts={},
+        env=dummy_env,
+        command=["-c", "python3.14 -c 'import sys; print(sys.version_info[:2])'"],
+        entrypoint_override=["sh"],
+    ) as container:
+        exit_code = container.wait()["StatusCode"]
+        logs = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
+
+    assert exit_code == 0, f"`python3.14` invocation failed: {logs!r}"
+    assert "(3, 14)" in logs, f"`python3.14` did not resolve to 3.14; logs={logs!r}"
+
+
+def test_dmac_python_env_resolves_to_314(dummy_env: dict[str, str]) -> None:
+    """Plan A · T0: `$DMAC_PYTHON` MUST be a usable interpreter path."""
+    with make_container(
+        image=IMAGE_TAG,
+        mounts={},
+        env=dummy_env,
+        command=[
+            "-c",
+            '"$DMAC_PYTHON" -c '
+            "'import sys; assert sys.version_info >= (3, 14); print(\"DMAC_PYTHON_OK\")'",
+        ],
+        entrypoint_override=["sh"],
+    ) as container:
+        exit_code = container.wait()["StatusCode"]
+        logs = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
+
+    assert exit_code == 0, f"$DMAC_PYTHON invocation failed: {logs!r}"
+    assert "DMAC_PYTHON_OK" in logs, f"$DMAC_PYTHON path not 3.14; logs={logs!r}"

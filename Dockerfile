@@ -17,6 +17,18 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
 RUN npm install -g @anthropic-ai/claude-code@2.1.92
 
+# Plan A · T0 R4: pin uv-managed CPython 3.14 BEFORE any downstream
+# dependency-install or run step. Two well-known symlinks make `python`
+# and `python3.14` resolve to the managed interpreter via PATH;
+# $DMAC_PYTHON is exposed for callers that prefer an explicit absolute path.
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+RUN mkdir -p /opt/uv-python \
+    && uv python install 3.14 \
+    && ln -sfn "$(uv python find 3.14)" /usr/local/bin/python3.14 \
+    && ln -sfn /usr/local/bin/python3.14 /usr/local/bin/python \
+    && chmod -R a+rX /opt/uv-python
+ENV DMAC_PYTHON=/usr/local/bin/python3.14
+
 RUN useradd -m -u 1001 -s /bin/sh user
 
 COPY build_context/plugins/ /app/plugins/
