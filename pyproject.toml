@@ -33,3 +33,5 @@ markers = [
     "live_docker: marks opt-in Docker-backed tests that do not require live service credentials",
     "slow: marks slower local Docker build tests",
 ]
+
+# T7 path-decision: PATH_B image-only — chat_nextseek install deferred to T8 (R4-NEW-5)
