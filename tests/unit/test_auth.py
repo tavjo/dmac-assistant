@@ -44,6 +44,7 @@ def bridge_config() -> BridgeConfig:
         claude_users_root="/tmp/claude-users",
         scratch_root="/tmp/scratch",
         dropbox_root="/tmp/dropbox",
+        output_root="/tmp/output",
         bridge_host="127.0.0.1",
         bridge_port=8000,
     )

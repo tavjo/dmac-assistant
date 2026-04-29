@@ -63,6 +63,7 @@ def bridge_config(tmp_path: Path) -> BridgeConfig:
         claude_users_root=tmp_path / "claude-users",
         scratch_root=tmp_path / "scratch",
         dropbox_root=tmp_path / "dropbox",
+        output_root=tmp_path / "output",
         bridge_host="127.0.0.1",
         bridge_port=8000,
     )
@@ -87,6 +88,7 @@ def configured_env(
     monkeypatch.setenv("DMAC_CLAUDE_USERS_ROOT", str(bridge_config.claude_users_root))
     monkeypatch.setenv("DMAC_SCRATCH_ROOT", str(bridge_config.scratch_root))
     monkeypatch.setenv("DMAC_DROPBOX_ROOT", str(bridge_config.dropbox_root))
+    monkeypatch.setenv("DMAC_OUTPUT_ROOT", str(bridge_config.output_root))
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     # NB: intentionally do NOT set AWS_BEARER_TOKEN_BEDROCK on the host env.
     # Canary scan covers that secret via CANARY_SECRET.
@@ -1260,6 +1262,7 @@ def test_error_frames_and_logs_do_not_contain_canaries(
     monkeypatch.setenv("DMAC_CLAUDE_USERS_ROOT", str(bridge_config.claude_users_root))
     monkeypatch.setenv("DMAC_SCRATCH_ROOT", str(bridge_config.scratch_root))
     monkeypatch.setenv("DMAC_DROPBOX_ROOT", str(bridge_config.dropbox_root))
+    monkeypatch.setenv("DMAC_OUTPUT_ROOT", str(bridge_config.output_root))
 
     # Rebuild the token store against the canary-password user record.
     poisoned_config = BridgeConfig(
@@ -1271,6 +1274,7 @@ def test_error_frames_and_logs_do_not_contain_canaries(
         claude_users_root=bridge_config.claude_users_root,
         scratch_root=bridge_config.scratch_root,
         dropbox_root=bridge_config.dropbox_root,
+        output_root=bridge_config.output_root,
         bridge_host="127.0.0.1",
         bridge_port=8000,
     )
@@ -1341,6 +1345,7 @@ def test_relay_loop_exception_does_not_leak_canaries_in_logs_or_frames(
     monkeypatch.setenv("DMAC_CLAUDE_USERS_ROOT", str(bridge_config.claude_users_root))
     monkeypatch.setenv("DMAC_SCRATCH_ROOT", str(bridge_config.scratch_root))
     monkeypatch.setenv("DMAC_DROPBOX_ROOT", str(bridge_config.dropbox_root))
+    monkeypatch.setenv("DMAC_OUTPUT_ROOT", str(bridge_config.output_root))
 
     poisoned_config = BridgeConfig(
         users={
@@ -1351,6 +1356,7 @@ def test_relay_loop_exception_does_not_leak_canaries_in_logs_or_frames(
         claude_users_root=bridge_config.claude_users_root,
         scratch_root=bridge_config.scratch_root,
         dropbox_root=bridge_config.dropbox_root,
+        output_root=bridge_config.output_root,
         bridge_host="127.0.0.1",
         bridge_port=8000,
     )

@@ -16,6 +16,7 @@ _DEV_MODE_TRUE_VALUES = {"1", "true", "yes", "on"}
 _DEV_DEFAULT_CLAUDE_USERS_ROOT = Path("~/dmac-dev/claude-users").expanduser()
 _DEV_DEFAULT_SCRATCH_ROOT = Path("~/dmac-dev/scratch").expanduser()
 _DEV_DEFAULT_DROPBOX_ROOT = Path("~/Library/CloudStorage/Dropbox/DMAC_Data").expanduser()
+_DEV_DEFAULT_OUTPUT_ROOT = Path("~/dmac-dev/output").expanduser()
 
 # Repo root (…/dmac_assistant): .env is loaded from here regardless of process cwd.
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -50,6 +51,7 @@ class BridgeConfig(BaseModel):
     claude_users_root: Path
     scratch_root: Path
     dropbox_root: Path
+    output_root: Path
     bridge_host: str = "127.0.0.1"
     bridge_port: int = 8000
 
@@ -135,6 +137,10 @@ def load_config() -> BridgeConfig:
             dropbox_root=_required_path(
                 "DMAC_DROPBOX_ROOT",
                 default=_DEV_DEFAULT_DROPBOX_ROOT,
+            ),
+            output_root=_required_path(
+                "DMAC_OUTPUT_ROOT",
+                default=_DEV_DEFAULT_OUTPUT_ROOT,
             ),
             bridge_host=os.environ.get("DMAC_BRIDGE_HOST", "127.0.0.1"),
             bridge_port=int(os.environ.get("DMAC_BRIDGE_PORT", "8000")),
