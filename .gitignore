@@ -28,3 +28,6 @@ docs/superpowers/
 .codex/
 .claude/
 .cursor/
+
+# Per-task git worktrees
+.worktrees/

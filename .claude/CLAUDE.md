@@ -16,6 +16,14 @@ In-container agent instructions live in `container/CLAUDE.md`. That file's NExtS
 
 Read the SDS and ADRs before making architecture changes. When a decision is unclear, consult the ADRs before changing direction.
 
+## Known Issues
+
+Open issues that affect architecture decisions or block production deployment live under [`.claude/known-issues/`](known-issues/). Read these before proposing changes that touch the relevant subsystem:
+
+- [`bedrock-token-exposure.md`](known-issues/bedrock-token-exposure.md) — `AWS_BEARER_TOKEN_BEDROCK` is exfiltrable by the in-container agent. **Production-blocker; deferred for solo-developer POC use only.** The containment plan at [`bedrock-token-containment-2026-04-24.md`](bedrock-token-containment-2026-04-24.md) was aborted at Phase 0 spike 0.2 (2026-04-24). Two surviving pivot options + spike evidence are documented in the issue file.
+
+Files under `.claude/known-issues/` are intentionally outside any path that could be COPY'd into the in-container `dmac-assistant` image. Keep it that way — these documents enumerate containment failure modes the in-container agent must not be able to read.
+
 ## What This System Is
 
 DMAC Assistant wraps Claude Code itself as the agent runtime for MIT BioMicro Center lab users. It is a thin bridge around a containerized `claude` CLI, not a custom agent framework. The main moving parts are:
