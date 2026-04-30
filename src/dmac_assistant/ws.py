@@ -33,8 +33,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
-from dmac_assistant.auth import AuthenticationError, TokenStore, get_token_store
-from dmac_assistant.config import load_config
+from dmac_assistant.auth import (
+    AuthenticatedIdentity,
+    AuthenticationError,
+    TokenStore,
+    get_token_store,
+)
+from dmac_assistant.config import BridgeConfig, load_config
 from dmac_assistant.containers import (
     async_attach,
     async_start_container,
@@ -224,6 +229,54 @@ async def _send_stdin_line(
         return False
 
 
+def _build_bridge_env(
+    *,
+    config: BridgeConfig | None = None,
+    identity: AuthenticatedIdentity | None = None,
+) -> dict[str, str]:
+    """Assemble the env passed to the in-container Claude Code from the
+    bridge's process environment.
+
+    Legacy keys (``AWS_REGION``, ``AWS_BEARER_TOKEN_BEDROCK``,
+    ``NEXTSEEK_URL``) are always emitted, even as empty strings, to
+    preserve the pre-T9 passthrough contract. New keys
+    (``GCP_API_KEY``, ``NEO4J_URI``, ``NEO4J_USER``, ``NEO4J_PASSWORD``)
+    are skip-if-empty.
+
+    When both ``config`` and ``identity`` are supplied, also emits a
+    ``DMAC_PATH_MAPPINGS`` JSON env var that maps container paths (the
+    fixed ``/data/output`` and ``/data/scratch`` mount points) to their
+    per-user host roots (``<config.output_root>/<user_id>`` and
+    ``<config.scratch_root>/<user_id>``). Plan A T9b implementation of D19.
+    """
+    env: dict[str, str] = {}
+    # Legacy keys: ALWAYS emitted (W3-C2 — preserves pre-T9 contract).
+    # DO NOT change to skip-if-empty — pre-existing chat_ws tests assert
+    # these keys are present in bridge_env even when unset.
+    for key in ("AWS_REGION", "AWS_BEARER_TOKEN_BEDROCK", "NEXTSEEK_URL"):
+        env[key] = os.environ.get(key, "")
+    # New keys: skip-if-empty.
+    for key in ("GCP_API_KEY", "NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD"):
+        value = os.environ.get(key)
+        if value is not None and value.strip():
+            env[key] = value
+    if config is not None and identity is not None:
+        env["DMAC_PATH_MAPPINGS"] = json.dumps(
+            {
+                "output": {
+                    "container_root": "/data/output",
+                    "host_root": str(config.output_root / identity.user_id),
+                },
+                "scratch": {
+                    "container_root": "/data/scratch",
+                    "host_root": str(config.scratch_root / identity.user_id),
+                },
+            },
+            separators=(",", ":"),
+        )
+    return env
+
+
 # ---------------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------------
@@ -291,13 +344,7 @@ async def chat_ws(
             requested_session_id = recent.session_id if recent else None
 
         # 3. Start the container.
-        bridge_env = {
-            "AWS_REGION": os.environ.get("AWS_REGION", ""),
-            "AWS_BEARER_TOKEN_BEDROCK": os.environ.get(
-                "AWS_BEARER_TOKEN_BEDROCK", ""
-            ),
-            "NEXTSEEK_URL": os.environ.get("NEXTSEEK_URL", ""),
-        }
+        bridge_env = _build_bridge_env(config=config, identity=identity)
         # H3 / T3: ensure the per-user host dirs exist BEFORE Docker creates
         # the bind mounts. Without this, the first login for a brand-new user
         # fails with `invalid mount config: bind source path does not exist`.
