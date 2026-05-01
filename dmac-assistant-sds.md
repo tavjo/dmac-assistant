@@ -286,6 +286,11 @@ exec claude --print --output-format stream-json --dangerously-skip-permissions "
 | `AWS_REGION` | Passed from backend, defaults to `us-east-1` | Yes |
 | `NEXTSEEK_USERNAME` | User's login credentials | Yes |
 | `NEXTSEEK_PASSWORD` | User's login credentials | Yes |
+| `DMAC_PATH_MAPPINGS` | Bridge-constructed JSON (see D19 below) | Yes |
+
+#### D19 — Host-path reporting
+
+D19 (host-path reporting) is implemented by `DMAC_PATH_MAPPINGS`; see Plan A T9b. Implemented by Plan A T9b: the bridge constructs `DMAC_PATH_MAPPINGS` in `_build_bridge_env(config, identity)` and passes it to the container via `bridge_env`. The shape is `{"output": {"container_root": "/data/output", "host_root": "<config.output_root>/<user_id>"}, "scratch": {"container_root": "/data/scratch", "host_root": "<config.scratch_root>/<user_id>"}}`. Plan B's `SKILL.md` consumes it for path translation so plugin output messages can report host-side paths back to the user.
 
 ---
 
