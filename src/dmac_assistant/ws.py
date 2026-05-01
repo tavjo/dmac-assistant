@@ -46,8 +46,8 @@ from dmac_assistant.containers import (
     async_start_container,
     async_stop_and_remove,
 )
-from dmac_assistant.copier import copy_run_artifacts
-from dmac_assistant.run_tracker import diff_runs, snapshot_scratch_runs
+from dmac_assistant.copier import copy_files
+from dmac_assistant.run_tracker import diff_files, snapshot_scratch_files
 from dmac_assistant.sessions import most_recent_session
 from dmac_assistant.streamjson import StreamEvent, StreamJsonParser
 
@@ -237,27 +237,27 @@ def dispatch_post_turn_copy(
     scratch_root: Path,
     output_root: Path,
     user_id: str,
-    new_run_ids: set[str],
+    new_files: set[str],
 ) -> None:
-    """Publish every new run_id discovered during the turn.
+    """Publish every new/changed file discovered during the turn.
 
     Errors are swallowed (logged with type name only — R-03) so copier
-    failure cannot kill the WS session (L2). For multiple new runs, each
-    is published independently; one failure does not block the others.
-    Iteration is sorted so multi-run publication is deterministic.
+    failure cannot kill the WS session (L2). Per-file iteration is
+    sorted so multi-file publication is deterministic. One bad file
+    does not block the rest (M-2).
     """
-    for run_id in sorted(new_run_ids):
+    for rel in sorted(new_files):
         try:
-            copy_run_artifacts(
+            copy_files(
                 scratch_root=scratch_root,
                 output_root=output_root,
                 user_id=user_id,
-                run_id=run_id,
+                rel_paths={rel},
             )
         except Exception as exc:  # noqa: BLE001 — broad-but-contained
             log.warning(
-                "copier failed for user=%s run=%s: %s",
-                user_id, run_id, type(exc).__name__,
+                "copier failed for user=%s rel=%s: %s",
+                user_id, rel, type(exc).__name__,
             )
 
 
@@ -382,24 +382,24 @@ async def chat_ws(
         # fails with `invalid mount config: bind source path does not exist`.
         ensure_user_output_dir(config.output_root, identity.user_id)
         (config.scratch_root / identity.user_id).mkdir(parents=True, exist_ok=True)
-        pre_turn_runs = snapshot_scratch_runs(
+        pre_turn_files = snapshot_scratch_files(
             config.scratch_root, identity.user_id
         )
 
         async def fire_post_turn_copy() -> None:
-            after = snapshot_scratch_runs(config.scratch_root, identity.user_id)
-            new_runs = diff_runs(pre_turn_runs, after)
-            if not new_runs:
+            after = snapshot_scratch_files(config.scratch_root, identity.user_id)
+            new = diff_files(pre_turn_files, after)
+            if not new:
                 return
             await asyncio.to_thread(
                 dispatch_post_turn_copy,
                 scratch_root=config.scratch_root,
                 output_root=config.output_root,
                 user_id=identity.user_id,
-                new_run_ids=new_runs,
+                new_files=new,
             )
-            pre_turn_runs.clear()
-            pre_turn_runs.update(after)
+            pre_turn_files.clear()
+            pre_turn_files.update(after)
 
         try:
             start_task = asyncio.create_task(
