@@ -380,13 +380,13 @@ async def chat_ws(
         # H3 / T3: ensure the per-user host dirs exist BEFORE Docker creates
         # the bind mounts. Without this, the first login for a brand-new user
         # fails with `invalid mount config: bind source path does not exist`.
-        ensure_user_output_dir(config.output_root, identity.user_id)  # pragma: no cover  # T6 covers this end-to-end
-        (config.scratch_root / identity.user_id).mkdir(parents=True, exist_ok=True)  # pragma: no cover  # T6 covers this end-to-end
-        pre_turn_runs = snapshot_scratch_runs(  # pragma: no cover  # T6 covers this end-to-end
+        ensure_user_output_dir(config.output_root, identity.user_id)
+        (config.scratch_root / identity.user_id).mkdir(parents=True, exist_ok=True)
+        pre_turn_runs = snapshot_scratch_runs(
             config.scratch_root, identity.user_id
         )
 
-        async def fire_post_turn_copy() -> None:  # pragma: no cover  # T6 covers this end-to-end
+        async def fire_post_turn_copy() -> None:
             after = snapshot_scratch_runs(config.scratch_root, identity.user_id)
             new_runs = diff_runs(pre_turn_runs, after)
             if not new_runs:
