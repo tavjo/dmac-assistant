@@ -61,6 +61,28 @@ def test_redacted_env_keys_includes_neo4j_password_and_gcp():
     assert "GCP_API_KEY" in _REDACTED_ENV_KEYS
 
 
+def test_dmac_path_mappings_passed_through(tmp_path):
+    """Wave-3 closure (Amendment 8) H1: T9b's DMAC_PATH_MAPPINGS must be
+    forwarded by _build_environment, not silently dropped."""
+    mapping = '{"output":{"container_root":"/data/output","host_root":"/h/o"}}'
+    spec = build_container_spec(_identity(), _config(tmp_path),
+        image="t:1", session_id=None,
+        bridge_env={"DMAC_PATH_MAPPINGS": mapping})
+    assert spec.environment["DMAC_PATH_MAPPINGS"] == mapping
+
+
+def test_dmac_path_mappings_redacted_in_repr(tmp_path):
+    """Wave-3 closure (Amendment 8) M1: DMAC_PATH_MAPPINGS encodes host
+    filesystem layout; must be redacted from repr()/model_dump() per R-03."""
+    spec = build_container_spec(_identity(), _config(tmp_path),
+        image="t:1", session_id=None,
+        bridge_env={"DMAC_PATH_MAPPINGS": '{"host_root":"/sensitive/path"}'})
+    text = repr(spec)
+    assert "/sensitive/path" not in text
+    dumped = spec.model_dump()
+    assert dumped["environment"]["DMAC_PATH_MAPPINGS"] == "<REDACTED>"
+
+
 def test_repr_redacts_neo4j_password(tmp_path):
     """M1: redaction must actually fire in repr(), not just be in the set."""
     spec = build_container_spec(_identity(), _config(tmp_path),

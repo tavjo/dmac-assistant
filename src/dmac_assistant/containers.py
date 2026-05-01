@@ -39,6 +39,9 @@ _REDACTED_ENV_KEYS = frozenset({
     "AWS_BEARER_TOKEN_BEDROCK",
     "NEO4J_PASSWORD",
     "GCP_API_KEY",
+    # Encodes host filesystem layout (output_root + scratch_root paths).
+    # Not a credential but R-03 forbids logging bridge_env contents.
+    "DMAC_PATH_MAPPINGS",
 })
 
 _BASE_COMMAND: tuple[str, ...] = (
@@ -247,7 +250,13 @@ def _build_environment(
         env["AWS_BEARER_TOKEN_BEDROCK"] = bridge_env["AWS_BEARER_TOKEN_BEDROCK"]
     if "NEXTSEEK_URL" in bridge_env:
         env["NEXTSEEK_URL"] = bridge_env["NEXTSEEK_URL"]
-    for forwarded_key in ("GCP_API_KEY", "NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD"):
+    for forwarded_key in (
+        "GCP_API_KEY",
+        "NEO4J_URI",
+        "NEO4J_USER",
+        "NEO4J_PASSWORD",
+        "DMAC_PATH_MAPPINGS",
+    ):
         if forwarded_key in bridge_env:
             env[forwarded_key] = bridge_env[forwarded_key]
     return env

@@ -1,11 +1,17 @@
-"""Gate test: build_tools/ must not import smart-form-tool's heavy RAG deps."""
+"""Gate test: build_tools/ isolation.
+
+(1) Must not import smart-form-tool's heavy RAG deps (markitdown migration).
+(2) Must not import dmac_assistant.* — Amendment 7 v2 isolates build_tools as
+    a sibling uv project; coupling it to bridge runtime would create a
+    circular dependency and break the host-only build toolchain contract.
+"""
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
 FORBIDDEN = re.compile(
-    r"^\s*(?:from|import)\s+(baml|duckdb|leiden|smart_form|openai)\b",
+    r"^\s*(?:from|import)\s+(baml|duckdb|leiden|smart_form|openai|dmac_assistant)\b",
     re.MULTILINE,
 )
 

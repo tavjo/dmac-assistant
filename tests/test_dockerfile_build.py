@@ -32,6 +32,14 @@ def _docker_available() -> bool:
 
 @pytest.fixture(scope="module")
 def built_image() -> str:
+    # Amendment 4 (vendored chat_nextseek) requires vendor/chat_nextseek/.git
+    # to exist before `docker buildx build`, otherwise the COPY directive
+    # fails with an opaque path-not-found error. The Makefile `image-build`
+    # target sequences `sync-vendor-deps` correctly; this fixture bypasses
+    # Make and calls Docker directly, so we must replicate the prereq.
+    if not (REPO_ROOT / "vendor" / "chat_nextseek" / ".git").is_dir():
+        subprocess.run(["make", "sync-vendor-deps"], cwd=REPO_ROOT, check=True)
+
     build_context = REPO_ROOT / "build_context"
     if not (build_context / "plugins" / "nextseek-api").is_dir():
         subprocess.run(["make", "image-stage"], cwd=REPO_ROOT, check=True)

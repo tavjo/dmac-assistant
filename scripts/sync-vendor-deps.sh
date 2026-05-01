@@ -12,12 +12,15 @@ VENDOR_DIR="vendor/chat_nextseek"
 
 mkdir -p "$(dirname "$VENDOR_DIR")"
 
+# Shallow vendor: init empty repo, fetch the pinned SHA at depth 1.
+# GitHub allows uploadpack.allowReachableSHA1InWant by default so this works.
 if [ ! -d "$VENDOR_DIR/.git" ]; then
-  git clone "$REPO_URL" "$VENDOR_DIR"
+  git init --quiet "$VENDOR_DIR"
+  git -C "$VENDOR_DIR" remote add origin "$REPO_URL"
 fi
 
-git -C "$VENDOR_DIR" fetch --quiet origin
-git -C "$VENDOR_DIR" -c advice.detachedHead=false checkout --quiet "$PIN"
+git -C "$VENDOR_DIR" fetch --quiet --depth 1 origin "$PIN"
+git -C "$VENDOR_DIR" -c advice.detachedHead=false checkout --quiet FETCH_HEAD
 
 ACTUAL="$(git -C "$VENDOR_DIR" rev-parse HEAD)"
 if [ "$ACTUAL" != "$PIN" ]; then
