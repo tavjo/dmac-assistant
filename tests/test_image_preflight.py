@@ -40,12 +40,19 @@ def _make_fake_uv(bin_dir: Path, ingest_exit_code: int) -> Path:
         textwrap.dedent(
             f"""\
             #!/bin/sh
-            if [ "$1" = "run" ] && [ "$2" = "python" ] && [ "$3" = "-m" ] && [ "$4" = "build_tools.ingest_nextseek_docs" ]; then
-              exit {ingest_exit_code}
-            fi
-            if [ "$1" = "run" ] && [ "$2" = "python" ]; then
+            # Strip leading `run [--project <dir>]` to find the python invocation.
+            if [ "$1" = "run" ]; then
               shift
-              exec "$@"
+              while [ "$1" = "--project" ] || [ "$1" = "--directory" ]; do
+                shift; shift
+              done
+              if [ "$1" = "python" ] && [ "$2" = "-m" ] && [ "$3" = "build_tools.ingest_nextseek_docs" ]; then
+                exit {ingest_exit_code}
+              fi
+              if [ "$1" = "python" ]; then
+                # Re-exec the real python with the rest of the args (e.g. -c '...').
+                exec "$@"
+              fi
             fi
             echo "fake uv received unexpected args: $*" >&2
             exit 99

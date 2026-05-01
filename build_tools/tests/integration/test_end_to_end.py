@@ -9,9 +9,9 @@ import pytest
 from build_tools.ingest_nextseek_docs import __main__ as orchestrator
 from build_tools.ingest_nextseek_docs.constants import BEGIN_MARKER, END_MARKER
 from build_tools.ingest_nextseek_docs.fetch import parse_source_to_markdown
-from tests.conftest import make_synthetic_html
+from build_tools.tests.conftest import make_synthetic_html
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 SECTIONS_A = [
     ("Welcome", "Introductory paragraph for the welcome page."),

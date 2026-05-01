@@ -1,0 +1,36 @@
+[project]
+name = "dmac-build-tools"
+version = "0.1.0"
+description = "Host-only build tooling for dmac-assistant. Ingests NExtSEEK docs (HTML→markdown via markitdown) and produces artifacts COPYd into the image."
+requires-python = ">=3.12"
+# This project's only purpose is to run `python -m build_tools.ingest_nextseek_docs`
+# on the host (via `make ingest-nextseek-docs`). The output (container/CLAUDE.md +
+# docs/nextseek/) is COPYd into the dmac-assistant image; build_tools itself
+# never runs in the image. Kept separate from the bridge pyproject so its
+# heavy ML deps (markitdown[all] → magika → onnxruntime) don't constrain the
+# bridge lockfile across platforms (onnxruntime has no version with both
+# darwin-x86_64 wheels AND linux-cp314 wheels — see plan body Amendment 7 v2).
+dependencies = [
+    "markitdown[all]>=0.1.5",
+    "httpx>=0.28.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+
+# uv "application" mode: install dependencies into a venv but do not build
+# build_tools as a wheel. The Python package `build_tools` is on the parent
+# directory (the repo root); pytest's pythonpath setting below puts it on
+# sys.path so `from build_tools.ingest_nextseek_docs import ...` resolves.
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+# Repo root (parent of build_tools/) on sys.path so `from build_tools.X import Y`
+# imports resolve to ../build_tools/__init__.py (the actual Python package).
+pythonpath = [".."]
+testpaths = ["tests"]
+addopts = "-q --cov=build_tools --cov-report=term-missing --cov-fail-under=95"

@@ -5,10 +5,9 @@ import builtins
 from unittest.mock import MagicMock
 
 import pytest
-from docker.errors import APIError, ImageNotFound
+from docker.errors import APIError
 
 from tests.harness.containers import (
-    REPO_ROOT,
     _allow_docker_unix_socket_only,
     docker_available,
     ensure_image,
@@ -107,29 +106,9 @@ def test_ensure_image_returns_existing_tag(monkeypatch: pytest.MonkeyPatch) -> N
     fake_images.get.assert_called_once_with("dummy:test")
 
 
-def test_ensure_image_builds_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A missing image should be built through docker-py and then re-fetched."""
-    fake_images = MagicMock()
-    fake_images.get.side_effect = [ImageNotFound("missing"), object()]
-
-    fake_client = MagicMock()
-    fake_client.images = fake_images
-
-    monkeypatch.setattr(
-        "tests.harness.containers._allow_docker_unix_socket_only",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        "tests.harness.containers.docker.from_env",
-        lambda *args, **kwargs: fake_client,
-    )
-
-    assert ensure_image("dummy:test") == "dummy:test"
-    fake_images.build.assert_called_once_with(
-        path=str(REPO_ROOT),
-        tag="dummy:test",
-        platform="linux/amd64",
-        rm=True,
-        pull=False,
-    )
-    assert fake_images.get.call_count == 2
+# Plan A T8 Amendment 4 (2026-04-30): the old `test_ensure_image_builds_when_missing`
+# asserted auto-build behavior that has been removed. ensure_image() now raises
+# RuntimeError when the image is absent, telling the operator to run
+# `make image-build` (which itself runs `make sync-vendor-deps` first to
+# populate `vendor/chat_nextseek/`). The replacement test asserting the new
+# contract lives at tests/unit/test_harness_ensure_image_no_autobuild.py.

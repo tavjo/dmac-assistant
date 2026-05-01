@@ -26,8 +26,14 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="session", autouse=True)
 def _session_image() -> str:
-    """Ensure the expected local image exists once for the smoke session."""
-    return ensure_image()
+    """Plan A T8 AMD3-C2: ensure_image() now raises RuntimeError instead of
+    auto-building. Convert that to a session skip so the smoke suite
+    reports "image not built" cleanly rather than producing N errors.
+    """
+    try:
+        return ensure_image()
+    except RuntimeError as exc:
+        pytest.skip(str(exc))
 
 
 @pytest.fixture
@@ -379,3 +385,30 @@ def test_dmac_python_env_resolves_to_314(dummy_env: dict[str, str]) -> None:
 
     assert exit_code == 0, f"$DMAC_PYTHON invocation failed: {logs!r}"
     assert "DMAC_PYTHON_OK" in logs, f"$DMAC_PYTHON path not 3.14; logs={logs!r}"
+
+
+def test_chat_nextseek_importable_no_with(dummy_env: dict[str, str]) -> None:
+    """Plan A · T8 (C2): `python -c "import chat_nextseek"` MUST succeed
+    inside the image WITHOUT a `uv run --with` wrapper. This is the
+    persistent-install gate.
+    """
+    with make_container(
+        image=IMAGE_TAG,
+        mounts={},
+        env=dummy_env,
+        command=[
+            "-c",
+            "python -c 'import chat_nextseek; print(chat_nextseek.__name__)'",
+        ],
+        entrypoint_override=["sh"],
+    ) as container:
+        exit_code = container.wait()["StatusCode"]
+        logs = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
+
+    assert exit_code == 0, (
+        f"`python -c 'import chat_nextseek'` failed (exit={exit_code}): {logs!r}. "
+        "Plan A T8 invariant: chat_nextseek MUST be importable without `uv run --with`."
+    )
+    assert "chat_nextseek" in logs, (
+        f"`import chat_nextseek` did not print module name; logs={logs!r}."
+    )

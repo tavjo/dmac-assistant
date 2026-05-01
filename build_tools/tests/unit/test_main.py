@@ -12,7 +12,7 @@ import pytest
 
 from build_tools.ingest_nextseek_docs import __main__ as orchestrator
 from build_tools.ingest_nextseek_docs.constants import BEGIN_MARKER, END_MARKER
-from tests.conftest import make_synthetic_html
+from build_tools.tests.conftest import make_synthetic_html
 
 
 def _html_bytes(sections: list[tuple[str, str]]) -> bytes:
@@ -274,12 +274,18 @@ def test_ingest_preserves_existing_readme_md_during_cleanup(tmp_path: Path) -> N
 
 
 def test_cli_module_help_mentions_force_flag() -> None:
+    # Plan A · Amendment 7 v2: build_tools is a sibling project; tests run
+    # from build_tools/ as cwd. Subprocess `python -m build_tools.X` needs
+    # cwd at repo root so the `build_tools` package is on Python's default
+    # sys.path (containing '').
+    repo_root = Path(__file__).resolve().parents[3]
     result = subprocess.run(
         [sys.executable, "-m", "build_tools.ingest_nextseek_docs", "--help"],
         capture_output=True,
         text=True,
+        cwd=repo_root,
     )
-    assert result.returncode == 0
+    assert result.returncode == 0, result.stderr
     assert "--force" in result.stdout
     assert "--help" in result.stdout
 

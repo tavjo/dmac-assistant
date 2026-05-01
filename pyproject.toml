@@ -8,7 +8,15 @@ dependencies = [
     "docker>=7.1.0",
     "fastapi>=0.116",
     "httpx>=0.28.1",
-    "markitdown[all]>=0.1.5",
+    # Plan A · Amendment 7 v2 to T7 (2026-04-30): markitdown[all] moved to the
+    # sibling `build_tools/` uv project (its own pyproject + venv + lockfile).
+    # The bridge runtime + image have zero markitdown imports; only
+    # `build_tools/ingest_nextseek_docs/fetch.py` uses it, and that script runs
+    # on the host (`make ingest-nextseek-docs`) to generate `container/CLAUDE.md`
+    # + `docs/nextseek/` artifacts which are COPYd into the image as static
+    # files. Splitting into a separate project keeps this lockfile portable
+    # (no onnxruntime cp314-vs-darwin-x86_64 wheel matrix issue) and keeps the
+    # image small. See plan body Amendment Log § "Amendment 7 v2".
     "pydantic>=2.13.0",
     "python-dotenv>=1.2.2",
     "uvicorn[standard]>=0.35",
@@ -24,8 +32,17 @@ dev = [
     "ruff>=0.15.12",
 ]
 
+# Amendment 6 ([tool.uv] environments scope) was REVERTED by Amendment 7.
+# The bridge lockfile is now portable across all uv-supported platforms
+# because markitdown (and its onnxruntime tail) lives in the sibling
+# build_tools/ project, not in the bridge dep tree.
+
+# Coverage scope notes: --cov=build_tools is intentionally REMOVED from the
+# bridge addopts below. build_tools moved to a sibling uv project with its
+# own coverage gate; running `pytest` here covers only the bridge.
+
 [tool.pytest.ini_options]
-addopts = "--disable-socket -q --cov=build_tools --cov=tests.harness --cov=src/dmac_assistant --cov-report=term-missing --cov-fail-under=95"
+addopts = "--disable-socket -q --cov=tests.harness --cov=src/dmac_assistant --cov-report=term-missing --cov-fail-under=95"
 testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [

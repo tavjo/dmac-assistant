@@ -47,25 +47,29 @@ def docker_available() -> bool:
 
 
 def ensure_image(tag: str = IMAGE_TAG) -> str:
-    """Return the local image tag, building it through docker-py if absent."""
+    """Confirm the dmac-assistant image exists; raise RuntimeError if not.
+
+    Plan A T8 Amendment 4 (2026-04-29): the image must be built via
+    `make image-build` (which runs `make sync-vendor-deps` first to
+    populate `vendor/chat_nextseek/`). docker-py cannot drive a BuildKit
+    build that depends on a host-side sync step, so this function does
+    NOT auto-build — it surfaces a RuntimeError with a remediation
+    message instead.
+    """
     _allow_docker_unix_socket_only()
     client = docker.from_env()
 
     try:
         client.images.get(tag)
         return tag
-    except ImageNotFound:
-        pass
-
-    client.images.build(
-        path=str(REPO_ROOT),
-        tag=tag,
-        platform="linux/amd64",
-        rm=True,
-        pull=False,
-    )
-    client.images.get(tag)
-    return tag
+    except ImageNotFound as exc:
+        raise RuntimeError(
+            f"dmac-assistant image not present; run `make image-build` first.\n"
+            f"    make image-build\n"
+            f"(docker-py auto-build is disabled per Plan A T8 Amendment 4 "
+            f"because chat_nextseek requires a host-side `make sync-vendor-deps` "
+            f"step before `docker buildx build`.)"
+        ) from exc
 
 
 def seeded_settings_file(path: Path, payload: dict) -> None:
