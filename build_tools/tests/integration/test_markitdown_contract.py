@@ -6,7 +6,7 @@ import tempfile
 
 from markitdown import MarkItDown
 
-from tests.conftest import make_synthetic_html
+from build_tools.tests.conftest import make_synthetic_html
 
 
 def test_markitdown_preserves_h1_from_html_in_pdf_suffixed_tempfile() -> None:

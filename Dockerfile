@@ -46,10 +46,34 @@ RUN ln -sfn /app/CLAUDE.md /home/user/CLAUDE.md \
 
 ENV UV_CACHE_DIR=/opt/uv-cache
 RUN mkdir -p /opt/uv-cache
-RUN uv run --with httpx --with pydantic --with python-dotenv --with markitdown \
-      python -c "import httpx, pydantic, dotenv, markitdown" \
-    && chmod -R a+rwX /opt/uv-cache \
-    && echo "uv cache pre-warmed at /opt/uv-cache"
+
+# Plan A · T8 Amendment 5 v3 (canonical uv-in-Docker): materialize the
+# project venv at /opt/dmac-venv and prepend its bin/ to PATH so plain
+# `python`, `uv pip install`, and plugin-shim invocations all resolve to
+# the venv interpreter without `uv run` wrappers. Replaces Amendment 4's
+# system-wide install model in favor of venv-on-PATH (the canonical
+# uv-in-Docker pattern from docs.astral.sh/uv/guides/integration/docker).
+ENV UV_PROJECT_ENVIRONMENT=/opt/dmac-venv \
+    VIRTUAL_ENV=/opt/dmac-venv \
+    PATH="/opt/dmac-venv/bin:$PATH"
+
+# Install bridge dependencies from pyproject.toml + uv.lock into the venv.
+# --locked asserts lockfile-up-to-date (loud failure on drift, preserving
+# the M4 dep-conflict guarantee). --no-install-project because the bridge
+# source code lives on the host, not in this image.
+COPY pyproject.toml uv.lock /tmp/dmac-deps/
+RUN cd /tmp/dmac-deps \
+    && uv sync --locked --no-install-project \
+    && echo "uv sync done; deps installed into /opt/dmac-venv"
+
+# Plan A T8 Amendment 4 (vendored-source): install chat_nextseek from the
+# host-side vendor/ tree (populated by `make sync-vendor-deps`). No
+# build-time GitHub egress; the image rebuilds wheels in its own
+# linux/amd64 + Python 3.14 environment. With the venv active via PATH +
+# VIRTUAL_ENV, uv pip install targets the venv automatically.
+COPY vendor/chat_nextseek /tmp/chat_nextseek
+RUN uv pip install /tmp/chat_nextseek \
+    && chmod -R a+rX /opt/uv-cache /opt/dmac-venv
 
 # DD-37 (PATH half, moved below pre-warm per L-4): put the plugin's bin/ on
 # PATH so Claude can invoke `nextseek-call` etc. without spelling the full

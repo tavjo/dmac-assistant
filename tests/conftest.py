@@ -1,11 +1,9 @@
 """Shared fixtures and autouse guards for the DMAC ingestion test suite."""
 from __future__ import annotations
 
-import html
 import os
 from importlib import import_module
 from pathlib import Path
-from typing import Iterable
 from urllib.parse import urlparse
 
 import pytest
@@ -35,26 +33,10 @@ def _load_dotenv_file(path: Path) -> dict[str, str]:
     return values
 
 
-def make_synthetic_html(sections: Iterable[tuple[str, str]]) -> bytes:
-    """Build deterministic HTML bytes from section title/paragraph tuples."""
-    body_parts: list[str] = []
-    for title, para in sections:
-        body_parts.append(f"<h1>{html.escape(title)}</h1>")
-        body_parts.append(f"<p>{html.escape(para)}</p>")
-    body = "\n".join(body_parts)
-    return f"<!DOCTYPE html><html><body>{body}</body></html>".encode("utf-8")
-
-
-@pytest.fixture
-def synthetic_html() -> bytes:
-    """Default 3-section HTML fixture used by integration tests."""
-    return make_synthetic_html(
-        [
-            ("Welcome", "Intro paragraph for the welcome page."),
-            ("Getting Started", "Intro paragraph for getting started."),
-            ("Sample Registration", "Intro paragraph for sample registration."),
-        ]
-    )
+# Plan A · Amendment 7 v2 (2026-04-30): make_synthetic_html and the synthetic_html
+# fixture moved to build_tools/tests/conftest.py along with the four test files
+# that depended on them (test_fetch, test_main, test_markitdown_contract,
+# test_end_to_end). The bridge test suite no longer needs HTML synthesis helpers.
 
 
 class _PoisonedPath:

@@ -1,7 +1,12 @@
-.PHONY: ingest-nextseek-docs image-preflight image-stage clean-plugin-artifacts bats-check shellcheck-check image-check-docker image-build image-e2e capture-streamjson-fixture
+.PHONY: ingest-nextseek-docs image-preflight image-stage clean-plugin-artifacts bats-check shellcheck-check image-check-docker sync-vendor-deps image-build image-e2e capture-streamjson-fixture
 
+# Plan A · Amendment 7 v2 (2026-04-30): doc ingestion runs against the
+# sibling `build_tools/` uv project (its own venv with markitdown[all]).
+# `uv run --project build_tools python -m build_tools.X` activates the
+# build_tools venv while keeping cwd at the repo root, so `python -m`
+# finds `./build_tools/__init__.py` on its default sys.path.
 ingest-nextseek-docs:
-	@uv run python -m build_tools.ingest_nextseek_docs $(ARGS); \
+	@uv run --project build_tools python -m build_tools.ingest_nextseek_docs $(ARGS); \
 	code=$$?; \
 	if [ $$code -eq 2 ]; then \
 	  echo ""; \
@@ -10,14 +15,14 @@ ingest-nextseek-docs:
 	exit $$code
 
 image-preflight:
-	@uv run python -m build_tools.ingest_nextseek_docs $(ARGS) >/dev/null; \
+	@uv run --project build_tools python -m build_tools.ingest_nextseek_docs $(ARGS) >/dev/null; \
 	code=$$?; \
 	if [ $$code -eq 2 ]; then \
 	  echo "" >&2; \
 	  echo "=========================================================" >&2; \
 	  echo "  DRIFT DETECTED in container/CLAUDE.md or docs/nextseek/" >&2; \
 	  echo "=========================================================" >&2; \
-	  uv run python -c 'from pathlib import Path; from build_tools.drift_report import format_drift_summary; import sys; sys.stderr.write(format_drift_summary(Path(".")))' >&2; \
+	  uv run --project build_tools python -c 'from pathlib import Path; from build_tools.drift_report import format_drift_summary; import sys; sys.stderr.write(format_drift_summary(Path(".")))' >&2; \
 	  echo "" >&2; \
 	  echo "Review the diff, commit, and rebuild the image when ready." >&2; \
 	elif [ $$code -ne 0 ]; then \
@@ -34,7 +39,7 @@ image-stage:
 	  test -e "$$src/$$entry" || { echo "image-stage: missing $$src/$$entry" >&2; rm -rf "$$tmp"; exit 1; }; \
 	  cp -R "$$src/$$entry" "$$filtered/"; \
 	done; \
-	uv run python -m build_tools.stage_plugins --source "$$filtered" --dest ./build_context; \
+	uv run --project build_tools python -m build_tools.stage_plugins --source "$$filtered" --dest ./build_context; \
 	code="$$?"; \
 	rm -rf "$$tmp"; \
 	exit "$$code"
@@ -71,12 +76,17 @@ image-check-docker:
 	    (uname | grep -q Linux && echo "dockerd not running; or: add user to docker group: sudo usermod -aG docker $$USER" >&2 && exit 1) || \
 	    (echo "Start Docker Desktop manually" >&2 && exit 1))
 
-image-build: image-check-docker image-preflight image-stage
+sync-vendor-deps:
+	@./scripts/sync-vendor-deps.sh
+
+image-build: image-check-docker image-preflight image-stage sync-vendor-deps
 	@if docker image inspect dmac-assistant:poc >/dev/null 2>&1; then \
 	  echo "Retagging prior dmac-assistant:poc -> dmac-assistant:poc-prev"; \
 	  docker tag dmac-assistant:poc dmac-assistant:poc-prev; \
 	fi
-	@docker buildx build --platform=linux/amd64 --load -t dmac-assistant:poc .
+	@set -o pipefail; \
+	  docker buildx build --platform=linux/amd64 --load -t dmac-assistant:poc . \
+	    | tee /tmp/dmac-image-build.log
 	@echo ""
 	@echo "Built dmac-assistant:poc. Size: $$(docker image inspect dmac-assistant:poc --format '{{.Size}}')"
 

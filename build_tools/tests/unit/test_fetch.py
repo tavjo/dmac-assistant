@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from build_tools.ingest_nextseek_docs import fetch as fetch_module
-from tests.conftest import make_synthetic_html
+from build_tools.tests.conftest import make_synthetic_html
 
 
 def _stub_client_returning(content: bytes) -> MagicMock:

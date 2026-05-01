@@ -148,6 +148,7 @@ def test_get_config_loads_from_environment(
     monkeypatch.setenv("DMAC_CLAUDE_USERS_ROOT", "./var/claude-users")
     monkeypatch.setenv("DMAC_SCRATCH_ROOT", "./var/scratch")
     monkeypatch.setenv("DMAC_DROPBOX_ROOT", "./dropbox")
+    monkeypatch.setenv("DMAC_OUTPUT_ROOT", "./var/output")
 
     loaded = get_config()
 

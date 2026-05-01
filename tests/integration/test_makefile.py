@@ -57,7 +57,7 @@ def test_make_dry_run_shows_uv_command() -> None:
 
     assert result.returncode == 0, result.stderr
     combined = result.stdout + result.stderr
-    assert "uv run python -m build_tools.ingest_nextseek_docs" in combined
+    assert "uv run --project build_tools python -m build_tools.ingest_nextseek_docs" in combined
     assert "--help" in combined
 
 

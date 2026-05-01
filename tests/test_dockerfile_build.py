@@ -134,38 +134,6 @@ def test_claude_is_real_npm_binary(built_image: str) -> None:
 
 @pytest.mark.slow
 @pytest.mark.skipif(not _docker_available(), reason="docker daemon not running")
-def test_uv_prewarm_imports_succeed(built_image: str) -> None:
-    result = subprocess.run(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "--entrypoint",
-            "uv",
-            built_image,
-            "run",
-            "--with",
-            "httpx",
-            "--with",
-            "pydantic",
-            "--with",
-            "python-dotenv",
-            "--with",
-            "markitdown",
-            "python",
-            "-c",
-            "import httpx, pydantic, dotenv, markitdown; print('IMPORT_OK')",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "IMPORT_OK" in result.stdout
-
-
-@pytest.mark.slow
-@pytest.mark.skipif(not _docker_available(), reason="docker daemon not running")
 def test_entrypoint_mode_0755(built_image: str) -> None:
     result = subprocess.run(
         ["docker", "run", "--rm", "--entrypoint", "stat", built_image, "-c", "%a", "/usr/local/bin/entrypoint.sh"],
@@ -270,4 +238,131 @@ def test_dmac_python_env_set_to_well_known_path() -> None:
     assert match.group(1) == "/usr/local/bin/python3.14", (
         f"DMAC_PYTHON points at {match.group(1)!r}; T0 R4 requires "
         "`/usr/local/bin/python3.14` so callers don't depend on uv internals."
+    )
+
+
+def test_dockerfile_uses_uv_sync_locked() -> None:
+    """Plan A · T8 Amendment 5 v3: Dockerfile must install bridge deps via
+    `uv sync --locked` into the project venv at /opt/dmac-venv, with the
+    venv prepended to PATH so plain `python` resolves to the venv
+    interpreter. Replaces Amendment 4's `--system` install model (uv has
+    never accepted `--system` on `sync`). Amendment 4 vendored-source
+    drift guards (COPY vendor, no SSH, no git+ URLs) preserved.
+    """
+    import re
+
+    dockerfile = REPO_ROOT / "Dockerfile"
+    text = dockerfile.read_text(encoding="utf-8")
+
+    # Amendment 5 v3: assert canonical uv-in-Docker pattern (uv sync --locked +
+    # venv-on-PATH; no --system anywhere). Replaces the AMD4 literal-string check
+    # whose pattern was rejected by uv at runtime.
+    assert "uv sync --locked" in text, (
+        "Dockerfile must invoke `uv sync --locked` to install bridge deps from "
+        "pyproject.toml + uv.lock into the project venv. C2 fix: replaces the "
+        "ephemeral `uv run --with` pre-warm with a persistent venv-backed install."
+    )
+    assert "UV_PROJECT_ENVIRONMENT=/opt/dmac-venv" in text, (
+        "Dockerfile must set UV_PROJECT_ENVIRONMENT=/opt/dmac-venv so uv sync "
+        "materializes the venv at the production-style path."
+    )
+    assert '"/opt/dmac-venv/bin:$PATH"' in text or "/opt/dmac-venv/bin:${PATH}" in text, (
+        "Dockerfile must prepend /opt/dmac-venv/bin to PATH so plain `python` and "
+        "plugin-shim invocations resolve to the venv interpreter without `uv run`."
+    )
+
+    # Amendment 5 drift guard: --system MUST NOT appear ANYWHERE in the Dockerfile.
+    # Both `uv sync --system` (invalid since uv 0.0.x) and `uv pip install --system`
+    # (the Amendment 4 chat_nextseek line, now superseded) are forbidden. Use a plain
+    # substring check rather than a regex so multi-line `RUN ... \` continuations
+    # with `--system` on a continuation line are also caught (per AMD5v3-M1).
+    assert "--system" not in text, (
+        "Amendment 5 forbids --system anywhere in the Dockerfile. "
+        "The canonical uv-in-Docker pattern uses venv-on-PATH "
+        "(UV_PROJECT_ENVIRONMENT + VIRTUAL_ENV + PATH) instead of --system."
+    )
+
+    # W3-H3: --no-install-project is mandatory.
+    assert "--no-install-project" in text, (
+        "Dockerfile must pass --no-install-project to uv sync."
+    )
+
+    # Anti-regression: chat_nextseek must not appear in any `uv run --with` line.
+    for line in text.splitlines():
+        if "uv run --with" in line:
+            assert "chat_nextseek" not in line, (
+                f"chat_nextseek slipped back into a `uv run --with` line: {line!r}"
+            )
+
+    # Amendment 4 drift guards: vendored-source build, no SSH or git+ URL.
+    assert "--mount=type=ssh" not in text, (
+        "Amendment 4 forbids `--mount=type=ssh` (vendored-source build needs no "
+        "SSH forwarding)."
+    )
+    for line in text.splitlines():
+        if "chat_nextseek" in line:
+            assert "git+ssh://" not in line, (
+                f"Amendment 4 forbids git+ssh:// for chat_nextseek: {line!r}"
+            )
+            assert "git+https://" not in line, (
+                f"Amendment 4 forbids git+https:// for chat_nextseek: {line!r}"
+            )
+
+    # Amendment 4: vendored COPY + local install pair.
+    assert "COPY vendor/chat_nextseek /tmp/chat_nextseek" in text, (
+        "Amendment 4 requires `COPY vendor/chat_nextseek /tmp/chat_nextseek` in "
+        "the Dockerfile (vendored-source install)."
+    )
+    assert re.search(r"uv pip install\b.*/tmp/chat_nextseek", text), (
+        "Amendment 5 v3 requires a `uv pip install ... /tmp/chat_nextseek` "
+        "line consuming the COPY destination (no --system; venv-on-PATH "
+        "provides interpreter resolution)."
+    )
+
+    # R4-NEW-5 ordering: chat_nextseek install line follows uv sync line.
+    sync_match = re.search(r"uv sync --locked", text)
+    pip_match = re.search(r"uv pip install\b.*/tmp/chat_nextseek", text)
+    assert sync_match is not None and pip_match is not None
+    assert sync_match.start() < pip_match.start(), (
+        "chat_nextseek install must follow `uv sync --locked`."
+    )
+
+    # AMD3-M2 leftover guard: no placeholder.
+    assert "<CHAT_NEXTSEEK_REV>" not in text, (
+        "Dockerfile contains the literal placeholder `<CHAT_NEXTSEEK_REV>`."
+    )
+
+    # Amendment 7 v2 (2026-04-30): markitdown was REMOVED from the image
+    # entirely. It lives in the sibling build_tools/ uv project (host-only).
+    # The image runtime never imports markitdown. Drift guards below assert
+    # that markitdown stays out of both the Dockerfile and the bridge
+    # pyproject.toml.
+    assert "markitdown" not in text, (
+        "Amendment 7 v2 forbids any markitdown reference in the Dockerfile. "
+        "markitdown is host-only (lives under build_tools/); the image needs "
+        "the COPYd doc artifacts, not the library that generates them."
+    )
+
+    pyproject = REPO_ROOT / "pyproject.toml"
+    pyproject_text = pyproject.read_text(encoding="utf-8")
+    for line in pyproject_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        assert "markitdown" not in stripped, (
+            f"Amendment 7 v2 forbids an active markitdown dep in bridge "
+            f"pyproject.toml (it lives under build_tools/); found: {line!r}"
+        )
+
+    # Amendment 7 v2: the build_tools sibling project must declare its own
+    # pyproject.toml and own lockfile so the bridge lockfile stays portable.
+    build_tools_pyproject = REPO_ROOT / "build_tools" / "pyproject.toml"
+    assert build_tools_pyproject.is_file(), (
+        "Amendment 7 v2 requires build_tools/pyproject.toml (sibling uv "
+        "project for host-only markitdown-based doc ingestion)."
+    )
+    build_tools_lock = REPO_ROOT / "build_tools" / "uv.lock"
+    assert build_tools_lock.is_file(), (
+        "Amendment 7 v2 requires build_tools/uv.lock (run `cd build_tools "
+        "&& uv lock` if absent)."
     )

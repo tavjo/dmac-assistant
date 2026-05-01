@@ -31,3 +31,6 @@ docs/superpowers/
 
 # Per-task git worktrees
 .worktrees/
+
+# Vendored sources (host-side sync via scripts/sync-vendor-deps.sh)
+vendor/
