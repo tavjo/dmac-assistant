@@ -15,29 +15,31 @@ class _FakeAttach:
     ws.py:175-178 wraps it in `asyncio.to_thread`. Returns (stream, payload)
     tuples (stream == "stdout") or None to signal EOF.
 
-    Artifact creation (run_dir + marker.txt) is LAZY (CT-C1 amendment 2026-04-29):
-    the artifacts must appear AFTER chat_ws has taken its pre_turn_runs snapshot,
-    not at construction time. Lazy creation fires when read_frame is about to
-    return the final frame (len(self._frames) == 1).
+    Artifact creation is LAZY: the file MUST appear AFTER chat_ws has taken
+    its pre_turn_files snapshot, not at construction time. Lazy creation
+    fires when read_frame is about to return the final frame
+    (len(self._frames) == 1).
+
+    Plan A T12 (Amendment 10): artifact is now a flat file at
+    <scratch_root>/<user_id>/marker.txt rather than a subdir + nested file.
+    `artifact_file=None` (used by the eof_after_init=True branch) means
+    no artifact is created on disk — preserves the prior `run_dir=None`
+    sentinel semantics.
     """
-    def __init__(self, frames, run_dir=None):
+    def __init__(self, frames, artifact_file=None):
         self._frames = list(frames)
-        self._run_dir = run_dir
-        self._artifacts_created = False
+        self._artifact_file = artifact_file
+        self._artifact_created = False
 
     def read_frame(self):  # sync
         if not self._frames:
             return None
-        # Lazily create run_dir + marker.txt the FIRST time we are about to
-        # return the result frame. By this point chat_ws has already captured
-        # pre_turn_runs at session start, so the post-turn snapshot will see
-        # the directory as new and diff_runs returns it.
-        if (self._run_dir is not None
-                and not self._artifacts_created
+        if (self._artifact_file is not None
+                and not self._artifact_created
                 and len(self._frames) == 1):
-            self._run_dir.mkdir(parents=True, exist_ok=True)
-            (self._run_dir / "marker.txt").write_text("x")
-            self._artifacts_created = True
+            self._artifact_file.parent.mkdir(parents=True, exist_ok=True)
+            self._artifact_file.write_text("x")
+            self._artifact_created = True
         return self._frames.pop(0)
 
     def send_stdin(self, data: bytes) -> None:
@@ -47,15 +49,15 @@ class _FakeAttach:
         pass
 
 
-def _build_fake_attach_emitting(run_dir: Path, *, eof_after_init: bool = False):
+def _build_fake_attach_emitting(artifact_file, *, eof_after_init: bool = False):
     """Return a _FakeAttach pre-loaded with a real Claude stream-json sequence.
 
     Always emits a `system/init` event first. Then either:
       * eof_after_init=False: emits a `result` event; _FakeAttach lazily creates
-        run_dir + marker.txt on the read_frame call that returns that result.
+        the flat artifact_file on the read_frame call that returns that result.
       * eof_after_init=True:  no `result` event — read_frame returns None after init,
         which drives the synthetic-EOF branch in chat_ws (ws.py:360-410). The eof
-        branch passes run_dir=None to _FakeAttach so nothing is created on disk
+        branch passes artifact_file=None to _FakeAttach so nothing is created on disk
         (preserves the eof_after_init=True semantics — no artifacts to copy).
     """
     frames = [
@@ -63,7 +65,7 @@ def _build_fake_attach_emitting(run_dir: Path, *, eof_after_init: bool = False):
     ]
     if not eof_after_init:
         frames.append(("stdout", b'{"type":"result"}\n'))
-    return _FakeAttach(frames, run_dir=None if eof_after_init else run_dir)
+    return _FakeAttach(frames, artifact_file=None if eof_after_init else artifact_file)
 
 
 @pytest.fixture
@@ -98,7 +100,7 @@ def test_chat_ws_post_turn_copies_run(tmp_path, monkeypatch, eof_after_init, _al
     output.mkdir()
     claude_users.mkdir()
     dropbox.mkdir()
-    run_dir = scratch / user_id / "260427_120000_alice"
+    artifact_file = scratch / user_id / "marker.txt"
 
     captured_env = {}
 
@@ -111,7 +113,7 @@ def test_chat_ws_post_turn_copies_run(tmp_path, monkeypatch, eof_after_init, _al
 
     # MANDATORY R2 supplement (W4-C2): capture the fake_attach instance so the
     # post-WS-close `len(_frames) == 0` assertion can reach it.
-    _last_fake_attach = _build_fake_attach_emitting(run_dir, eof_after_init=eof_after_init)
+    _last_fake_attach = _build_fake_attach_emitting(artifact_file, eof_after_init=eof_after_init)
 
     # IMPORTANT: patch the names AS BOUND IN ws.py, not in containers.
     # ws.py:37-41 does `from .containers import async_start_container, ...`,
@@ -166,17 +168,14 @@ def test_chat_ws_post_turn_copies_run(tmp_path, monkeypatch, eof_after_init, _al
     finally:
         app.dependency_overrides.pop(get_token_store, None)
 
-    # Post-turn copier ran on the new run_id (happy path only — eof variant
-    # has no run_dir, so the assertion below is gated on eof_after_init).
+    # Post-turn copier ran on the new flat file (happy path only — eof variant
+    # has no artifact, so the assertion below is gated on eof_after_init).
     if not eof_after_init:
-        assert (output / user_id / "260427_120000_alice").is_dir()
-        # MANDATORY R2 supplement (W4-M2): closes the gameability gap where a
-        # buggy copier could mkdir() the destination but copy zero files. Do NOT
-        # remove — without this, a no-op copier passes T6.
-        dest = output / user_id / "260427_120000_alice"
-        assert (dest / "marker.txt").exists(), (
-            "copier must copy marker.txt into destination — "
-            "an empty mkdir'd directory is not acceptable"
+        # Plan A T12 (Amendment 10): the directory-based subdir-publish path
+        # is gone. Copier publishes flat files directly under <output>/<user_id>/.
+        assert (output / user_id / "marker.txt").exists(), (
+            "copier must publish flat marker.txt — directory-based "
+            "subdir-publish path is gone (Plan A T12 Amendment 10)"
         )
     # DMAC_PATH_MAPPINGS reached the container in BOTH variants.
     mappings = json.loads(captured_env["DMAC_PATH_MAPPINGS"])
