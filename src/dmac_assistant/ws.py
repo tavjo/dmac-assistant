@@ -34,8 +34,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
-from dmac_assistant.auth import AuthenticationError, TokenStore, get_token_store
-from dmac_assistant.config import load_config
+from dmac_assistant.auth import (
+    AuthenticatedIdentity,
+    AuthenticationError,
+    TokenStore,
+    get_token_store,
+)
+from dmac_assistant.config import BridgeConfig, load_config
 from dmac_assistant.containers import (
     async_attach,
     async_start_container,
@@ -256,6 +261,41 @@ def dispatch_post_turn_copy(
             )
 
 
+def _build_bridge_env(
+    *,
+    config: BridgeConfig | None = None,
+    identity: AuthenticatedIdentity | None = None,
+) -> dict[str, str]:
+    """Assemble the env passed to the in-container Claude Code from the
+    bridge's process environment.
+
+    Keys are forwarded only when set + non-empty for the new (T9-added)
+    keys. The three legacy keys are always emitted (passthrough), as empty
+    strings when unset, to preserve the OLD inline literal's behavior at
+    ws.py:274-280 and keep T9's blast radius zero.
+
+    The ``config`` and ``identity`` keyword-only parameters are reserved
+    for T9b (DMAC_PATH_MAPPINGS injection); T9 ignores them.
+    """
+    env: dict[str, str] = {}
+    # Legacy passthrough (W3-C2): three pre-existing keys are ALWAYS emitted,
+    # even as empty strings, to preserve the OLD `bridge_env` literal's
+    # behavior at ws.py:274-280. This keeps the blast radius of T9 zero
+    # against any existing test that asserts key presence.
+    for key in ("AWS_REGION", "AWS_BEARER_TOKEN_BEDROCK", "NEXTSEEK_URL"):
+        env[key] = os.environ.get(key, "")
+    # New keys (T9 additions): skip-if-empty. These were never in the OLD
+    # literal, so omission cannot break existing tests.
+    for key in ("GCP_API_KEY", "NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD"):
+        value = os.environ.get(key)
+        if value is not None and value.strip():
+            env[key] = value
+    if config is not None and identity is not None:  # pragma: no cover  # T9b adds path mappings
+        # T9b extends this branch to emit DMAC_PATH_MAPPINGS JSON.
+        pass
+    return env
+
+
 # ---------------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------------
@@ -323,13 +363,7 @@ async def chat_ws(
             requested_session_id = recent.session_id if recent else None
 
         # 3. Start the container.
-        bridge_env = {
-            "AWS_REGION": os.environ.get("AWS_REGION", ""),
-            "AWS_BEARER_TOKEN_BEDROCK": os.environ.get(
-                "AWS_BEARER_TOKEN_BEDROCK", ""
-            ),
-            "NEXTSEEK_URL": os.environ.get("NEXTSEEK_URL", ""),
-        }
+        bridge_env = _build_bridge_env()
         # H3 / T3: ensure the per-user host dirs exist BEFORE Docker creates
         # the bind mounts. Without this, the first login for a brand-new user
         # fails with `invalid mount config: bind source path does not exist`.
