@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>DMAC Assistant — POC</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23A31F34'/%3E%3Cstop offset='1' stop-color='%237C3AED'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Cpath d='M20 42V22h10c6 0 10 4 10 10s-4 10-10 10H20zm6-5h4c3 0 5-2 5-5s-2-5-5-5h-4v10z' fill='%23ffffff'/%3E%3C/svg%3E">
+  <style>
+    :root {
+      --bg: #FFFFFF;
+      --surface: #F8F6FC;
+      --surface-alt: #F0EDF5;
+      --text: #1a1a2e;
+      --text-muted: #6b7280;
+      --text-light: #9ca3af;
+      --accent: #A31F34;
+      --accent-light: #c8102e;
+      --accent-dark: #8a1a2c;
+      --purple: #7C3AED;
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --error: #ef4444;
+      --error-surface: #fef2f2;
+      --border: #e5e7eb;
+      --border-light: #f3f4f6;
+      --code-bg: #1e1e2e;
+      --code-text: #cdd6f4;
+      --code-purple: #cba6f7;
+
+      --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter",
+                   ui-sans-serif, system-ui, sans-serif;
+      --font-mono: "SF Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 16px;
+      --radius-pill: 999px;
+
+      --shadow-sm: 0 1px 2px rgba(17, 24, 39, 0.04);
+      --shadow-md: 0 4px 14px rgba(17, 24, 39, 0.06);
+      --shadow-lg: 0 20px 40px rgba(17, 24, 39, 0.08);
+
+      --gradient: linear-gradient(90deg, var(--accent), var(--purple));
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: var(--font-body);
+      font-size: 15px;
+      line-height: 1.55;
+      color: var(--text);
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* ---------- Brand ---------- */
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text);
+      font-weight: 600;
+      letter-spacing: -0.1px;
+    }
+    .brand-mark {
+      width: 28px; height: 28px;
+      border-radius: 8px;
+      background: var(--gradient);
+      display: grid; place-items: center;
+      color: #fff;
+      font-weight: 800;
+      font-size: 14px;
+      box-shadow: var(--shadow-md);
+    }
+    .brand-name { font-size: 15px; }
+    .brand-sub {
+      font-size: 11px;
+      color: var(--accent);
+      font-weight: 600;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border: 1px solid rgba(163,31,52,0.18);
+      border-radius: var(--radius-pill);
+      background: rgba(163,31,52,0.05);
+    }
+
+    /* ---------- Header ---------- */
+    header {
+      padding: 14px 32px;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 60px;
+    }
+    header .spacer { flex: 1; }
+
+    .chip {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-muted);
+      padding: 5px 12px;
+      border-radius: var(--radius-pill);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      white-space: nowrap;
+    }
+    .chip .dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--text-light);
+      flex: 0 0 auto;
+    }
+    .chip.connected { color: #14532d; background: #ecfdf5; border-color: #a7f3d0; }
+    .chip.connected .dot {
+      background: var(--success);
+      box-shadow: 0 0 0 3px rgba(34,197,94,0.18);
+    }
+    .chip.session { color: var(--accent); background: rgba(163,31,52,0.06); border-color: rgba(163,31,52,0.18); }
+    .chip.session .dot { background: var(--accent); }
+    .chip.error { color: #991b1b; background: var(--error-surface); border-color: #fecaca; }
+    .chip.error .dot { background: var(--error); }
+
+    /* ---------- Layout ---------- */
+    main { flex: 1; display: flex; min-height: 0; }
+
+    /* ---------- Login ---------- */
+    #login {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      min-height: 0;
+    }
+    .pitch {
+      padding: 72px 64px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 32px;
+      background:
+        radial-gradient(1200px 700px at -10% -20%, rgba(163,31,52,0.08), transparent 55%),
+        radial-gradient(900px 700px at 110% 120%, rgba(124,58,237,0.08), transparent 55%),
+        var(--surface);
+      border-right: 1px solid var(--border);
+      overflow: hidden;
+    }
+    .pitch-inner { max-width: 520px; }
+    .pitch-inner > .brand { margin-bottom: 28px; }
+
+    .eyebrow {
+      display: inline-block;
+      padding: 5px 12px;
+      border-radius: var(--radius-pill);
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--accent);
+      background: var(--bg);
+      border: 1px solid rgba(163,31,52,0.18);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      margin-bottom: 14px;
+    }
+    .pitch h1 {
+      font-size: 38px;
+      line-height: 1.15;
+      letter-spacing: -0.6px;
+      margin: 0 0 16px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .pitch h1 .grad {
+      background: var(--gradient);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .pitch p.lede {
+      color: var(--text-muted);
+      font-size: 16px;
+      line-height: 1.6;
+      max-width: 48ch;
+      margin: 0 0 32px;
+    }
+    .pitch ul.caps {
+      list-style: none;
+      display: grid;
+      gap: 14px;
+    }
+    .pitch ul.caps li {
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 14px;
+      align-items: start;
+      font-size: 14px;
+      color: var(--text-muted);
+    }
+    .pitch ul.caps li .ic {
+      width: 34px; height: 34px; border-radius: 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      display: grid; place-items: center;
+      font-size: 14px;
+      box-shadow: var(--shadow-sm);
+    }
+    .pitch ul.caps li .ic.a { color: var(--accent); }
+    .pitch ul.caps li .ic.b { color: var(--purple); }
+    .pitch ul.caps li b { color: var(--text); font-weight: 600; }
+    .pitch .footnote {
+      color: var(--text-light);
+      font-size: 12px;
+      letter-spacing: 0.2px;
+    }
+
+    .login-side {
+      display: grid;
+      place-items: center;
+      padding: 72px 64px;
+      background: var(--bg);
+    }
+    .card {
+      width: min(420px, 100%);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 32px 32px 28px;
+      box-shadow: var(--shadow-lg);
+    }
+    .card h2 {
+      margin: 0 0 6px;
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+      color: var(--text);
+    }
+    .card .sub {
+      margin: 0 0 24px;
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    label {
+      display: block;
+      font-size: 12.5px;
+      color: var(--text);
+      margin-top: 16px;
+      font-weight: 500;
+    }
+    input {
+      font: inherit;
+      color: var(--text);
+    }
+    input[type="text"], input[type="password"], input:not([type]) {
+      width: 100%;
+      padding: 11px 14px;
+      margin-top: 6px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg);
+      color: var(--text);
+      outline: none;
+      transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    input::placeholder { color: var(--text-light); }
+    input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(163,31,52,0.15);
+    }
+
+    button {
+      font: inherit;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 11px 18px;
+      background: var(--gradient);
+      color: #fff;
+      font-weight: 600;
+      font-size: 14.5px;
+      border: none;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: transform .08s ease, filter .15s ease, box-shadow .15s ease;
+      box-shadow: 0 6px 16px rgba(163,31,52,0.22);
+    }
+    button:hover { filter: brightness(1.05); box-shadow: 0 8px 22px rgba(163,31,52,0.28); }
+    button:active { transform: translateY(1px); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; box-shadow: none; filter: saturate(0.8); }
+    .card button { width: 100%; margin-top: 24px; padding: 12px 18px; }
+    .err-msg {
+      color: var(--error);
+      margin-top: 14px;
+      font-size: 13px;
+      min-height: 17px;
+    }
+
+    /* ---------- Chat ---------- */
+    #chat {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      background: var(--bg);
+    }
+    #transcript {
+      flex: 1;
+      overflow-y: auto;
+      padding: 28px 0 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      scroll-behavior: smooth;
+    }
+    .row {
+      display: flex;
+      gap: 12px;
+      padding: 0 32px;
+      max-width: 900px;
+      width: 100%;
+      margin: 0 auto;
+    }
+    .row.user { justify-content: flex-end; }
+    .row.user .avatar { order: 2; }
+
+    .avatar {
+      flex: 0 0 auto;
+      width: 30px; height: 30px;
+      border-radius: 50%;
+      display: grid; place-items: center;
+      font-size: 12px;
+      font-weight: 700;
+      background: var(--surface);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      margin-top: 2px;
+    }
+    .avatar.claude {
+      background: var(--gradient);
+      color: #fff;
+      border-color: transparent;
+      box-shadow: var(--shadow-md);
+    }
+    .avatar.user {
+      background: var(--surface-alt);
+      color: var(--text);
+    }
+
+    .bubble {
+      max-width: min(720px, 78%);
+      padding: 11px 15px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border);
+      background: var(--bg);
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      box-shadow: var(--shadow-sm);
+    }
+    .bubble .who {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+      letter-spacing: 0.3px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .bubble.user {
+      background: linear-gradient(135deg, rgba(163,31,52,0.06), rgba(124,58,237,0.06));
+      border-color: rgba(163,31,52,0.18);
+      color: var(--text);
+    }
+    .bubble.user .who { color: var(--accent); }
+    .bubble.assistant { background: var(--surface); border-color: var(--border); }
+    .bubble.tool {
+      background: var(--code-bg);
+      border-color: #2a2a3e;
+      color: var(--code-text);
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      box-shadow: 0 2px 8px rgba(30,30,46,0.16);
+    }
+    .bubble.tool .who { color: var(--code-purple); }
+    .bubble.system {
+      background: var(--surface);
+      color: var(--text-muted);
+      font-size: 12.5px;
+      border: 1px dashed var(--border);
+      padding: 6px 12px;
+    }
+    .bubble.error {
+      background: var(--error-surface);
+      border-color: #fecaca;
+      color: #991b1b;
+      font-size: 12.5px;
+      font-family: var(--font-mono);
+    }
+    .row.system, .row.error { justify-content: center; }
+    .row.system .avatar, .row.error .avatar { display: none; }
+
+    form#composer {
+      display: flex;
+      gap: 10px;
+      padding: 16px 32px 20px;
+      border-top: 1px solid var(--border);
+      background: var(--bg);
+      max-width: 900px;
+      width: 100%;
+      margin: 0 auto;
+    }
+    form#composer input {
+      flex: 1;
+      margin-top: 0;
+      background: var(--surface);
+    }
+    form#composer button { margin-top: 0; padding: 11px 20px; }
+
+    /* ---------- Responsive ---------- */
+    @media (max-width: 900px) {
+      #login { grid-template-columns: 1fr; }
+      .pitch, .login-side { padding: 40px 28px; }
+      .pitch { border-right: none; border-bottom: 1px solid var(--border); }
+      .pitch h1 { font-size: 28px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="brand">
+      <span class="brand-mark">D</span>
+      <span class="brand-name">DMAC Assistant</span>
+      <span class="brand-sub">POC</span>
+    </span>
+    <span class="spacer"></span>
+    <span id="user-chip" class="chip" style="display:none;">
+      <span class="dot"></span><span id="user-chip-text"></span>
+    </span>
+    <span id="session-chip" class="chip session" style="display:none;">
+      <span class="dot"></span><span id="session-chip-text"></span>
+    </span>
+    <span id="status" class="chip"><span class="dot"></span><span id="status-text">disconnected</span></span>
+  </header>
+
+  <main>
+    <!-- ========== LOGIN ========== -->
+    <section id="login">
+      <aside class="pitch">
+        <div class="pitch-inner">
+          <span class="brand">
+            <span class="brand-mark">D</span>
+            <span class="brand-name">DMAC Assistant</span>
+          </span>
+          <div style="margin-top:28px;">
+            <span class="eyebrow">MIT BioMicro Center</span>
+          </div>
+          <h1>A lab-aware <span class="grad">Claude Code</span> for the BioMicro Center.</h1>
+          <p class="lede">
+            Chat with a containerized Claude Code agent that knows your projects,
+            your sample catalog, and your pipelines — no terminal required.
+          </p>
+          <ul class="caps">
+            <li>
+              <span class="ic a">◆</span>
+              <span><b>NExtSEEK-aware.</b> Ask for sample counts, project metadata, or study details and the agent queries the catalog directly.</span>
+            </li>
+            <li>
+              <span class="ic b">◆</span>
+              <span><b>Project-scoped.</b> Read-only mounts of your Dropbox project folders; writes land in a per-user scratch.</span>
+            </li>
+            <li>
+              <span class="ic a">◆</span>
+              <span><b>Session resumption.</b> Reconnect mid-analysis and pick up exactly where you left off.</span>
+            </li>
+            <li>
+              <span class="ic b">◆</span>
+              <span><b>Bedrock-backed.</b> Runs on institutional AWS Bedrock credentials; nothing persisted outside MIT.</span>
+            </li>
+          </ul>
+        </div>
+        <div class="footnote">
+          MIT BioMicro Center · Internal POC · Claude Code + FastAPI bridge
+        </div>
+      </aside>
+
+      <div class="login-side">
+        <form class="card" id="login-form">
+          <h2>Sign in</h2>
+          <p class="sub">Use your NExtSEEK credentials to start a session.</p>
+          <label for="user_id">User ID</label>
+          <input id="user_id" name="user_id" autocomplete="username" required>
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+          <button type="submit" id="login-btn">Log in &amp; connect</button>
+          <div class="err-msg" id="login-err"></div>
+        </form>
+      </div>
+    </section>
+
+    <!-- ========== CHAT ========== -->
+    <section id="chat" style="display:none;">
+      <div id="transcript"></div>
+      <form id="composer">
+        <input id="msg" placeholder="Ask about a sample, project, or kick off an analysis…" autocomplete="off" required>
+        <button type="submit" id="send-btn">Send</button>
+      </form>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $("status");
+    const statusText = $("status-text");
+    const sessionChip = $("session-chip");
+    const sessionChipText = $("session-chip-text");
+    const userChip = $("user-chip");
+    const userChipText = $("user-chip-text");
+    const transcript = $("transcript");
+
+    let token = null;
+    let ws = null;
+    let currentSessionId = null;
+    let firstFrameSent = false;
+
+    function setStatus(text, kind = "") {
+      statusText.textContent = text;
+      statusEl.className = "chip " + kind;
+    }
+
+    /** Enable/disable chat composer when WebSocket is not OPEN (e.g. reconnecting). */
+    function setInputReady(ready) {
+      const msgInput = $("msg");
+      const sendBtn = $("send-btn");
+      if (!msgInput || !sendBtn) return;
+      msgInput.disabled = !ready;
+      sendBtn.disabled = !ready;
+      if (!ready && ws != null && ws.readyState !== WebSocket.OPEN) {
+        const t = statusText.textContent || "";
+        if (!t.startsWith("reconnecting")) {
+          statusText.dataset.prevHint = t;
+          setStatus("reconnecting…", "error");
+        }
+      } else if (ready && statusText && statusText.textContent === "reconnecting…") {
+        const prev = statusText.dataset.prevHint;
+        if (prev) setStatus(prev, "connected");
+      }
+    }
+
+    function addRow(kind, body, meta) {
+      const row = document.createElement("div");
+      row.className = "row " + kind;
+
+      const avatar = document.createElement("div");
+      avatar.className = "avatar " + (kind === "assistant" ? "claude" : kind === "user" ? "user" : "");
+      avatar.textContent =
+        kind === "assistant" ? "C" :
+        kind === "user"      ? "U" :
+        kind === "tool"      ? "⚙" : "";
+      row.appendChild(avatar);
+
+      const b = document.createElement("div");
+      b.className = "bubble " + kind;
+      if (meta) {
+        const who = document.createElement("div");
+        who.className = "who";
+        who.textContent = meta;
+        b.appendChild(who);
+      }
+      const txt = document.createElement("div");
+      txt.textContent = body;
+      b.appendChild(txt);
+      row.appendChild(b);
+      transcript.appendChild(row);
+      transcript.scrollTop = transcript.scrollHeight;
+      return b;
+    }
+
+    $("login-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      $("login-err").textContent = "";
+      $("login-btn").disabled = true;
+      const user_id = $("user_id").value.trim();
+      const password = $("password").value;
+      try {
+        const res = await fetch("/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user_id, password }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          let detailMsg;
+          const d = body.detail;
+          if (typeof d === "string") {
+            detailMsg = d;
+          } else if (Array.isArray(d)) {
+            detailMsg = d.map((x) => (typeof x === "object" && x.msg ? x.msg : JSON.stringify(x))).join("; ");
+          } else {
+            detailMsg = `HTTP ${res.status}`;
+          }
+          throw new Error(detailMsg);
+        }
+        const data = await res.json();
+        token = data.token;
+        userChipText.textContent = user_id;
+        userChip.style.display = "";
+        $("login").style.display = "none";
+        $("chat").style.display = "flex";
+        connectWs();
+      } catch (err) {
+        $("login-err").textContent = err.message || String(err);
+        $("login-btn").disabled = false;
+      }
+    });
+
+    setInputReady(false);
+
+    function connectWs() {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      const url = `${proto}//${location.host}/ws/chat`;
+      setStatus("connecting…");
+      setInputReady(false);
+      ws = new WebSocket(url, ["dmac.bearer", token]);
+      ws.addEventListener("open",  () => {
+        setStatus("connected", "connected");
+        setInputReady(true);
+      });
+      ws.addEventListener("error", () => setStatus("connection error", "error"));
+      ws.addEventListener("close", (ev) => {
+        setInputReady(false);
+        setStatus(`closed · ${ev.code}`, "error");
+      });
+      ws.addEventListener("message", (ev) => {
+        let frame;
+        try { frame = JSON.parse(ev.data); }
+        catch { addRow("error", ev.data, "parse error"); return; }
+        handleFrame(frame);
+      });
+    }
+
+    function handleFrame(f) {
+      switch (f.type) {
+        case "session_started":
+          currentSessionId = f.session_id;
+          sessionChipText.textContent = `session ${String(f.session_id).slice(0, 8)}`;
+          sessionChip.style.display = "";
+          addRow("system", `session started · ${f.session_id}`);
+          break;
+        case "assistant_message":
+          addRow("assistant", f.content || "", "Claude");
+          break;
+        case "tool_use": {
+          const input = typeof f.input === "object" ? JSON.stringify(f.input, null, 2) : String(f.input);
+          addRow("tool", input, `tool · ${f.tool || "?"}`);
+          break;
+        }
+        case "error":
+          addRow("error", JSON.stringify(f, null, 2), "error");
+          break;
+        case "session_ended":
+          addRow("system", `session ended · ${f.session_id || ""}`);
+          break;
+        default:
+          addRow("system", JSON.stringify(f));
+      }
+    }
+
+    $("composer").addEventListener("submit", (e) => {
+      e.preventDefault();
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const content = $("msg").value;
+      if (!content.trim()) return;
+      const frame = { type: "user_message", content };
+      if (!firstFrameSent) {
+        frame.new_session = false;
+        firstFrameSent = true;
+      }
+      ws.send(JSON.stringify(frame));
+      addRow("user", content, "You");
+      $("msg").value = "";
+    });
+  </script>
+</body>
+</html>
