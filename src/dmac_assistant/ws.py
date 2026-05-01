@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re as _re
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,8 @@ from dmac_assistant.containers import (
     async_start_container,
     async_stop_and_remove,
 )
+from dmac_assistant.copier import copy_run_artifacts
+from dmac_assistant.run_tracker import diff_runs, snapshot_scratch_runs
 from dmac_assistant.sessions import most_recent_session
 from dmac_assistant.streamjson import StreamEvent, StreamJsonParser
 
@@ -224,6 +227,35 @@ async def _send_stdin_line(
         return False
 
 
+def dispatch_post_turn_copy(
+    *,
+    scratch_root: Path,
+    output_root: Path,
+    user_id: str,
+    new_run_ids: set[str],
+) -> None:
+    """Publish every new run_id discovered during the turn.
+
+    Errors are swallowed (logged with type name only — R-03) so copier
+    failure cannot kill the WS session (L2). For multiple new runs, each
+    is published independently; one failure does not block the others.
+    Iteration is sorted so multi-run publication is deterministic.
+    """
+    for run_id in sorted(new_run_ids):
+        try:
+            copy_run_artifacts(
+                scratch_root=scratch_root,
+                output_root=output_root,
+                user_id=user_id,
+                run_id=run_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — broad-but-contained
+            log.warning(
+                "copier failed for user=%s run=%s: %s",
+                user_id, run_id, type(exc).__name__,
+            )
+
+
 # ---------------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------------
@@ -303,6 +335,25 @@ async def chat_ws(
         # fails with `invalid mount config: bind source path does not exist`.
         ensure_user_output_dir(config.output_root, identity.user_id)  # pragma: no cover  # T6 covers this end-to-end
         (config.scratch_root / identity.user_id).mkdir(parents=True, exist_ok=True)  # pragma: no cover  # T6 covers this end-to-end
+        pre_turn_runs = snapshot_scratch_runs(  # pragma: no cover  # T6 covers this end-to-end
+            config.scratch_root, identity.user_id
+        )
+
+        async def fire_post_turn_copy() -> None:  # pragma: no cover  # T6 covers this end-to-end
+            after = snapshot_scratch_runs(config.scratch_root, identity.user_id)
+            new_runs = diff_runs(pre_turn_runs, after)
+            if not new_runs:
+                return
+            await asyncio.to_thread(
+                dispatch_post_turn_copy,
+                scratch_root=config.scratch_root,
+                output_root=config.output_root,
+                user_id=identity.user_id,
+                new_run_ids=new_runs,
+            )
+            pre_turn_runs.clear()
+            pre_turn_runs.update(after)
+
         try:
             start_task = asyncio.create_task(
                 async_start_container(
@@ -404,6 +455,7 @@ async def chat_ws(
                         requested_session_id=requested_session_id,
                         parser=parser,
                         awaiting_end=awaiting_end,
+                        post_turn_callback=fire_post_turn_copy,
                     )
 
             # Clean EOF: flush parser + emit synthetic session_ended if none.
@@ -421,6 +473,7 @@ async def chat_ws(
                     requested_session_id=requested_session_id,
                     parser=parser,
                     awaiting_end=awaiting_end,
+                    post_turn_callback=fire_post_turn_copy,
                 )
 
             if session_started_emitted and awaiting_end[0]:
@@ -433,6 +486,7 @@ async def chat_ws(
                 )
                 session_ended_emitted = True
                 awaiting_end[0] = False
+                await fire_post_turn_copy()
         finally:
             relay_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -511,8 +565,16 @@ async def _dispatch_event(
     requested_session_id: str | None,
     parser: StreamJsonParser,
     awaiting_end: list[bool],
+    post_turn_callback: Callable[[], Awaitable[None]] | None = None,
 ) -> tuple[bool, bool, str | None]:
-    """Emit the WS frames for a single parser event and update state."""
+    """Emit the WS frames for a single parser event and update state.
+
+    When a ``session_ended`` frame is dispatched and ``post_turn_callback``
+    is set, the callback is awaited before the function returns. This is
+    the single hook the bridge uses to fire the post-turn copier on the
+    NORMAL turn-end path. The synthetic-EOF branch in ``chat_ws`` awaits
+    the same callable directly.
+    """
     # system/init: drives session_started + resume-mismatch ordering.
     if event.kind == "event":
         payload = event.payload or {}
@@ -572,6 +634,8 @@ async def _dispatch_event(
         if frame.get("type") == "session_ended":
             session_ended_emitted = True
             awaiting_end[0] = False
+            if post_turn_callback is not None:
+                await post_turn_callback()
     return session_started_emitted, session_ended_emitted, current_session_id
 
 
