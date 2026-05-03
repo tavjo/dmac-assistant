@@ -22,6 +22,12 @@ Open issues that affect architecture decisions or block production deployment li
 
 - [`bedrock-token-exposure.md`](known-issues/bedrock-token-exposure.md) — `AWS_BEARER_TOKEN_BEDROCK` is exfiltrable by the in-container agent. **Production-blocker; deferred for solo-developer POC use only.** The containment plan at [`bedrock-token-containment-2026-04-24.md`](bedrock-token-containment-2026-04-24.md) was aborted at Phase 0 spike 0.2 (2026-04-24). Two surviving pivot options + spike evidence are documented in the issue file.
 
+## Pre-Production Hardening Designs
+
+Design specs captured for work that must land before any non-solo deployment. These are documents, not active plans — do not begin implementation without an explicit task that references them:
+
+- [`docs/superpowers/specs/2026-05-01-output-scrubber-design.md`](../docs/superpowers/specs/2026-05-01-output-scrubber-design.md) — defense-in-depth output scrubber + egress lockdown for the credential-leak vector documented in `bedrock-token-exposure.md`. Additive to (not a replacement for) Options A or B in that issue.
+
 Files under `.claude/known-issues/` are intentionally outside any path that could be COPY'd into the in-container `dmac-assistant` image. Keep it that way — these documents enumerate containment failure modes the in-container agent must not be able to read.
 
 ## What This System Is
