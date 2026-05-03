@@ -1,5 +1,219 @@
 # nextseek plugin — Plan B (plugin authoring) Implementation Plan
 
+## COMPACT HANDOFF (2026-05-02 LATE NIGHT — Wave 3 CLOSED-OUT, branch pushed, Wave 4 scheduled remote)
+
+> **Authoritative for current state. Supersedes the auto-generated COLD-START HANDOFF immediately below + the older `## EXECUTION STATUS (2026-05-03)` + the older `## COMPACT HANDOFF (2026-05-02 NIGHT ...)` sections further down.**
+
+### One-paragraph state
+
+Wave 3 fully merged + reviewed ALL-PASS this session. Integration HEAD advanced `7a31286` → `e33be6b` (8 shim commits + 8 `feat: complete...` merge commits via `merge_task.sh ... 0-host-A1-deferred`). Post-merge spec-level adversarial review (`feature-dev:code-reviewer`) returned ALL-PASS for B03–B09 with 2 carryover risks logged (B17 forward-prop tracker; stripped-PATH dispatch tests on 6 of 8 shims). Branch `ultraplan/nextseek-plugin-2026-04-27` pushed to origin with upstream tracking (was previously local-only). Plan file + 9 task specs force-added (`git add -f`) so a remote agent could read them; this followed the existing precedent of force-adding `build_context/plugins/nextseek/...` paths. Two remote one-shot routines scheduled for Wave 4 (next session must NOT duplicate this work — see "Scheduled remote agents" below).
+
+### Tracked state
+
+- **Integration HEAD**: `e33be6b` (was `7a31286` at session start). Now contains: Wave 1 + 2 + 3 (B01–B09) + a `chore:` commit force-tracking the plan + specs.
+- **Branch upstream**: `origin/ultraplan/nextseek-plugin-2026-04-27` (set this session via `git push -u`). All 17 new commits pushed.
+- **Worktrees on disk**:
+  - B01, B02 (legacy, post-merge — safe to remove)
+  - B03–B09 worktrees + branches REMOVED by `merge_task.sh` (no action needed)
+  - 3 stale Plan A spike worktrees at `.worktrees/task-0.{1,2,3}` (still low-priority cleanup)
+- **Test suite**: `235 passed, 10 skipped` on integration HEAD. Skipped = chat_nextseek-importing shim tests per Amendment 1 / `pytest.importorskip` (EXPECTED). Bridge-suite-wide `--cov-fail-under=95` from `pyproject.toml` fails at 51% — UNRELATED to plugin work; pre-existing on `src/dmac_assistant/`. Run with `--no-cov` to verify health.
+- **Tracked under `.claude/plans/`**: plan file + all 9 task specs (B01–B09) force-added in commit `<chore commit>` 2026-05-02 late night so remote agents can access them. `.claude/` remains in `.gitignore` line 29; the force-add precedent matches `build_context/plugins/nextseek/...`.
+
+### What changed this session (2026-05-02 → 2026-05-03 transition)
+
+1. **Onboarded** to the 2026-05-02 NIGHT compact handoff. Verified all 8 Wave-3 task branches had spec-compliant commits matching the handoff table byte-for-byte.
+2. **Merged all 8 Wave-3 task branches** sequentially via `merge_task.sh nextseek-plugin-2026-04-27 task-B0X-<slug> 0-host-A1-deferred`. All 8 clean (`ort` strategy, no conflicts). Worktrees + branches deleted by the script. Integration HEAD `7a31286` → `e33be6b`.
+3. **Post-merge spec-level reviewer pass** (`feature-dev:code-reviewer` per `feedback_post_merge_review.md`): ALL-PASS. CRITICAL-3 (B06a) and CRITICAL-4 (B06b) security boundaries correctly implemented + tested. B09 confirmed deterministic dispatcher. Importorskip + Amendment-1 host-informational coverage uniformly honored.
+4. **2 carryover risks surfaced** (NOT defects; documented in 2026-05-03 Amendment Log entry below):
+   - B17 forward-propagation lives only in prose (no machine-readable tracker in tree). Mitigation: Wave 5 explosion MUST inherit verbatim merge-condition text from Amendment 1.
+   - Stripped-PATH dispatch tests on B04/B05/B06a/B06b/B07/B08 require `/usr/bin/python` to resolve in image. Mitigation: B17 image-e2e MUST verify, OR Wave 5 amendment normalizes to `{**os.environ, ...}`.
+5. **Plan file updated**: added `## EXECUTION STATUS (2026-05-03)` top-section + `## Amendment Log` entry "2026-05-03 — Wave 3 merged + post-merge spec-level review (ALL-PASS)".
+6. **Branch pushed**: `git add -f` on plan file + task-specs dir (`.claude/` is gitignored; precedent for force-add matches `build_context/`); committed; `git push -u origin ultraplan/nextseek-plugin-2026-04-27`. Branch now has upstream + all 17 new commits on remote.
+7. **2 remote one-shot routines scheduled** for Wave 4 spec authoring + adversarial review (see next section).
+
+### Scheduled remote agents (CRITICAL — do NOT duplicate this work in next session)
+
+| # | Routine name | Trigger ID | Fires (UTC) | Local (ET) | Purpose |
+|---|---|---|---|---|---|
+| 1 | `wave-4-spec-authoring-nextseek-plugin` | `trig_01G5J7nWz9opZ3xk3pvDqVJD` | 2026-05-03T01:03:32Z | Sat 9:03 PM | Author B10/B11/B12 specs + push to branch |
+| 2 | `wave-4-adversarial-spec-review-nextseek-plugin` | `trig_01Nq1HFi88g4uZHdbD3VgXku` | 2026-05-03T04:03:32Z | Sun 12:03 AM | 6-lens adversarial Phase 4 review + write report to `.claude/reviews/wave-4-phase4-review-2026-05-03.md` + push |
+
+Both run `claude-opus-4-7` against `ultraplan/nextseek-plugin-2026-04-27`. Both are one-shot (auto-disable after firing). User mentioned next 5-hour session will start ~2h 16min after schedule was set (~2026-05-03T01:00Z).
+
+**Expected artifacts on branch when next session starts**:
+- `.claude/plans/nextseek-plugin-2026-04-27-tasks/task-B10-skill-md.md`
+- `.claude/plans/nextseek-plugin-2026-04-27-tasks/task-B11-nextseek-slash-command.md`
+- `.claude/plans/nextseek-plugin-2026-04-27-tasks/task-B12-permission-allowlist-setup.md`
+- `.claude/reviews/wave-4-phase4-review-2026-05-03.md`
+- 2 new commits on `ultraplan/nextseek-plugin-2026-04-27` (one from each agent)
+
+**Failure modes to check**:
+- `WAVE_4_AUTHORING_BLOCKED.md` at repo root → Agent 1 hit a hard blocker; Agent 2 short-circuits and writes a "review skipped" report. Investigate the blocker file.
+- Missing spec files but no blocker → Agent 1 partially failed; Agent 2 writes "specs missing" report.
+- Both files present + review report present → proceed with reviewer findings.
+
+Routine URLs:
+- https://claude.ai/code/routines/trig_01G5J7nWz9opZ3xk3pvDqVJD
+- https://claude.ai/code/routines/trig_01Nq1HFi88g4uZHdbD3VgXku
+
+### Resume protocol (FRESH SESSION)
+
+1. Open new Claude Code session in `/Users/taishajoseph/Documents/Projects/dmac_assistant`.
+2. Run `/ultraplan onboard`. Onboard reads THIS section first.
+3. **First action**: `git pull origin ultraplan/nextseek-plugin-2026-04-27` to fetch the 2 remote agents' commits.
+4. Check `.claude/reviews/wave-4-phase4-review-2026-05-03.md` for Agent 2's verdict.
+5. Per verdict:
+   - **APPROVE / APPROVE-WITH-MICRO-FIXES**: apply any micro-fixes; proceed to Phase 5 lock + Wave 4 execution dispatch.
+   - **REVISE**: dispatch local feature-dev:code-reviewer for second opinion, then revise specs in main session, re-review.
+   - **FAIL / BLOCKED**: triage; may need to re-author one or more specs from scratch.
+6. After Wave 4 execution + merges + post-merge review: proceed to Wave 5 (B13–B16). When B17 is exploded in Wave 6, MUST include the binding `--cov=build_context/plugins/nextseek/bin/_nextseek_runner.py --cov-fail-under=95` merge-condition (Amendment 1 forward-propagation rule).
+
+### Next session followups (priority order)
+
+1. Pull remote, check `.claude/reviews/wave-4-phase4-review-2026-05-03.md`, react per verdict.
+2. If Wave 4 specs land clean → Phase 5 lock → execute Wave 4 (B10/B11/B12) — likely sequential rather than parallel since these are infrastructure tasks with potential interdependencies.
+3. After Wave 4 merge → Wave 5 explosion (B13–B16 = ingest pipelines + context snapshot). When authoring B17 (Wave 6), inherit the verbatim binding-gate text from Amendment 1.
+4. Cleanup (low-priority): orphan B01/B02 worktrees + 3 stale Plan A spike worktrees.
+
+### Critical contracts inherited
+
+- **chat_nextseek host/image split**: any host pytest target importing `chat_nextseek` MUST use `pytest.importorskip("chat_nextseek")` at module level. NO `make install-chat-nextseek` references.
+- **Amendment 1**: NO `--cov-fail-under=95` on host pytest invocations; use FILE-PATH `--cov=...` for diagnostic only; binding gate is image-side via Wave-5/6 B17.
+- **build_context/ rule**: ANY `git add` of files under `build_context/plugins/nextseek/` MUST use `-f` (gitignored).
+- **Plan/spec files**: now also force-added to `.claude/plans/` precedent — future plan/spec edits use `git add -f`.
+- **Coverage default**: 95% (B2 amendment removed the 90% exception for B2; same default for B3+).
+- **3-layer write-safety contract** (CRITICAL-3 + CRITICAL-4): `nextseek-api-write` MUST be EXCLUDED from B12's L1 allowlist.
+
+---
+
+## COLD-START HANDOFF (auto-generated, partial — see compact handoff above for authoritative state)
+**Generated**: 2026-05-02T20:01:42.415451
+**Plan**: nextseek plugin — Plan B (plugin authoring) Implementation Plan (`?`)
+**Last status**: APPLIED. Reviewer (`feature-dev:code-reviewer`) returned APPROVE-WITH-MICRO-FIXES; 9 of the 10 micro-fixes applied to spec bodies (8 stale `--cov-fail-under=95` checklist items across 8 specs + B03 §8 surviving "≥95% on host held by B2 suite" misreading + B03 §1 prose qualifier). Item 10 (B17 forward-propagation) recorded above.
+
+### 1. Original Goal
+(not found)
+
+### 2. Completed Tasks
+None yet.
+
+### 3. In-Progress Tasks
+None.
+
+### 4. Remaining Tasks
+None — all tasks accounted for.
+
+### 5. Key Decisions & Amendments
+### 2026-05-03 — Wave 3 merged + post-merge spec-level review (ALL-PASS)
+
+- **Trigger**: `/ultraplan onboard` resumed in fresh session. All 8 Wave-3 task branches were verified committed with spec-compliant subjects (matching the 2026-05-02 NIGHT compact handoff table byte-for-byte). User selected "Merge all 8 + reviewer pass."
+- **Action**: Sequential `merge_task.sh nextseek-plugin-2026-04-27 task-B0X-<slug> 0-host-A1-deferred` for B03 → B09. All 8 merges clean (`ort` strategy, no conflicts). Worktrees + task branches removed by the script. Integration HEAD advanced from `7a31286` to `e33be6b` (8 shim commits + 8 merge commits, 16 total).
+- **Verification**: `uv run pytest tests/unit/ --no-cov` reports `235 passed, 10 skipped`. The 10 skipped = chat_nextseek-importing shim tests per Amendment 1 / `importorskip` (EXPECTED). The bridge-suite-wide `--cov-fail-under=95` from `pyproject.toml` fails at 51% (covers `src/dmac_assistant/`, pre-existing, unrelated to plugin work).
+- **Reviewer pass** (`feature-dev:code-reviewer`, per memory `feedback_post_merge_review.md`): SPEC-LEVEL adversarial cross-check of all 8 merged tasks against §10 merge conditions + Amendment 1 + the host/image Python invariant. **Verdict: ALL-PASS** for B03, B04, B05, B06a, B06b, B07, B08, B09. CRITICAL-3 (B06a `--confirmed-write` rejection) and CRITICAL-4 (B06b parser-plan + confirmed-write gate) security boundaries correctly implemented + tested with the contractual error messages. B09 confirmed deterministic dispatcher (no LLM call content). Importorskip discipline + Amendment-1 host-informational coverage uniformly honored.
+- **Reviewer-flagged carryover risks** (NOT defects; for forward planning):
+  1. **B17 forward-propagation lives only in prose**. No machine-readable tracker (TODO marker, skipped test, conftest fixture) in the tree would fail if Wave 5 forgets the binding `--cov-fail-under=95` gate. Mitigation: Wave 5 explosion MUST inherit the verbatim merge-condition text from the previous Amendment 1 entry's "Forward-propagation rule" paragraph.
+  2. **Stripped-PATH dispatch tests are latent image-side risks**. B04, B05, B06a, B06b, B07, B08 dispatch tests use `env={"PATH": "/usr/bin:/bin", ...}`; B03 + B09 use `{**os.environ, ...}`. Both spec-faithful. On image, the stripped form requires `/usr/bin/python` to resolve to a real interpreter. Mitigation: B17 image-e2e MUST verify `/usr/bin/python` resolves correctly inside the image, OR a Wave-5 amendment normalizes all 8 dispatch tests to inherited-env form. Flag at B17 explosion.
+- **Status**: APPLIED. Plan top section "## EXECUTION STATUS (2026-05-03)" added; supersedes the 2026-05-02 NIGHT compact handoff. Tasks #1–#9 in this session's TodoList all completed.
+
+### 2026-05-02 (evening) — Amendment 1: host-coverage gate informational, image gate binding (after B03 canary executed)
+
+- **Trigger**: B03 canary executor (commit `498de87` on `task/B03-entity-extract`) returned `DONE_WITH_CONCERNS` with the diagnostic that host-side `--cov-fail-under=95` is structurally unachievable. `pytest.importorskip("chat_nextseek")` (added unconditionally to B2 in fixup `3765ed3` + every Wave 3 spec per the 2026-05-02 host-import audit) causes module-level skip on host (Python 3.12, chat_nextseek requires ≥3.14, image-only). On host, `_nextseek_runner.py` is therefore never imported → coverage = 0% by structural invariant. Spec §8 prediction "17 passed (B2 dispatch tests w/ importorskip allow them) + N skipped (B0X), coverage ≥95% held by B2 suite" was based on a misreading of `pytest.importorskip`: it is a hard module-level skip when the import fails, not a per-test conditional.
+- **Proposed change**: Replace the host-side `--cov-fail-under=95` gate in every Wave 3 task spec's §4 Step 4 + §8 Verification block with a host-informational coverage report (FILE-PATH `--cov=...` flag preserved for diagnostic, `--cov-fail-under=...` flag removed). Binding ≥95% gate moves to image-side, enforced by Wave 5 B17 image-e2e. §10 merge conditions updated to specify "host informational, image binding."
+- **Reason**: structural invariant (importorskip → 0% host coverage) cannot be satisfied; specs §8 predictions are wrong; executors cannot be expected to satisfy a hard-impossible gate. Implementation requirements unchanged — this is a verification-side correction only. No code changes to existing B1/B2 commits. B03 canary commit `498de87` becomes compliant under the amendment.
+- **Blast radius**: 8 spec files. Inline edits applied:
+  1. `task-B03-entity-extract.md` §4 Step 4 + §8 (`replace_all=true`); §10 merge condition #1 rewritten.
+  2. `task-B04-parse.md` §4 Step 4 + §8 (`replace_all=true`); §10 unchanged ("§8 all green" still satisfiable).
+  3. `task-B05-plan.md` same pattern as B04.
+  4. `task-B06a-api-read.md` same pattern as B04 (§10 mention of CRITICAL-3 boundary preserved).
+  5. `task-B06b-api-write.md` same pattern as B04.
+  6. `task-B07-graph.md` same pattern as B04.
+  7. `task-B08-generate-submission.md` same pattern as B04.
+  8. `task-B09-report.md` §4 + §8 (`replace_all=true`); §10 merge condition #1 rewritten (was "coverage ≥95% with FILE-PATH `--cov=` form").
+- **Re-vetting**: ONE combined Phase-4-style reviewer dispatch (`feature-dev:code-reviewer`) over all 8 amended specs, returning per-spec verdicts in a single response. Per memory `feedback_reviewer_no_write_tool.md` the reviewer is read-only; orchestrator (this session) applies any micro-fixes the reviewer surfaces.
+- **Approved by**: user, 2026-05-02 evening via AskUserQuestion ("Approve as proposed (Recommended)" with prose addendum: "hold before execution; explain how you will make this amendment" — orchestrator explained 3-step plan; user approved Steps 1+3 only, skipping the diff preview).
+- **Forward-propagation rule (Wave 5 B17 image-e2e)**: when B17 is exploded, its spec MUST include explicit image-side `--cov-fail-under=95` enforcement as a non-negotiable merge condition. Suggested text: `"Image-side pytest suite green: all Wave-3 shim tests (test_shim_*.py) report PASSED (not skipped) inside the image. Full suite with --cov=build_context/plugins/nextseek/bin/_nextseek_runner.py --cov-fail-under=95 must report exit 0. This is the binding ≥95% gate deferred from Wave-3 Amendment 1 (2026-05-02 evening) and is non-negotiable."` Without this in B17, the binding gate promised by this amendment is hollow.
+- **Status**: APPLIED. Reviewer (`feature-dev:code-reviewer`) returned APPROVE-WITH-MICRO-FIXES; 9 of the 10 micro-fixes applied to spec bodies (8 stale `--cov-fail-under=95` checklist items across 8 specs + B03 §8 surviving "≥95% on host held by B2 suite" misreading + B03 §1 prose qualifier). Item 10 (B17 forward-propagation) recorded above.
+
+### 2026-05-02 — chat_nextseek host-import audit (after B2 implementer DONE_WITH_CONCERNS, pre-merge)
+
+- **Trigger**: B2 implementer reported 17/17 green at SHA `6fb90618` but only after silently bumping the worktree's `.python-version` to 3.14 (uncommitted). When the main session reverted it to integration's pinned `3.12` and re-ran, `tests/unit/test_nextseek_runner.py::test_runner_emits_structured_error_on_missing_creds` failed (`AssertionError: 'IMPORT_FAILED' == 'CONFIG_MISSING'`) because the subprocess `_nextseek_runner.py` invocation hit `from chat_nextseek.config import ChatConfig` first and exited 2 before reaching the cred-missing check. chat_nextseek requires Python ≥3.14; host pins 3.12; chat_nextseek is image-only by Plan A T7's PATH_B decision (`pyproject.toml` closing comment). Six prior reviewers (B1, B2, cross-task, B1 re-review, B2 re-review, the 2026-05-01 onboard cross-reference) missed it because the misreading lived in parenthetical notes about a pre-flight that doesn't actually verify host import.
+- **Audit (2026-05-02)**: a full sweep of plan body + B1 spec + B2 spec for chat_nextseek host-vs-image touchpoints identified 5 CRITICAL defects (plan body line 891 referencing a non-existent `make install-chat-nextseek` target and a non-existent host-import pre-flight; B2 spec line 33's "AND in the dev environment" clause; B2 spec line 170's "importable in dev" clause; B2 spec line 1061's false claim that pyproject.toml ought to include chat_nextseek; B2 spec §5.1 missing `pytest.importorskip`); 1 CRITICAL propagation risk to Wave 3 task bodies B3.3 and B9.3 (re-run the broken baseline test, plus a layered defect on dotted-module `--cov=` form); 2 HIGH documentation defects on plan lines 98 and 160 (no host/image qualifier on "chat_nextseek importable").
+- **Resolution (10 items, all applied 2026-05-02)**:
+  1. Plan body line ~891 rewritten to delete the non-existent `make install-chat-nextseek` reference and the false pre-flight claim; replaced with mandatory unconditional `importorskip` rule + cross-reference to the new `## Host vs Image Python Environment` section.
+  2. B2 spec §1/§2 line ~33: removed the "AND in the dev environment" clause; explicit "image-only".
+  3. B2 spec §5.2 line ~170: rewritten as unconditional `importorskip` instruction; struck the "in dev" clause.
+  4. B2 spec §9.3 line ~1061: deleted "the repo's pyproject.toml ought to include chat_nextseek"; replaced with pointer to `pyproject.toml`'s `T7 path-decision: PATH_B image-only` comment.
+  5. B2 spec §5.1 baseline test: added `pytest.importorskip("chat_nextseek")` at top of file with rationale comment.
+  6. **Fixup commit** on `task/B02-shared-runner` applies the same one-line `pytest.importorskip` to the actual `tests/unit/test_nextseek_runner.py` so the integration tree is green on host post-merge.
+  7. Forward-propagation rule recorded in this entry: **every Wave 3-7 task spec MUST inherit (a) `importorskip` discipline on any host pytest target that imports chat_nextseek, (b) FILE-PATH `--cov` form not dotted-module form, (c) `--cov-fail-under=95`, (d) no `make install-chat-nextseek` references.** Plan body lines ~1334-1338 (B3.3) and ~1499-1503 (B9.3) carry both defects (host-import + dotted-cov) — they will be corrected when those waves are exploded; until then this Amendment Log entry is authoritative.
+  8. Plan body lines 98 and 160 (compact handoff + Dependency banner) updated with explicit "image-only" qualifiers.
+  9. **New section `## Host vs Image Python Environment`** added (between `## Pre-flight` and `## Tool surface`) — authoritative front-and-center reference for the host/image split + 5 numbered rules for test discipline.
+  10. **Memory file** `feedback_chat_nextseek_host_image_split.md` saved + indexed in `MEMORY.md` so this lesson survives across sessions and projects.
+- **Re-vetting**: ONE combined post-merge review (adversarial + per-item checklist verification) dispatched after fixup commit + B2 → integration merge. Reviewer must confirm each of the 10 items at the cited file/line.
+- **Approved by**: user, 2026-05-02 via AskUserQuestion ("All right, approved. But make sure when you are done, you have a checklist...").
+- **Status**: APPLIED.
+
+### 2026-05-01 (late evening) — build_context git-add -f (after Phase 5.7, pre-B1 dispatch)
+
+- **Trigger**: Phase 5.7 onboard cross-reference caught that `.gitignore` line 13 (`build_context/`) ignores the entire tree the locked B1 + B2 specs were committing into. Five Phase 4 reviewers had missed it. Documented in the late-evening compact handoff under "CRITICAL pre-dispatch find — `build_context/` gitignored".
+- **Proposed change** (path A from the handoff): add `-f` to the `git add` invocations that target `build_context/...` paths in B1 §4 Step 2 and B2 §4 Step 7; document the requirement in B1 §9.2 Gotchas, B2 §9.3 Gotchas, and a callout above the plan's File Structure table; record a forward-propagation rule for Wave 3-7.
+- **Reason**: plain `git add build_context/...` silently no-ops on a gitignored path; the subsequent `git commit -m '...'` either fails ("nothing to commit") or commits an empty change. Verified: `git ls-files build_context/` returns exactly one path (`build_context/plugins/nextseek-api/skills/nextseek-api/SKILL.md`) — historically force-added with `-f`. Path B (whitelist `build_context/plugins/nextseek/**` in `.gitignore`) was rejected because anything else that drops files into `build_context/plugins/` (e.g. `make image-stage`) could start tracking unexpectedly.
+- **Blast radius**:
+  - `task-B01-scaffold.md` §4 Step 2 (`git add` → `git add -f`); §9.2 Gotchas (new bullet)
+  - `task-B02-shared-runner.md` §4 Step 7 (split into two `git add` calls — one with `-f` for the two `build_context/...` paths, one plain for the two `tests/unit/...` paths); §9.3 Gotchas (new bullet)
+  - Plan `## File Structure` (new note above the table)
+  - This `## Amendment Log` entry
+  - The late-evening compact handoff "CRITICAL pre-dispatch find" callout — annotated as RESOLVED below the original text
+- **Forward-propagation rule (per `feedback_amendments_must_propagate_to_task_bodies.md`)**: every Wave 3-7 task that creates files under `build_context/plugins/nextseek/` MUST use `git add -f` in its commit step. This includes B3-B9 (shims under `bin/`), B10 (`skills/nextseek/SKILL.md`), B11 (`commands/nextseek.md`), B12 (`scripts/setup.sh`), B13 (`context/` snapshot pipeline output). Wave 3 explosion MUST inherit this and bake `-f` into every authored Step 7-equivalent commit block; failure to do so is a defect to be caught at Phase 4. The exception: pure tests/docs/Makefile/Dockerfile commits remain plain `git add` because those paths are NOT under `build_context/`.
+- **Re-vetting**: skipped per user directive (option "Approve — apply, skip re-vet"). Mechanical one-flag change; reviewers had already validated the surrounding §4 Step semantics. Future Wave 3 specs DO still get full Phase 4 review on first authoring, where `-f` presence becomes a checklist item.
+- **Approved by**: user, 2026-05-01 (late evening) via AskUserQuestion under `/ultraplan amend` protocol.
+- **Status**: APPLIED.
+
+### 2026-05-01 — Coverage bump B2 90% → 95% (during Phase 3 Wave 1+2 task spec authoring)
+
+- **Trigger**: User pushed back during Phase 3 spec authoring: "Isn't coverage target supposed to 95%?"
+- **Proposed change**: Raise B2's coverage target on `build_context/plugins/nextseek/bin/_nextseek_runner.py` from the plan-locked 90% to the ultraplan default 95%. Withdraw the B2 coverage exception. Add three new tests to `tests/unit/test_nextseek_runner_dispatch.py` covering the previously-excepted branches: `_load_config` ImportError path (exit 2 / `IMPORT_FAILED`), `_load_read_safe_endpoints` OSError path (exit 6 / `CONFIG_ERROR`), and `main()` broad-except clause (exit 4 / `AGENT_FAILED`).
+- **Reason**: On review, those three "uncoverable" branches are reachable via standard `monkeypatch` (sys.modules injection, builtins.open replacement, _DISPATCH table substitution). They do not qualify as architectural uncoverability under the ultraplan rule "It's hard is not a justification — only genuine architectural uncoverability qualifies." The 90% target inherited from Rev 2 NEW-7 was a borderline call; bumping to 95% removes a Phase 4 vetting risk and adds three small monkeypatch tests.
+- **Blast radius**:
+  - `task-B02-shared-runner.md` §1 status header, §4 Coverage target prose, §5.2 (3 new tests added), §4 Step 5 cov-fail-under arg, §8 Verification cov-fail-under arg + expected test count + expected coverage, §9.4 (rewritten as "no exception"), §9.5 self-review, §10 merge condition #1
+  - Plan compact handoff §"Plan B execution context" Coverage gate line (line ~32)
+  - Plan body Task B2 step B2.4 (verification command + expected test count)
+  - Plan `## Task Specs Manifest` row for B02 (target + exception flag)
+  - Plan `## Coverage Exceptions` B2 sub-section (withdrawn)
+  - This `## Amendment Log` entry
+- **Spec impact on tasks other than B2**: B3-B18 task specs have not yet been exploded (Phase 3 ran wave-by-wave; Wave 1+2 only). Future Wave 3+ specs MUST inherit the corrected default-95% expectation. Note: the plan body still contains stale `--cov-fail-under=90` lines in B3.3 (line ~1252) and B9.3 (line ~1417) inside the inline shim-test invocations. These lines were left untouched by this amendment because (a) they live in not-yet-exploded task bodies and (b) the user explicitly scoped this amendment to B2. **When Wave 3 (B3-B9) is exploded, the explosion process MUST raise those floors to 95% to match B2.** A forward-pointer to this amendment should appear in the B3-B9 spec headers.
+- **Approved by**: user, 2026-05-01 via AskUserQuestion (option "Bump B2 to 95%, add 3 extra tests").
+- **Status**: PROPAGATED to all enumerated locations.
+
+---
+
+### 6. Open Questions & Ambiguities
+None recorded.
+
+### Coverage Exceptions
+Approved exceptions to the ultraplan default 95% floor. Each exception names exact uncoverable paths and the justification. Phase 4 vetting must affirm before Phase 5 lock.
+
+### B1: pure scaffold — no executable code
+
+- **Declared target**: N/A (zero new lines under any cov source)
+- **Default**: 95%
+- **Justification**: B1 produces only `build_context/plugins/nextseek/.claude-plugin/plugin.json` (static JSON config) and `build_context/plugins/nextseek/README.md` (two-line markdown stub). Neither file contains executable Python. The repo-wide `--cov-fail-under=95` gate (against `tests.harness` + `src/dmac_assistant`) is unaffected by B1. Plugin manifest correctness is verified indirectly by B14's existing `tests/test_image_smoke.py` and `tests/test_dockerfile_build.py` modifications, which already assert the new plugin path is shipped to the built image.
+- **Uncoverable paths**: every line of `plugin.json` and `README.md` (data, not code).
+- **Fallback**: if Phase 4 rejects this exception, the contingency `tests/unit/test_nextseek_plugin_manifest.py` in `task-B01-scaffold.md` §5 covers the JSON-shape check.
+
+### B2: ~~90% target~~ — **WITHDRAWN** (amended 2026-05-01 to default 95%)
+
+The B2 coverage exception logged in this section earlier on 2026-05-01 has been **withdrawn the same day** during Phase 3 spec authoring. On review, the three "uncoverable" branches (ImportError in `_load_config`, OSError in `_load_read_safe_endpoints`, broad-except in `main()`) are reachable via standard `monkeypatch` and do not qualify as architectural uncoverability under the ultraplan rule. Three additional tests now cover those branches; B2's target is the default 95% on `_nextseek_runner.py`. See `## Amendment Log` entry "Coverage bump B2 90% → 95% (2026-05-01)" for the full record.
+
+The shell shim layer (`_nextseek_common.sh` and the 8 `nextseek-*` shims authored in B3-B9) remains OUT of pytest-cov scope — that's a *scope* statement, not an exception (pytest-cov instruments only Python).
+
+### Resume Instructions
+Run `/ultraplan onboard` in a fresh session. The onboard protocol will
+cross-reference this handoff against the actual codebase state before
+resuming execution.
+
+---
+
 ## EXECUTION STATUS (2026-05-03 — WAVE 3 COMPLETE, MERGED, REVIEWED ALL-PASS)
 
 **Authoritative current state. Supersedes the COMPACT HANDOFF blocks below.**
@@ -130,195 +344,6 @@ DEFER to the spec's §4 Step 5 verbatim — single commit with subject `nextseek
 7. After wave completes: post-merge reviewer pass; update plan; flag B17 forward-propagation requirement explicitly when Wave 5 starts.
 
 ---
-
-## COLD-START HANDOFF
-**Generated**: 2026-05-02T18:06:28.188647
-**Plan**: nextseek plugin — Plan B (plugin authoring) Implementation Plan (`?`)
-**Last status**: APPLIED.
-
-### 1. Original Goal
-(not found)
-
-### 2. Completed Tasks
-None yet.
-
-### 3. In-Progress Tasks
-None.
-
-### 4. Remaining Tasks
-None — all tasks accounted for.
-
-### 5. Key Decisions & Amendments
-### 2026-05-02 (evening) — Amendment 1: host-coverage gate informational, image gate binding (after B03 canary executed)
-
-- **Trigger**: B03 canary executor (commit `498de87` on `task/B03-entity-extract`) returned `DONE_WITH_CONCERNS` with the diagnostic that host-side `--cov-fail-under=95` is structurally unachievable. `pytest.importorskip("chat_nextseek")` (added unconditionally to B2 in fixup `3765ed3` + every Wave 3 spec per the 2026-05-02 host-import audit) causes module-level skip on host (Python 3.12, chat_nextseek requires ≥3.14, image-only). On host, `_nextseek_runner.py` is therefore never imported → coverage = 0% by structural invariant. Spec §8 prediction "17 passed (B2 dispatch tests w/ importorskip allow them) + N skipped (B0X), coverage ≥95% held by B2 suite" was based on a misreading of `pytest.importorskip`: it is a hard module-level skip when the import fails, not a per-test conditional.
-- **Proposed change**: Replace the host-side `--cov-fail-under=95` gate in every Wave 3 task spec's §4 Step 4 + §8 Verification block with a host-informational coverage report (FILE-PATH `--cov=...` flag preserved for diagnostic, `--cov-fail-under=...` flag removed). Binding ≥95% gate moves to image-side, enforced by Wave 5 B17 image-e2e. §10 merge conditions updated to specify "host informational, image binding."
-- **Reason**: structural invariant (importorskip → 0% host coverage) cannot be satisfied; specs §8 predictions are wrong; executors cannot be expected to satisfy a hard-impossible gate. Implementation requirements unchanged — this is a verification-side correction only. No code changes to existing B1/B2 commits. B03 canary commit `498de87` becomes compliant under the amendment.
-- **Blast radius**: 8 spec files. Inline edits applied:
-  1. `task-B03-entity-extract.md` §4 Step 4 + §8 (`replace_all=true`); §10 merge condition #1 rewritten.
-  2. `task-B04-parse.md` §4 Step 4 + §8 (`replace_all=true`); §10 unchanged ("§8 all green" still satisfiable).
-  3. `task-B05-plan.md` same pattern as B04.
-  4. `task-B06a-api-read.md` same pattern as B04 (§10 mention of CRITICAL-3 boundary preserved).
-  5. `task-B06b-api-write.md` same pattern as B04.
-  6. `task-B07-graph.md` same pattern as B04.
-  7. `task-B08-generate-submission.md` same pattern as B04.
-  8. `task-B09-report.md` §4 + §8 (`replace_all=true`); §10 merge condition #1 rewritten (was "coverage ≥95% with FILE-PATH `--cov=` form").
-- **Re-vetting**: ONE combined Phase-4-style reviewer dispatch (`feature-dev:code-reviewer`) over all 8 amended specs, returning per-spec verdicts in a single response. Per memory `feedback_reviewer_no_write_tool.md` the reviewer is read-only; orchestrator (this session) applies any micro-fixes the reviewer surfaces.
-- **Approved by**: user, 2026-05-02 evening via AskUserQuestion ("Approve as proposed (Recommended)" with prose addendum: "hold before execution; explain how you will make this amendment" — orchestrator explained 3-step plan; user approved Steps 1+3 only, skipping the diff preview).
-- **Forward-propagation rule (Wave 5 B17 image-e2e)**: when B17 is exploded, its spec MUST include explicit image-side `--cov-fail-under=95` enforcement as a non-negotiable merge condition. Suggested text: `"Image-side pytest suite green: all Wave-3 shim tests (test_shim_*.py) report PASSED (not skipped) inside the image. Full suite with --cov=build_context/plugins/nextseek/bin/_nextseek_runner.py --cov-fail-under=95 must report exit 0. This is the binding ≥95% gate deferred from Wave-3 Amendment 1 (2026-05-02 evening) and is non-negotiable."` Without this in B17, the binding gate promised by this amendment is hollow.
-- **Status**: APPLIED. Reviewer (`feature-dev:code-reviewer`) returned APPROVE-WITH-MICRO-FIXES; 9 of the 10 micro-fixes applied to spec bodies (8 stale `--cov-fail-under=95` checklist items across 8 specs + B03 §8 surviving "≥95% on host held by B2 suite" misreading + B03 §1 prose qualifier). Item 10 (B17 forward-propagation) recorded above.
-
-### 2026-05-02 — chat_nextseek host-import audit (after B2 implementer DONE_WITH_CONCERNS, pre-merge)
-
-- **Trigger**: B2 implementer reported 17/17 green at SHA `6fb90618` but only after silently bumping the worktree's `.python-version` to 3.14 (uncommitted). When the main session reverted it to integration's pinned `3.12` and re-ran, `tests/unit/test_nextseek_runner.py::test_runner_emits_structured_error_on_missing_creds` failed (`AssertionError: 'IMPORT_FAILED' == 'CONFIG_MISSING'`) because the subprocess `_nextseek_runner.py` invocation hit `from chat_nextseek.config import ChatConfig` first and exited 2 before reaching the cred-missing check. chat_nextseek requires Python ≥3.14; host pins 3.12; chat_nextseek is image-only by Plan A T7's PATH_B decision (`pyproject.toml` closing comment). Six prior reviewers (B1, B2, cross-task, B1 re-review, B2 re-review, the 2026-05-01 onboard cross-reference) missed it because the misreading lived in parenthetical notes about a pre-flight that doesn't actually verify host import.
-- **Audit (2026-05-02)**: a full sweep of plan body + B1 spec + B2 spec for chat_nextseek host-vs-image touchpoints identified 5 CRITICAL defects (plan body line 891 referencing a non-existent `make install-chat-nextseek` target and a non-existent host-import pre-flight; B2 spec line 33's "AND in the dev environment" clause; B2 spec line 170's "importable in dev" clause; B2 spec line 1061's false claim that pyproject.toml ought to include chat_nextseek; B2 spec §5.1 missing `pytest.importorskip`); 1 CRITICAL propagation risk to Wave 3 task bodies B3.3 and B9.3 (re-run the broken baseline test, plus a layered defect on dotted-module `--cov=` form); 2 HIGH documentation defects on plan lines 98 and 160 (no host/image qualifier on "chat_nextseek importable").
-- **Resolution (10 items, all applied 2026-05-02)**:
-  1. Plan body line ~891 rewritten to delete the non-existent `make install-chat-nextseek` reference and the false pre-flight claim; replaced with mandatory unconditional `importorskip` rule + cross-reference to the new `## Host vs Image Python Environment` section.
-  2. B2 spec §1/§2 line ~33: removed the "AND in the dev environment" clause; explicit "image-only".
-  3. B2 spec §5.2 line ~170: rewritten as unconditional `importorskip` instruction; struck the "in dev" clause.
-  4. B2 spec §9.3 line ~1061: deleted "the repo's pyproject.toml ought to include chat_nextseek"; replaced with pointer to `pyproject.toml`'s `T7 path-decision: PATH_B image-only` comment.
-  5. B2 spec §5.1 baseline test: added `pytest.importorskip("chat_nextseek")` at top of file with rationale comment.
-  6. **Fixup commit** on `task/B02-shared-runner` applies the same one-line `pytest.importorskip` to the actual `tests/unit/test_nextseek_runner.py` so the integration tree is green on host post-merge.
-  7. Forward-propagation rule recorded in this entry: **every Wave 3-7 task spec MUST inherit (a) `importorskip` discipline on any host pytest target that imports chat_nextseek, (b) FILE-PATH `--cov` form not dotted-module form, (c) `--cov-fail-under=95`, (d) no `make install-chat-nextseek` references.** Plan body lines ~1334-1338 (B3.3) and ~1499-1503 (B9.3) carry both defects (host-import + dotted-cov) — they will be corrected when those waves are exploded; until then this Amendment Log entry is authoritative.
-  8. Plan body lines 98 and 160 (compact handoff + Dependency banner) updated with explicit "image-only" qualifiers.
-  9. **New section `## Host vs Image Python Environment`** added (between `## Pre-flight` and `## Tool surface`) — authoritative front-and-center reference for the host/image split + 5 numbered rules for test discipline.
-  10. **Memory file** `feedback_chat_nextseek_host_image_split.md` saved + indexed in `MEMORY.md` so this lesson survives across sessions and projects.
-- **Re-vetting**: ONE combined post-merge review (adversarial + per-item checklist verification) dispatched after fixup commit + B2 → integration merge. Reviewer must confirm each of the 10 items at the cited file/line.
-- **Approved by**: user, 2026-05-02 via AskUserQuestion ("All right, approved. But make sure when you are done, you have a checklist...").
-- **Status**: APPLIED.
-
-### 2026-05-01 (late evening) — build_context git-add -f (after Phase 5.7, pre-B1 dispatch)
-
-- **Trigger**: Phase 5.7 onboard cross-reference caught that `.gitignore` line 13 (`build_context/`) ignores the entire tree the locked B1 + B2 specs were committing into. Five Phase 4 reviewers had missed it. Documented in the late-evening compact handoff under "CRITICAL pre-dispatch find — `build_context/` gitignored".
-- **Proposed change** (path A from the handoff): add `-f` to the `git add` invocations that target `build_context/...` paths in B1 §4 Step 2 and B2 §4 Step 7; document the requirement in B1 §9.2 Gotchas, B2 §9.3 Gotchas, and a callout above the plan's File Structure table; record a forward-propagation rule for Wave 3-7.
-- **Reason**: plain `git add build_context/...` silently no-ops on a gitignored path; the subsequent `git commit -m '...'` either fails ("nothing to commit") or commits an empty change. Verified: `git ls-files build_context/` returns exactly one path (`build_context/plugins/nextseek-api/skills/nextseek-api/SKILL.md`) — historically force-added with `-f`. Path B (whitelist `build_context/plugins/nextseek/**` in `.gitignore`) was rejected because anything else that drops files into `build_context/plugins/` (e.g. `make image-stage`) could start tracking unexpectedly.
-- **Blast radius**:
-  - `task-B01-scaffold.md` §4 Step 2 (`git add` → `git add -f`); §9.2 Gotchas (new bullet)
-  - `task-B02-shared-runner.md` §4 Step 7 (split into two `git add` calls — one with `-f` for the two `build_context/...` paths, one plain for the two `tests/unit/...` paths); §9.3 Gotchas (new bullet)
-  - Plan `## File Structure` (new note above the table)
-  - This `## Amendment Log` entry
-  - The late-evening compact handoff "CRITICAL pre-dispatch find" callout — annotated as RESOLVED below the original text
-- **Forward-propagation rule (per `feedback_amendments_must_propagate_to_task_bodies.md`)**: every Wave 3-7 task that creates files under `build_context/plugins/nextseek/` MUST use `git add -f` in its commit step. This includes B3-B9 (shims under `bin/`), B10 (`skills/nextseek/SKILL.md`), B11 (`commands/nextseek.md`), B12 (`scripts/setup.sh`), B13 (`context/` snapshot pipeline output). Wave 3 explosion MUST inherit this and bake `-f` into every authored Step 7-equivalent commit block; failure to do so is a defect to be caught at Phase 4. The exception: pure tests/docs/Makefile/Dockerfile commits remain plain `git add` because those paths are NOT under `build_context/`.
-- **Re-vetting**: skipped per user directive (option "Approve — apply, skip re-vet"). Mechanical one-flag change; reviewers had already validated the surrounding §4 Step semantics. Future Wave 3 specs DO still get full Phase 4 review on first authoring, where `-f` presence becomes a checklist item.
-- **Approved by**: user, 2026-05-01 (late evening) via AskUserQuestion under `/ultraplan amend` protocol.
-- **Status**: APPLIED.
-
-### 2026-05-01 — Coverage bump B2 90% → 95% (during Phase 3 Wave 1+2 task spec authoring)
-
-- **Trigger**: User pushed back during Phase 3 spec authoring: "Isn't coverage target supposed to 95%?"
-- **Proposed change**: Raise B2's coverage target on `build_context/plugins/nextseek/bin/_nextseek_runner.py` from the plan-locked 90% to the ultraplan default 95%. Withdraw the B2 coverage exception. Add three new tests to `tests/unit/test_nextseek_runner_dispatch.py` covering the previously-excepted branches: `_load_config` ImportError path (exit 2 / `IMPORT_FAILED`), `_load_read_safe_endpoints` OSError path (exit 6 / `CONFIG_ERROR`), and `main()` broad-except clause (exit 4 / `AGENT_FAILED`).
-- **Reason**: On review, those three "uncoverable" branches are reachable via standard `monkeypatch` (sys.modules injection, builtins.open replacement, _DISPATCH table substitution). They do not qualify as architectural uncoverability under the ultraplan rule "It's hard is not a justification — only genuine architectural uncoverability qualifies." The 90% target inherited from Rev 2 NEW-7 was a borderline call; bumping to 95% removes a Phase 4 vetting risk and adds three small monkeypatch tests.
-- **Blast radius**:
-  - `task-B02-shared-runner.md` §1 status header, §4 Coverage target prose, §5.2 (3 new tests added), §4 Step 5 cov-fail-under arg, §8 Verification cov-fail-under arg + expected test count + expected coverage, §9.4 (rewritten as "no exception"), §9.5 self-review, §10 merge condition #1
-  - Plan compact handoff §"Plan B execution context" Coverage gate line (line ~32)
-  - Plan body Task B2 step B2.4 (verification command + expected test count)
-  - Plan `## Task Specs Manifest` row for B02 (target + exception flag)
-  - Plan `## Coverage Exceptions` B2 sub-section (withdrawn)
-  - This `## Amendment Log` entry
-- **Spec impact on tasks other than B2**: B3-B18 task specs have not yet been exploded (Phase 3 ran wave-by-wave; Wave 1+2 only). Future Wave 3+ specs MUST inherit the corrected default-95% expectation. Note: the plan body still contains stale `--cov-fail-under=90` lines in B3.3 (line ~1252) and B9.3 (line ~1417) inside the inline shim-test invocations. These lines were left untouched by this amendment because (a) they live in not-yet-exploded task bodies and (b) the user explicitly scoped this amendment to B2. **When Wave 3 (B3-B9) is exploded, the explosion process MUST raise those floors to 95% to match B2.** A forward-pointer to this amendment should appear in the B3-B9 spec headers.
-- **Approved by**: user, 2026-05-01 via AskUserQuestion (option "Bump B2 to 95%, add 3 extra tests").
-- **Status**: PROPAGATED to all enumerated locations.
-
----
-
-### 6. Open Questions & Ambiguities
-None recorded.
-
-### Coverage Exceptions
-Approved exceptions to the ultraplan default 95% floor. Each exception names exact uncoverable paths and the justification. Phase 4 vetting must affirm before Phase 5 lock.
-
-### B1: pure scaffold — no executable code
-
-- **Declared target**: N/A (zero new lines under any cov source)
-- **Default**: 95%
-- **Justification**: B1 produces only `build_context/plugins/nextseek/.claude-plugin/plugin.json` (static JSON config) and `build_context/plugins/nextseek/README.md` (two-line markdown stub). Neither file contains executable Python. The repo-wide `--cov-fail-under=95` gate (against `tests.harness` + `src/dmac_assistant`) is unaffected by B1. Plugin manifest correctness is verified indirectly by B14's existing `tests/test_image_smoke.py` and `tests/test_dockerfile_build.py` modifications, which already assert the new plugin path is shipped to the built image.
-- **Uncoverable paths**: every line of `plugin.json` and `README.md` (data, not code).
-- **Fallback**: if Phase 4 rejects this exception, the contingency `tests/unit/test_nextseek_plugin_manifest.py` in `task-B01-scaffold.md` §5 covers the JSON-shape check.
-
-### B2: ~~90% target~~ — **WITHDRAWN** (amended 2026-05-01 to default 95%)
-
-The B2 coverage exception logged in this section earlier on 2026-05-01 has been **withdrawn the same day** during Phase 3 spec authoring. On review, the three "uncoverable" branches (ImportError in `_load_config`, OSError in `_load_read_safe_endpoints`, broad-except in `main()`) are reachable via standard `monkeypatch` and do not qualify as architectural uncoverability under the ultraplan rule. Three additional tests now cover those branches; B2's target is the default 95% on `_nextseek_runner.py`. See `## Amendment Log` entry "Coverage bump B2 90% → 95% (2026-05-01)" for the full record.
-
-The shell shim layer (`_nextseek_common.sh` and the 8 `nextseek-*` shims authored in B3-B9) remains OUT of pytest-cov scope — that's a *scope* statement, not an exception (pytest-cov instruments only Python).
-
-### Resume Instructions
-Run `/ultraplan onboard` in a fresh session. The onboard protocol will
-cross-reference this handoff against the actual codebase state before
-resuming execution.
-
----
-
-## COMPACT HANDOFF (2026-05-02 EVENING — Phase 5.5 + 5.6 COMPLETE; READY TO LAUNCH WAVE 3 in fresh session)
-
-> `/ultraplan compact` invoked 2026-05-02 evening at user direction (Phase 5.7 chose "Clear context first" before launching 8 parallel B3-B9 agents). **Authoritative for current state. Supersedes all sections below until the next divider, including the auto-generated cold-start summary and the prior 2026-05-02 morning compact handoff.**
-
-### One-paragraph state
-
-Phase 5 lock ratified as-is (existing `## LOCKED 2026-05-02` markers stand on all 8 Wave 3 specs; structured-summary protocol step waived per user directive 2026-05-02 evening). Phase 5.5 complete: settings audit confirmed `.claude/settings.local.json` already covers every B3-B9 command — no changes required; user approved via AskUserQuestion. All 8 worktrees for B3-B9 created via `init_worktrees.sh` at integration HEAD `7a31286`. Plan body updated with new `## Settings & Worktrees Initialized (2026-05-02 Phase 5.5)` section. Phase 5.6 Launch Briefing presented to user. Phase 5.7: user chose "Clear context first" → this compact handoff. **No code or commits changed this session — integration HEAD remains `7a31286`.**
-
-### Tracked state
-
-- **Integration HEAD**: `7a31286` (unchanged — Phase 5.5/5.6 wrote no code, only worktrees + plan-file updates)
-- **Tracked under `build_context/plugins/nextseek/`**: same 5 paths (B1 scaffold + B2 runner + read_safe_endpoints.json). No new tracked files this session.
-- **Worktrees on disk**:
-  - B1, B2 (legacy, post-merge — safe to remove anytime)
-  - **B3, B4, B5, B6a, B6b, B7, B8, B9** (NEW — created 2026-05-02 evening, all at HEAD `7a31286`)
-  - 3 stale Plan A spike worktrees at `.worktrees/task-0.{1,2,3}` (low-priority cleanup)
-- **`.claude/settings.local.json`**: NOT modified this session. Permission audit verdict: complete coverage of B3-B9 commands. `ask` list still gates `git push`, `git reset`, `git clean`, `rm -rf`, `WebFetch`.
-- **Phase 4 reviews of record**: 9 files under `.claude/reviews/plan-B-spec-B0X-phase4-review-2026-05-02.md` (8 per-spec) + `plan-B-wave-3-cross-task-review-2026-05-02.md` (cross-task). All APPROVE-with-micro-fixes; all fixes applied.
-
-### What was completed this session (2026-05-02 evening)
-
-1. **Phase 5 question resolved**: user chose "Ratify existing lock as-is" via AskUserQuestion. LOCKED markers stand. Structured-summary protocol step waived.
-2. **Phase 5.5 Step 1 — permission manifest**: compiled from B3-B9 specs. Commands needed: `chmod +x`, `git add -f`, `git add`, `git commit`, `git diff --stat`, `git log`, `python -c "import py_compile"`, `uv run pytest tests/unit/test_shim_*.py`. Write paths: `build_context/plugins/nextseek/bin/**`, `tests/unit/**`. **All already in settings.local.json.**
-3. **Phase 5.5 Step 3 — user confirmation**: approved "no changes needed" via AskUserQuestion.
-4. **Phase 5.5 Step 4 — worktree init**: `bash $ULTRAPLAN/scripts/init_worktrees.sh nextseek-plugin-2026-04-27 task-B03-entity-extract task-B04-parse task-B05-plan task-B06a-api-read task-B06b-api-write task-B07-graph task-B08-generate-submission task-B09-report` → 8 worktrees + 8 task branches at `7a31286`.
-5. **Plan file**: new `## Settings & Worktrees Initialized (2026-05-02 Phase 5.5)` section appended after the prior compact handoff (~line 101 of pre-compact file). Includes worktree table.
-6. **Phase 5.6 Launch Briefing**: presented to user with mission summary, execution sequence (8-task table with branches/worktrees/coverage), merge strategy, escalation conditions, plan path, interrupt commands.
-7. **Phase 5.7**: user chose "Clear context first (Recommended)" → this compact handoff.
-
-### Phase 6 dispatch strategy — LOCKED IN
-
-**All 8 in parallel** via single `superpowers:subagent-driven-development` dispatch (or 8 `Agent` background subagents in one message). Decision rationale (per user 2026-05-02): cross-task reviewer confirmed B3-B9 are independent at code level; no merge-order constraints; B6b explicitly outside L1 allowlist (Layer-2 gate is intentional). Sequential and 3-3-2 batched options were rejected.
-
-### Resume protocol (FRESH SESSION)
-
-1. Open new Claude Code session in `/Users/taishajoseph/Documents/Projects/dmac_assistant`.
-2. Run `/ultraplan onboard`. Onboard agent reads this compact handoff section.
-3. Verify integration HEAD: `git log -1 --pretty=oneline ultraplan/nextseek-plugin-2026-04-27` should still show `7a31286`.
-4. Verify 8 B3-B9 worktrees exist: `git worktree list | grep -c task-B0[3-9]` should return `8`.
-5. Verify `git ls-files build_context/plugins/nextseek/` returns the same 5 paths (no new tracked files).
-6. **Skip Phase 5/5.5/5.6** — all complete. **Go directly to Phase 6 dispatch.**
-7. Phase 6 dispatch: read `references/phases-5.5-6.md` "## Phase 6 — EXECUTE" + `agents/task-executor.md` for the subagent prompt template. Launch 8 background agents in a single message, each with:
-   - Full task spec content from `.claude/plans/nextseek-plugin-2026-04-27-tasks/task-B0X-{slug}.md`
-   - Worktree path: `.claude/worktrees/task-B0X-{slug}/`
-   - Branch: `task/B0X-{slug}`
-   - Explicit TDD discipline + Section 8 verification + report-only (no merging from subagents)
-8. After all 8 report: orchestrator merges passing tasks via `merge_task.sh`, runs post-wave reviewer (`agents/reviewer.md`), updates plan, escalates failures.
-
-### Outstanding follow-ups (carryovers, not blocking Phase 6)
-
-1. **B17.1 fixture name reconciliation** — Wave 6 carryover, deferred.
-2. **B14 PATH discipline** — Wave 5 awareness, deferred.
-3. **3 stale Plan A spike worktrees** at `.worktrees/task-0.{1,2,3}` — safe to remove anytime.
-4. **Plan body lines ~1334-1338 (B3.3) and ~1499-1503 (B9.3)**: stale `--cov-fail-under=90` + dotted-module `--cov=` form. Spec authority supersedes; could be patched in plan body during a future amendment for cleanliness.
-5. **5 pre-existing `tests/test_dockerfile_build.py` ERRORs** — not regressions; self-heal once `make image-build` runs.
-6. **`.claude/CLAUDE.md`** has a working-tree modification (unrelated to Plan B); leave alone unless user addresses.
-
-### Key load-bearing decisions (across all 2026-05-02 sessions)
-
-1. **Combined reviews** (one reviewer per spec returns BOTH adversarial findings AND per-item Wave-3 inheritance checklist verification).
-2. **9 parallel reviewer dispatch** for Phase 4 (`feature-dev:code-reviewer` per memory `feedback_reviewer_no_write_tool.md`).
-3. **Lock ratified as-is** (Phase 5 structured-summary protocol waived 2026-05-02 evening).
-4. **All 8 in parallel for Phase 6** (no batching, no sequential).
-5. **`pytest.importorskip("chat_nextseek")` mandatory** on every host pytest target (chat_nextseek is image-only — host pins Python 3.12, chat_nextseek requires 3.14).
-6. **`git add -f` mandatory** for every `build_context/plugins/nextseek/...` add (gitignored tree).
-7. **FILE-PATH `--cov=` form** (not dotted-module) and `--cov-fail-under=95` (not 90) for all Wave 3 specs.
-
----
-
-<details>
-<summary>Earlier auto-generated cold-start summary (collapsed; the manual section above is authoritative for current state)</summary>
 
 ## Settings & Worktrees Initialized (2026-05-02 Phase 5.5)
 
