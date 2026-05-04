@@ -28,15 +28,14 @@ def test_container_claude_md_markers_are_in_correct_order() -> None:
     assert begin_idx < end_idx, "BEGIN marker must precede END marker"
 
 
-def test_container_claude_md_block_is_empty() -> None:
-    """Between the markers, only whitespace should exist."""
+def test_container_claude_md_block_is_populated() -> None:
+    """The committed image instructions include generated NExtSEEK docs."""
     content = CONTAINER_CLAUDE_MD.read_text()
     begin_idx = content.index(BEGIN_MARKER) + len(BEGIN_MARKER)
     end_idx = content.index(END_MARKER)
     between = content[begin_idx:end_idx]
-    assert between.strip() == "", (
-        f"block between markers must be empty before ingestion; got: {between!r}"
-    )
+    assert "## NExtSEEK Documentation" in between
+    assert "/app/docs/nextseek/README.md" in between
 
 
 def test_container_claude_md_mentions_credentials_warning() -> None:
