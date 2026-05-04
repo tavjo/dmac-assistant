@@ -18,10 +18,10 @@ def test_end_marker_exact_string() -> None:
     assert C.END_MARKER == "<!-- END NEXTSEEK-DOCS (auto-generated) -->"
 
 
-def test_default_doc_url_is_gitbook_pdf_endpoint() -> None:
+def test_default_doc_url_is_gitbook_site_index() -> None:
     assert C.DEFAULT_DOC_URL == (
         "https://koch-institute-mit.gitbook.io/mit-data-management-analysis-core/"
-        "~gitbook/pdf?limit=100"
+        "~gitbook/site-index"
     )
 
 
