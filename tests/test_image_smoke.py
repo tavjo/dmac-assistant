@@ -127,8 +127,8 @@ LAYOUT_PATHS = [
     "/app/CLAUDE.md",
     "/app/docs/nextseek-api/README.md",
     "/app/docs/nextseek/README.md",
-    "/app/plugins/nextseek-api",
-    "/app/plugins/nextseek-api/skills/nextseek-api/SKILL.md",
+    "/app/plugins/nextseek",
+    "/app/plugins/nextseek/skills/nextseek/SKILL.md",
     "/usr/local/bin/entrypoint.sh",
     "/home/user",
 ]
@@ -236,10 +236,10 @@ def test_entrypoint_plugin_discovery_symlinks_present(
             "sh",
             "-c",
             "set -e; "
-            "test -L /home/user/.claude/plugins/local/nextseek-api "
-            "&& test -f /home/user/.claude/plugins/local/nextseek-api/.claude-plugin/plugin.json "
+            "test -L /home/user/.claude/plugins/local/nextseek "
+            "&& test -f /home/user/.claude/plugins/local/nextseek/.claude-plugin/plugin.json "
             "&& printf 'PLUGIN_TARGET=%s\\n' "
-            "\"$(readlink /home/user/.claude/plugins/local/nextseek-api)\" "
+            "\"$(readlink /home/user/.claude/plugins/local/nextseek)\" "
             "&& test -L /home/user/CLAUDE.md "
             "&& printf 'CLAUDEMD_TARGET=%s\\n' \"$(readlink /home/user/CLAUDE.md)\"",
         ],
@@ -250,8 +250,8 @@ def test_entrypoint_plugin_discovery_symlinks_present(
     assert exit_code == 0, (
         f"plugin-discovery structure absent after entrypoint; logs={logs!r}"
     )
-    assert "PLUGIN_TARGET=/app/plugins/nextseek-api" in logs, (
-        f"nextseek-api symlink did not resolve to the baked tree; logs={logs!r}"
+    assert "PLUGIN_TARGET=/app/plugins/nextseek" in logs, (
+        f"nextseek symlink did not resolve to the baked tree; logs={logs!r}"
     )
     assert "CLAUDEMD_TARGET=/app/CLAUDE.md" in logs, (
         f"CLAUDE.md cwd-symlink missing or wrong target; logs={logs!r}"
@@ -289,7 +289,7 @@ def test_plugin_manifest_validates_through_entrypoint_symlink(
             "claude",
             "plugin",
             "validate",
-            "/home/user/.claude/plugins/local/nextseek-api",
+            "/home/user/.claude/plugins/local/nextseek",
         ],
     ) as container:
         exit_code = container.wait()["StatusCode"]
@@ -411,4 +411,99 @@ def test_chat_nextseek_importable_no_with(dummy_env: dict[str, str]) -> None:
     )
     assert "chat_nextseek" in logs, (
         f"`import chat_nextseek` did not print module name; logs={logs!r}."
+    )
+
+
+def test_old_plugin_path_absent():
+    """D25 amended: nextseek-api is removed from the image. Plan-body B14.2
+    test #1, adapted to use the IMAGE_TAG constant per the existing fixture
+    convention in tests/test_image_smoke.py (line 14).
+    """
+    import subprocess
+    r = subprocess.run(
+        ["docker", "run", "--rm", IMAGE_TAG,
+         "test", "-d", "/app/plugins/nextseek-api"],
+        capture_output=True, text=True,
+    )
+    assert r.returncode != 0, (
+        f"D25 BREACH: /app/plugins/nextseek-api still exists in image "
+        f"{IMAGE_TAG}. The Dockerfile's COPY must be plugin-specific "
+        f"(COPY build_context/plugins/nextseek/ /app/plugins/nextseek/), "
+        f"NOT the broad COPY build_context/plugins/ /app/plugins/ form. "
+        f"stdout={r.stdout!r} stderr={r.stderr!r}"
+    )
+
+
+def test_new_plugin_path_present():
+    """The new plugin tree is present at /app/plugins/nextseek/ - including
+    the four required subdirs: bin/ (shims), scripts/ (setup.sh), skills/
+    (SKILL.md), commands/ (nextseek.md), context/ (catalog snapshots).
+    """
+    import subprocess
+    for subdir in ("bin", "scripts", "skills", "commands", "context"):
+        r = subprocess.run(
+            ["docker", "run", "--rm", IMAGE_TAG,
+             "test", "-d", f"/app/plugins/nextseek/{subdir}"],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, (
+            f"/app/plugins/nextseek/{subdir} missing from image {IMAGE_TAG}; "
+            f"stdout={r.stdout!r} stderr={r.stderr!r}"
+        )
+    r = subprocess.run(
+        ["docker", "run", "--rm", IMAGE_TAG,
+         "test", "-x", "/app/plugins/nextseek/scripts/setup.sh"],
+        capture_output=True, text=True,
+    )
+    assert r.returncode == 0, (
+        f"/app/plugins/nextseek/scripts/setup.sh missing or non-executable; "
+        f"stdout={r.stdout!r} stderr={r.stderr!r}"
+    )
+
+
+def test_new_plugin_bin_on_path():
+    """Plan-body B14.2 test #3: command -v nextseek-entity-extract resolves
+    to the plugin bin path. Closes Wave-4 carryover risk #3 (the wiring
+    gap). The expected resolution path is /app/plugins/nextseek/bin/...,
+    not /app/plugins/nextseek-api/bin/...
+    """
+    import subprocess
+    r = subprocess.run(
+        ["docker", "run", "--rm", IMAGE_TAG,
+         "/bin/sh", "-c", "command -v nextseek-entity-extract"],
+        capture_output=True, text=True,
+    )
+    assert r.returncode == 0, (
+        f"command -v nextseek-entity-extract failed in image {IMAGE_TAG}; "
+        f"PATH likely missing /app/plugins/nextseek/bin. "
+        f"stdout={r.stdout!r} stderr={r.stderr!r}"
+    )
+    assert "/app/plugins/nextseek/bin/nextseek-entity-extract" in r.stdout, (
+        f"command -v resolved to wrong path: {r.stdout!r} (expected "
+        f"/app/plugins/nextseek/bin/nextseek-entity-extract). If this "
+        f"resolves to /app/plugins/nextseek-api/bin/..., the legacy PATH "
+        f"is still in the Dockerfile - Wave-4 carryover #3 NOT closed."
+    )
+
+
+def test_usr_bin_python_resolves_for_stripped_path_dispatch():
+    """Wave-3 carryover risk #2 image-side defence (load-bearing)."""
+    import subprocess
+    r = subprocess.run(
+        ["docker", "run", "--rm", IMAGE_TAG,
+         "/bin/sh", "-c", "PATH=/usr/bin:/bin python --version"],
+        capture_output=True, text=True,
+    )
+    assert r.returncode == 0, (
+        f"/usr/bin/python or /bin/python does not resolve in image {IMAGE_TAG} "
+        f"under stripped PATH=/usr/bin:/bin. This blocks Wave-3 stripped-PATH "
+        f"dispatch tests at B17 image-e2e. Fix per §9.6 ladder. "
+        f"stdout={r.stdout!r} stderr={r.stderr!r}"
+    )
+    combined = r.stdout + r.stderr
+    assert "Python 3.14" in combined, (
+        f"stripped PATH found a Python interpreter, but it is not Python 3.14: "
+        f"{combined!r}. Wave-3 dispatch tests assume 3.14 features (typing.Any "
+        f"+ dataclass slots + match-case). Update the image's /usr/bin/python "
+        f"symlink to point at the 3.14 install."
     )
