@@ -244,3 +244,69 @@ EOF
   [ "$status" -eq 0 ]
   [ ! -e "$CLAUDE_LINK" ]
 }
+
+@test "b15_api_user_pass_exported_from_bridge_side: D20 NEXTSEEK_USERNAME/PASSWORD populate API_USER/API_PASS" {
+  NEXTSEEK_USERNAME="alice" NEXTSEEK_PASSWORD="pw" run "$ENTRYPOINT" sh -c '
+    echo "API_USER=$API_USER"
+    echo "API_PASS=$API_PASS"
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"API_USER=alice"* ]]
+  [[ "$output" == *"API_PASS=pw"* ]]
+}
+
+@test "b15_canonical_api_user_wins_over_bridge_side: DD-19 precedence preserved for the new D20 names" {
+  # If the caller explicitly sets API_USER, the bridge-side NEXTSEEK_USERNAME
+  # MUST NOT override it. This is the same DD-19 precedence rule that test
+  # #10 (env_var_alias_preserves_existing_canonical) enforces for SEEK_USER;
+  # B15 extends the rule to API_USER.
+  API_USER="canonical-user" API_PASS="canonical-pw" \
+    NEXTSEEK_USERNAME="bridge-user" NEXTSEEK_PASSWORD="bridge-pw" \
+    run "$ENTRYPOINT" sh -c '
+      echo "API_USER=$API_USER"
+      echo "API_PASS=$API_PASS"
+    '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"API_USER=canonical-user"* ]]
+  [[ "$output" == *"API_PASS=canonical-pw"* ]]
+  # Negative assertion: bridge-side values MUST NOT have overwritten canonical.
+  [[ "$output" != *"API_USER=bridge-user"* ]]
+}
+
+@test "b15_nextseek_mode_defaults_gcp: D23 GCP-only profile for v3 image" {
+  # No NEXTSEEK_MODE supplied -> entrypoint defaults to gcp.
+  unset NEXTSEEK_MODE 2>/dev/null || true
+  NEXTSEEK_USERNAME="alice" NEXTSEEK_PASSWORD="pw" run "$ENTRYPOINT" sh -c '
+    echo "NEXTSEEK_MODE=$NEXTSEEK_MODE"
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"NEXTSEEK_MODE=gcp"* ]]
+}
+
+@test "b15_nextseek_mode_explicit_preserved: caller-supplied NEXTSEEK_MODE=aws survives" {
+  # If the caller explicitly sets NEXTSEEK_MODE, the default MUST NOT
+  # overwrite it (POSIX := semantics). This is regression protection for
+  # post-Plan-B AWS profile work.
+  NEXTSEEK_MODE="aws" NEXTSEEK_USERNAME="alice" NEXTSEEK_PASSWORD="pw" \
+    run "$ENTRYPOINT" sh -c '
+      echo "NEXTSEEK_MODE=$NEXTSEEK_MODE"
+    '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"NEXTSEEK_MODE=aws"* ]]
+}
+
+@test "b15_seek_user_seek_password_back_compat: legacy names still exported for host-side tooling" {
+  # Back-compat: SEEK_USER/SEEK_PASSWORD remain exported (sourced from
+  # API_USER/API_PASS via the second-tier := chain in the new block). Any
+  # host-side tooling that grew up reading SEEK_USER continues to work.
+  # Note: the existing test #9 (env_var_alias_propagates) covered the OLD
+  # path NEXTSEEK_USERNAME -> SEEK_USER directly; B15 changes the path to
+  # NEXTSEEK_USERNAME -> API_USER -> SEEK_USER. The end value is identical.
+  NEXTSEEK_USERNAME="alice" NEXTSEEK_PASSWORD="pw" run "$ENTRYPOINT" sh -c '
+    echo "SEEK_USER=$SEEK_USER"
+    echo "SEEK_PASSWORD=$SEEK_PASSWORD"
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"SEEK_USER=alice"* ]]
+  [[ "$output" == *"SEEK_PASSWORD=pw"* ]]
+}
