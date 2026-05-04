@@ -26,9 +26,9 @@ When a user asks about NExtSEEK data, read the SKILL.md first. The plugin's CLI 
 <!-- BEGIN NEXTSEEK-DOCS (auto-generated) -->
 ## NExtSEEK Documentation
 
-Loading...
+NExtSEEK is a variant of SEEK that converts SEEK into an active data management platform. This project has been developed out of the [MIT…
 
-Top-level sections: MIT Data Management Analysis Core, Uploading, Useful Links, Installation, Searching / Downloading, NExtSEEK, Using SEEK and NExtSEEK, Admin Pages, Overview, SEEK, Contact / Staff.
+Top-level sections: Overview, Using SEEK and NExtSEEK, Uploading, Searching / Downloading, Admin Pages, Useful Links, Installation, SEEK, NExtSEEK, Contact / Staff.
 
 For detail, read `/app/docs/nextseek/README.md` first.
 <!-- END NEXTSEEK-DOCS (auto-generated) -->
