@@ -95,3 +95,21 @@ image-e2e: image-build
 
 capture-streamjson-fixture: image-check-docker
 	@uv run python scripts/capture_streamjson_init.py
+
+# NEW-6: parameterize the source path so other developers / CI can override.
+CHAT_NEXTSEEK_SRC ?= /Users/taishajoseph/Documents/Projects/work/chat_nextseek
+
+.PHONY: snapshot-nextseek-catalogs
+snapshot-nextseek-catalogs:
+	@test -d "$(CHAT_NEXTSEEK_SRC)/src/chat_nextseek/context" || \
+		(echo "ERROR: CHAT_NEXTSEEK_SRC not found at $(CHAT_NEXTSEEK_SRC)/src/chat_nextseek/context. Override via 'make snapshot-nextseek-catalogs CHAT_NEXTSEEK_SRC=/path/to/chat_nextseek'." && exit 1)
+	@mkdir -p build_context/plugins/nextseek/context
+	@cp "$(CHAT_NEXTSEEK_SRC)"/src/chat_nextseek/context/min_*.json \
+	    build_context/plugins/nextseek/context/
+	@cp "$(CHAT_NEXTSEEK_SRC)"/src/chat_nextseek/context/projects_db.json \
+	    build_context/plugins/nextseek/context/
+	@cp "$(CHAT_NEXTSEEK_SRC)"/src/chat_nextseek/context/neo4j_schema.json \
+	    build_context/plugins/nextseek/context/
+	@cp "$(CHAT_NEXTSEEK_SRC)"/src/chat_nextseek/context/capabilities.md \
+	    build_context/plugins/nextseek/context/
+	@echo "Snapshotted catalogs to build_context/plugins/nextseek/context/ (from $(CHAT_NEXTSEEK_SRC))"
