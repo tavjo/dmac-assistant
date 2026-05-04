@@ -2,16 +2,26 @@
 # DMAC Assistant container entrypoint.
 #
 # Responsibilities:
-#   1. Bridge NEXTSEEK_* env vars to the nextseek-api plugin's canonical names.
+#   1. Bridge NEXTSEEK_* env vars to chat_nextseek's API_USER/API_PASS names.
 #   2. Scrub settings.local.json's env block on every start.
 #   3. Hand control to the declared command with exec.
 
 set -eu
 
-: "${SEEK_USER:=${NEXTSEEK_USERNAME:-}}"
-: "${SEEK_PASSWORD:=${NEXTSEEK_PASSWORD:-}}"
+# D20: chat_nextseek's ChatConfig reads API_USER / API_PASS.
+: "${API_USER:=${NEXTSEEK_USERNAME:-}}"
+: "${API_PASS:=${NEXTSEEK_PASSWORD:-}}"
 : "${NEXTSEEK_BASE_URL:=${NEXTSEEK_URL:-}}"
-export SEEK_USER SEEK_PASSWORD NEXTSEEK_BASE_URL
+# D23: GCP-only profile.
+: "${NEXTSEEK_MODE:=gcp}"
+export API_USER API_PASS NEXTSEEK_BASE_URL NEXTSEEK_MODE
+
+# Backward compat: SEEK_USER / SEEK_PASSWORD still exported for any host-side
+# tooling that grew up reading them. Removable post-Plan-B once nothing
+# downstream depends on them.
+: "${SEEK_USER:=$API_USER}"
+: "${SEEK_PASSWORD:=$API_PASS}"
+export SEEK_USER SEEK_PASSWORD
 
 SETTINGS_PATH="${ENTRYPOINT_SETTINGS_PATH:-/home/user/.claude/settings.local.json}"
 
@@ -63,8 +73,8 @@ fi
 # under ~/.claude/plugins/local/. /app/plugins/ is a parking spot for the
 # image-baked plugin tree; symlink it into the runtime-mounted .claude/
 # tree so claude-code actually loads the SKILL.md, the slash command, and
-# the bin/ scripts as a registered plugin. Mirrors the user's host-side
-# convention (~/.claude/plugins/local/nextseek-api/).
+# the bin/ scripts as a registered plugin. The nextseek-api path remains a
+# legacy host-side convention for compatibility.
 PLUGIN_SRC_ROOT="${ENTRYPOINT_PLUGIN_SRC_ROOT:-/app/plugins}"
 PLUGIN_LINK_ROOT="${ENTRYPOINT_PLUGIN_LINK_ROOT:-/home/user/.claude/plugins/local}"
 if [ -d "$PLUGIN_SRC_ROOT" ]; then
