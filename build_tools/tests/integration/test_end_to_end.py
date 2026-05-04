@@ -8,8 +8,6 @@ import pytest
 
 from build_tools.ingest_nextseek_docs import __main__ as orchestrator
 from build_tools.ingest_nextseek_docs.constants import BEGIN_MARKER, END_MARKER
-from build_tools.ingest_nextseek_docs.fetch import parse_source_to_markdown
-from build_tools.tests.conftest import make_synthetic_html
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -36,11 +34,18 @@ def _seed_claude_md(path: Path) -> None:
     )
 
 
-def _make_fetcher(html_bytes: bytes):
-    def _fetch(url: str) -> bytes:
-        return html_bytes
+def _markdown(sections: list[tuple[str, str]]) -> str:
+    parts: list[str] = []
+    for title, para in sections:
+        parts.append(f"# {title}\n\n{para}\n")
+    return "\n".join(parts)
 
-    return _fetch
+
+def _make_loader(markdown: str):
+    def _load(url: str) -> str:
+        return markdown
+
+    return _load
 
 
 def _git_status_for_repo_paths() -> str:
@@ -64,15 +69,13 @@ def test_end_to_end_fresh_ingest_writes_expected_files(tmp_path: Path) -> None:
     docs_dir = tmp_path / "docs" / "nextseek"
     claude_md = tmp_path / "container" / "CLAUDE.md"
     _seed_claude_md(claude_md)
-    html = make_synthetic_html(SECTIONS_A)
 
     rc = orchestrator.ingest(
         docs_dir=docs_dir,
         claude_md_path=claude_md,
         doc_url="https://fake.example/",
         force=True,
-        fetcher=_make_fetcher(html),
-        parser=parse_source_to_markdown,
+        loader=_make_loader(_markdown(SECTIONS_A)),
     )
 
     assert rc == 2
@@ -100,16 +103,14 @@ def test_end_to_end_idempotent_rerun(tmp_path: Path, capsys: pytest.CaptureFixtu
     docs_dir = tmp_path / "docs" / "nextseek"
     claude_md = tmp_path / "container" / "CLAUDE.md"
     _seed_claude_md(claude_md)
-    html = make_synthetic_html(SECTIONS_A)
-    fetcher = _make_fetcher(html)
+    loader = _make_loader(_markdown(SECTIONS_A))
 
     first_rc = orchestrator.ingest(
         docs_dir=docs_dir,
         claude_md_path=claude_md,
         doc_url="u",
         force=True,
-        fetcher=fetcher,
-        parser=parse_source_to_markdown,
+        loader=loader,
     )
     assert first_rc == 2
     first_readme = (docs_dir / "README.md").read_bytes()
@@ -119,8 +120,7 @@ def test_end_to_end_idempotent_rerun(tmp_path: Path, capsys: pytest.CaptureFixtu
         claude_md_path=claude_md,
         doc_url="u",
         force=False,
-        fetcher=fetcher,
-        parser=parse_source_to_markdown,
+        loader=loader,
     )
 
     assert second_rc == 0
@@ -138,8 +138,7 @@ def test_end_to_end_mutation_deletes_stale_and_writes_new(tmp_path: Path) -> Non
         claude_md_path=claude_md,
         doc_url="u",
         force=True,
-        fetcher=_make_fetcher(make_synthetic_html(SECTIONS_A)),
-        parser=parse_source_to_markdown,
+        loader=_make_loader(_markdown(SECTIONS_A)),
     )
     assert first_rc == 2
     assert (docs_dir / "02-getting-started.md").exists()
@@ -149,8 +148,7 @@ def test_end_to_end_mutation_deletes_stale_and_writes_new(tmp_path: Path) -> Non
         claude_md_path=claude_md,
         doc_url="u",
         force=False,
-        fetcher=_make_fetcher(make_synthetic_html(SECTIONS_B)),
-        parser=parse_source_to_markdown,
+        loader=_make_loader(_markdown(SECTIONS_B)),
     )
 
     assert second_rc == 2
@@ -172,8 +170,7 @@ def test_end_to_end_container_claude_md_block_populated(tmp_path: Path) -> None:
         claude_md_path=claude_md,
         doc_url="https://fake.example/",
         force=True,
-        fetcher=_make_fetcher(make_synthetic_html(SECTIONS_A)),
-        parser=parse_source_to_markdown,
+        loader=_make_loader(_markdown(SECTIONS_A)),
     )
 
     assert rc == 2
@@ -201,8 +198,7 @@ def test_end_to_end_does_not_pollute_repo(tmp_path: Path) -> None:
         claude_md_path=claude_md,
         doc_url="u",
         force=True,
-        fetcher=_make_fetcher(make_synthetic_html(SECTIONS_A)),
-        parser=parse_source_to_markdown,
+        loader=_make_loader(_markdown(SECTIONS_A)),
     )
 
     assert rc == 2

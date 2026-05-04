@@ -5,18 +5,12 @@ import inspect
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable
 from unittest.mock import patch
 
 import pytest
 
 from build_tools.ingest_nextseek_docs import __main__ as orchestrator
 from build_tools.ingest_nextseek_docs.constants import BEGIN_MARKER, END_MARKER
-from build_tools.tests.conftest import make_synthetic_html
-
-
-def _html_bytes(sections: list[tuple[str, str]]) -> bytes:
-    return make_synthetic_html(sections)
 
 
 def _markdown(sections: list[tuple[str, str]]) -> str:
@@ -26,18 +20,11 @@ def _markdown(sections: list[tuple[str, str]]) -> str:
     return "\n".join(parts)
 
 
-def _stub_fetcher(return_bytes: bytes) -> Callable[[str], bytes]:
-    def _fetch(url: str) -> bytes:
-        return return_bytes
-
-    return _fetch
-
-
-def _stub_parser(return_text: str) -> Callable[[bytes], str]:
-    def _parse(data: bytes) -> str:
+def _stub_loader(return_text: str):
+    def _load(url: str) -> str:
         return return_text
 
-    return _parse
+    return _load
 
 
 def _seed_claude_md(path: Path) -> None:
@@ -45,11 +32,10 @@ def _seed_claude_md(path: Path) -> None:
     path.write_text(f"# Header\n{BEGIN_MARKER}\n{END_MARKER}\n# Footer\n")
 
 
-def test_ingest_signature_has_fetcher_and_parser_kwargs() -> None:
+def test_ingest_signature_has_loader_kwarg() -> None:
     sig = inspect.signature(orchestrator.ingest)
     params = sig.parameters
-    assert "fetcher" in params
-    assert "parser" in params
+    assert "loader" in params
     assert all(p.kind == inspect.Parameter.KEYWORD_ONLY for p in params.values())
 
 
@@ -71,8 +57,7 @@ def test_ingest_exits_0_when_hash_matches(
         claude_md_path=claude_md,
         doc_url="fake",
         force=False,
-        fetcher=_stub_fetcher(b"irrelevant"),
-        parser=_stub_parser(md),
+        loader=_stub_loader(md),
     )
     assert rc == 0
     captured = capsys.readouterr()
@@ -91,8 +76,7 @@ def test_ingest_exits_2_on_fresh_run_writes_expected_files(tmp_path: Path) -> No
         claude_md_path=claude_md,
         doc_url="fake",
         force=False,
-        fetcher=_stub_fetcher(b"x"),
-        parser=_stub_parser(md),
+        loader=_stub_loader(md),
     )
     assert rc == 2
     assert (docs_dir / "01-welcome.md").exists()
@@ -120,19 +104,18 @@ def test_ingest_force_true_overrides_hash_match(tmp_path: Path) -> None:
         claude_md_path=claude_md,
         doc_url="fake",
         force=True,
-        fetcher=_stub_fetcher(b"x"),
-        parser=_stub_parser(md),
+        loader=_stub_loader(md),
     )
     assert rc == 2
     assert (docs_dir / "01-a.md").exists()
 
 
-def test_ingest_fetcher_exception_exits_1_no_writes(tmp_path: Path) -> None:
+def test_ingest_loader_exception_exits_1_no_writes(tmp_path: Path) -> None:
     docs_dir = tmp_path / "docs" / "nextseek"
     claude_md = tmp_path / "container" / "CLAUDE.md"
     _seed_claude_md(claude_md)
 
-    def boom(url: str) -> bytes:
+    def boom(url: str) -> str:
         raise RuntimeError("network down")
 
     rc = orchestrator.ingest(
@@ -140,15 +123,14 @@ def test_ingest_fetcher_exception_exits_1_no_writes(tmp_path: Path) -> None:
         claude_md_path=claude_md,
         doc_url="fake",
         force=False,
-        fetcher=boom,
-        parser=_stub_parser(""),
+        loader=boom,
     )
     assert rc == 1
     assert not (docs_dir / ".content-hash").exists()
     assert list(docs_dir.glob("*-*.md")) == []
 
 
-def test_ingest_parser_returns_no_h1_exits_1(tmp_path: Path) -> None:
+def test_ingest_loader_returns_no_h1_exits_1(tmp_path: Path) -> None:
     docs_dir = tmp_path / "docs" / "nextseek"
     claude_md = tmp_path / "container" / "CLAUDE.md"
     _seed_claude_md(claude_md)
@@ -158,8 +140,7 @@ def test_ingest_parser_returns_no_h1_exits_1(tmp_path: Path) -> None:
         claude_md_path=claude_md,
         doc_url="fake",
         force=False,
-        fetcher=_stub_fetcher(b"x"),
-        parser=_stub_parser("just plain text, no headings\n"),
+        loader=_stub_loader("just plain text, no headings\n"),
     )
     assert rc == 1
     assert not (docs_dir / ".content-hash").exists()
@@ -178,8 +159,7 @@ def test_ingest_cleans_stale_section_files(tmp_path: Path) -> None:
         claude_md_path=claude_md,
         doc_url="fake",
         force=True,
-        fetcher=_stub_fetcher(b"x"),
-        parser=_stub_parser(md),
+        loader=_stub_loader(md),
     )
     assert rc == 2
     assert not (docs_dir / "99-stale.md").exists()
@@ -204,8 +184,7 @@ def test_ingest_writes_hash_last(
         claude_md_path=claude_md,
         doc_url="fake",
         force=True,
-        fetcher=_stub_fetcher(b"x"),
-        parser=_stub_parser(md),
+        loader=_stub_loader(md),
     )
     assert rc == 1
     assert (docs_dir / "01-welcome.md").exists()
@@ -231,8 +210,7 @@ def test_ingest_emits_info_logs_and_status_line(
         claude_md_path=claude_md,
         doc_url="fake",
         force=True,
-        fetcher=_stub_fetcher(b"x"),
-        parser=_stub_parser(md),
+        loader=_stub_loader(md),
     )
     assert rc == 2
 
@@ -262,8 +240,7 @@ def test_ingest_preserves_existing_readme_md_during_cleanup(tmp_path: Path) -> N
         claude_md_path=claude_md,
         doc_url="fake",
         force=True,
-        fetcher=_stub_fetcher(b"x"),
-        parser=_stub_parser(md),
+        loader=_stub_loader(md),
     )
     assert rc == 2
     assert not (docs_dir / "01-old-section.md").exists()
@@ -335,8 +312,7 @@ def test_extract_overview_falls_back_when_first_section_is_empty_body(
         claude_md_path=claude_md,
         doc_url="fake",
         force=True,
-        fetcher=_stub_fetcher(b"x"),
-        parser=_stub_parser(md),
+        loader=_stub_loader(md),
     )
     assert rc == 2
     content = claude_md.read_text()
@@ -364,7 +340,7 @@ def test_ingest_retries_until_snapshot_stabilizes(tmp_path: Path) -> None:
         ]
     )
 
-    def parser(_: bytes) -> str:
+    def loader(_: str) -> str:
         return next(markdowns)
 
     rc = orchestrator.ingest(
@@ -372,8 +348,7 @@ def test_ingest_retries_until_snapshot_stabilizes(tmp_path: Path) -> None:
         claude_md_path=claude_md,
         doc_url="fake",
         force=False,
-        fetcher=_stub_fetcher(b"x"),
-        parser=parser,
+        loader=loader,
     )
 
     assert rc == 2
@@ -392,7 +367,7 @@ def test_ingest_fails_closed_when_snapshot_never_stabilizes(tmp_path: Path) -> N
         ]
     )
 
-    def parser(_: bytes) -> str:
+    def loader(_: str) -> str:
         return next(markdowns)
 
     rc = orchestrator.ingest(
@@ -400,8 +375,7 @@ def test_ingest_fails_closed_when_snapshot_never_stabilizes(tmp_path: Path) -> N
         claude_md_path=claude_md,
         doc_url="fake",
         force=False,
-        fetcher=_stub_fetcher(b"x"),
-        parser=parser,
+        loader=loader,
     )
 
     assert rc == 1
