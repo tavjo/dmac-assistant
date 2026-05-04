@@ -8,7 +8,7 @@ END_MARKER = "<!-- END NEXTSEEK-DOCS (auto-generated) -->"
 
 DEFAULT_DOC_URL = (
     "https://koch-institute-mit.gitbook.io/mit-data-management-analysis-core/"
-    "~gitbook/pdf?limit=100"
+    "~gitbook/site-index"
 )
 
 DEFAULT_DOCS_DIR = Path("docs/nextseek")

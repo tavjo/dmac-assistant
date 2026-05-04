@@ -1,17 +1,13 @@
 [project]
 name = "dmac-build-tools"
 version = "0.1.0"
-description = "Host-only build tooling for dmac-assistant. Ingests NExtSEEK docs (HTML→markdown via markitdown) and produces artifacts COPYd into the image."
+description = "Host-only build tooling for dmac-assistant. Ingests NExtSEEK docs from GitBook Markdown pages and produces artifacts COPYd into the image."
 requires-python = ">=3.12"
 # This project's only purpose is to run `python -m build_tools.ingest_nextseek_docs`
 # on the host (via `make ingest-nextseek-docs`). The output (container/CLAUDE.md +
 # docs/nextseek/) is COPYd into the dmac-assistant image; build_tools itself
-# never runs in the image. Kept separate from the bridge pyproject so its
-# heavy ML deps (markitdown[all] → magika → onnxruntime) don't constrain the
-# bridge lockfile across platforms (onnxruntime has no version with both
-# darwin-x86_64 wheels AND linux-cp314 wheels — see plan body Amendment 7 v2).
+# never runs in the image.
 dependencies = [
-    "markitdown[all]>=0.1.5",
     "httpx>=0.28.1",
 ]
 

@@ -13,8 +13,7 @@ from build_tools.ingest_nextseek_docs.constants import (
     DEFAULT_DOCS_DIR,
 )
 from build_tools.ingest_nextseek_docs.fetch import (
-    fetch_source_bytes,
-    parse_source_to_markdown,
+    load_gitbook_markdown_corpus,
 )
 from build_tools.ingest_nextseek_docs.hashing import (
     compute_content_hash,
@@ -42,15 +41,13 @@ def ingest(
     claude_md_path: Path,
     doc_url: str,
     force: bool,
-    fetcher: Callable[[str], bytes] = fetch_source_bytes,
-    parser: Callable[[bytes], str] = parse_source_to_markdown,
+    loader: Callable[[str], str] = load_gitbook_markdown_corpus,
 ) -> int:
     """Run the full ingestion pipeline and return an exit code."""
     try:
         snapshot = _load_stable_snapshot(
             doc_url=doc_url,
-            fetcher=fetcher,
-            parser=parser,
+            loader=loader,
         )
         if snapshot is None:
             return EXIT_ERROR
@@ -104,22 +101,20 @@ class _Snapshot:
 def _load_stable_snapshot(
     *,
     doc_url: str,
-    fetcher: Callable[[str], bytes],
-    parser: Callable[[bytes], str],
+    loader: Callable[[str], str],
 ) -> _Snapshot | None:
-    """Fetch and parse until the section snapshot repeats, or give up safely."""
+    """Load the source corpus until the section snapshot repeats, or give up."""
     snapshots_by_hash: dict[str, _Snapshot] = {}
 
     for attempt in range(1, MAX_STABILITY_ATTEMPTS + 1):
         logger.info(
-            "Fetching source from %s (attempt %d/%d)",
+            "Loading source from %s (attempt %d/%d)",
             doc_url,
             attempt,
             MAX_STABILITY_ATTEMPTS,
         )
-        source_bytes = fetcher(doc_url)
-        logger.info("Parsing %d bytes to markdown", len(source_bytes))
-        raw_markdown = parser(source_bytes)
+        raw_markdown = loader(doc_url)
+        logger.info("Loaded %d characters of markdown", len(raw_markdown))
         sections = split_by_h1(raw_markdown)
         if not sections:
             logger.warning(

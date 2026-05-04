@@ -343,15 +343,14 @@ def test_dockerfile_uses_uv_sync_locked() -> None:
         "Dockerfile contains the literal placeholder `<CHAT_NEXTSEEK_REV>`."
     )
 
-    # Amendment 7 v2 (2026-04-30): markitdown was REMOVED from the image
-    # entirely. It lives in the sibling build_tools/ uv project (host-only).
-    # The image runtime never imports markitdown. Drift guards below assert
-    # that markitdown stays out of both the Dockerfile and the bridge
-    # pyproject.toml.
+    # Amendment 7 v2 (2026-04-30) removed markitdown from the image. The
+    # 2026-05-04 docs-ingest stabilization removes it from build_tools too.
+    # Drift guards below assert it stays out of both the Dockerfile and the
+    # bridge pyproject.toml.
     assert "markitdown" not in text, (
         "Amendment 7 v2 forbids any markitdown reference in the Dockerfile. "
-        "markitdown is host-only (lives under build_tools/); the image needs "
-        "the COPYd doc artifacts, not the library that generates them."
+        "The image needs the COPYd doc artifacts, not the old PDF conversion "
+        "library."
     )
 
     pyproject = REPO_ROOT / "pyproject.toml"
@@ -362,15 +361,14 @@ def test_dockerfile_uses_uv_sync_locked() -> None:
             continue
         assert "markitdown" not in stripped, (
             f"Amendment 7 v2 forbids an active markitdown dep in bridge "
-            f"pyproject.toml (it lives under build_tools/); found: {line!r}"
+            f"pyproject.toml; found: {line!r}"
         )
 
-    # Amendment 7 v2: the build_tools sibling project must declare its own
-    # pyproject.toml and own lockfile so the bridge lockfile stays portable.
+    # The build_tools sibling project must declare its own pyproject.toml and
+    # own lockfile so the bridge lockfile stays portable.
     build_tools_pyproject = REPO_ROOT / "build_tools" / "pyproject.toml"
     assert build_tools_pyproject.is_file(), (
-        "Amendment 7 v2 requires build_tools/pyproject.toml (sibling uv "
-        "project for host-only markitdown-based doc ingestion)."
+        "build_tools/pyproject.toml is required for host-only doc ingestion."
     )
     build_tools_lock = REPO_ROOT / "build_tools" / "uv.lock"
     assert build_tools_lock.is_file(), (
