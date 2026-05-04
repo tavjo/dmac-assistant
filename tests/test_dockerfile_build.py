@@ -41,8 +41,11 @@ def built_image() -> str:
         subprocess.run(["make", "sync-vendor-deps"], cwd=REPO_ROOT, check=True)
 
     build_context = REPO_ROOT / "build_context"
-    if not (build_context / "plugins" / "nextseek-api").is_dir():
-        subprocess.run(["make", "image-stage"], cwd=REPO_ROOT, check=True)
+    assert (build_context / "plugins" / "nextseek").is_dir(), (
+        "build_context/plugins/nextseek must be populated by the B13 snapshot "
+        "and plugin staging commits before image builds; `make image-build` "
+        "must not restage the legacy nextseek-api plugin."
+    )
 
     result = subprocess.run(
         [
@@ -86,7 +89,7 @@ def test_layout_contract_paths_present(built_image: str) -> None:
     script = (
         "set -e; "
         "for p in /app/CLAUDE.md /app/docs/nextseek-api/README.md "
-        "/app/docs/nextseek/README.md /app/plugins/nextseek-api "
+        "/app/docs/nextseek/README.md /app/plugins/nextseek "
         "/usr/local/bin/entrypoint.sh; do "
         'test -e "$p" || { echo MISSING:$p >&2; exit 2; }; '
         "done; "
@@ -373,4 +376,70 @@ def test_dockerfile_uses_uv_sync_locked() -> None:
     assert build_tools_lock.is_file(), (
         "Amendment 7 v2 requires build_tools/uv.lock (run `cd build_tools "
         "&& uv lock` if absent)."
+    )
+
+
+def test_dockerfile_copies_only_new_plugin():
+    """Plan-body B14.3: Dockerfile uses the plugin-specific COPY form,
+    contains zero references to legacy plugin paths,
+    and references /app/plugins/nextseek/bin in the PATH ENV. Closes
+    Wave-4 carryover risk #3 at the file-text level (paired with the
+    behavioral assertions in test_image_smoke.py). The docs copy at
+    /app/docs/nextseek-api/ is intentionally allowed.
+    """
+    from pathlib import Path
+    text = Path("Dockerfile").read_text()
+    assert "COPY build_context/plugins/nextseek/ /app/plugins/nextseek/" in text, (
+        "Dockerfile MUST contain the plugin-specific COPY "
+        "(COPY build_context/plugins/nextseek/ /app/plugins/nextseek/). "
+        "Found no match - likely still using the broad COPY form."
+    )
+    active_lines = "\n".join(
+        line for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    )
+    forbidden_plugin_paths = [
+        "/app/plugins/nextseek-api",
+        "build_context/plugins/nextseek-api",
+    ]
+    leaked = [path for path in forbidden_plugin_paths if path in active_lines]
+    assert not leaked, (
+        "Dockerfile still references legacy plugin path(s) in active instructions: "
+        f"{leaked}. D25 amended requires the image to ship only the new "
+        "plugin. The legacy plugin tree is preserved under "
+        "build_context/plugins/nextseek-api/ (host-side codebase) but MUST "
+        "NOT appear in Dockerfile plugin COPY/PATH instructions."
+    )
+    assert "/app/plugins/nextseek/bin" in text, (
+        "Dockerfile MUST add /app/plugins/nextseek/bin to PATH so the in-image "
+        "agent finds nextseek-entity-extract et al. Wave-4 carryover risk #3 "
+        "is NOT closed without this."
+    )
+    assert 'test -n "$(ls /app/plugins/nextseek/context/min_*.json' in text, (
+        "Dockerfile MUST contain the NEW-6 build-time catalog-presence guard "
+        "so silent-empty-snapshot fails closed at docker build time. Pairs "
+        "with B13's host-side test -d guard."
+    )
+
+
+def test_image_build_does_not_restage_legacy_plugin():
+    """B14: official image builds consume the committed new-plugin context.
+
+    Running `image-stage` before `docker build` would wipe build_context/ and
+    restage the old nextseek-api plugin, making the narrowed Dockerfile fail or
+    ship stale artifacts. B13 owns catalog snapshots; B14 owns consuming them.
+    """
+    text = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+    import re
+
+    match = re.search(r"^image-build:\s*(?P<deps>.*)$", text, re.MULTILINE)
+    assert match is not None, "Makefile must define an image-build target."
+    deps = match.group("deps").split()
+    assert "sync-vendor-deps" in deps, (
+        "image-build must still sync vendored chat_nextseek before docker build."
+    )
+    assert "image-stage" not in deps, (
+        "image-build must not run image-stage after B14; image-stage still "
+        "defaults to the legacy nextseek-api source and would clobber the "
+        "committed build_context/plugins/nextseek tree."
     )
