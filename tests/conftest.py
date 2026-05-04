@@ -33,10 +33,8 @@ def _load_dotenv_file(path: Path) -> dict[str, str]:
     return values
 
 
-# Plan A · Amendment 7 v2 (2026-04-30): make_synthetic_html and the synthetic_html
-# fixture moved to build_tools/tests/conftest.py along with the four test files
-# that depended on them (test_fetch, test_main, test_markitdown_contract,
-# test_end_to_end). The bridge test suite no longer needs HTML synthesis helpers.
+# The docs ingestion tests use Markdown-source fixtures directly. The bridge
+# test suite must not depend on legacy HTML/PDF conversion helpers.
 
 
 class _PoisonedPath:
