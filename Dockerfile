@@ -26,12 +26,23 @@ RUN mkdir -p /opt/uv-python \
     && uv python install 3.14 \
     && ln -sfn "$(uv python find 3.14)" /usr/local/bin/python3.14 \
     && ln -sfn /usr/local/bin/python3.14 /usr/local/bin/python \
+    && ln -sfn /usr/local/bin/python3.14 /usr/bin/python \
     && chmod -R a+rX /opt/uv-python
 ENV DMAC_PYTHON=/usr/local/bin/python3.14
 
 RUN useradd -m -u 1001 -s /bin/sh user
 
-COPY build_context/plugins/ /app/plugins/
+# Plan B · T14: ship only the new nextseek plugin in the image.
+# The old nextseek-api plugin is preserved on disk under
+# build_context/plugins/nextseek-api/ (host-side codebase) for reuse,
+# but is NOT included in the image (D25 amended).
+COPY build_context/plugins/nextseek/ /app/plugins/nextseek/
+
+# NEW-6: fail the build if catalog files weren't snapshotted before
+# `docker build`. Without this, an image can ship with an empty
+# /app/plugins/nextseek/context/ and degrade silently at runtime.
+RUN test -n "$(ls /app/plugins/nextseek/context/min_*.json 2>/dev/null)" || \
+    (echo "ERROR: no min_*.json catalog files in /app/plugins/nextseek/context/; run 'make snapshot-nextseek-catalogs' before 'docker build'" >&2 && exit 1)
 COPY build_context/docs/nextseek-api/ /app/docs/nextseek-api/
 COPY docs/nextseek/ /app/docs/nextseek/
 COPY container/CLAUDE.md /app/CLAUDE.md
@@ -79,7 +90,7 @@ RUN uv pip install /tmp/chat_nextseek \
 # PATH so Claude can invoke `nextseek-call` etc. without spelling the full
 # path. Placed AFTER the expensive uv pre-warm so a PATH tweak (e.g. adding
 # a second plugin's bin dir) does not invalidate the pre-warm cache layer.
-ENV PATH="/app/plugins/nextseek-api/bin:${PATH}"
+ENV PATH="/app/plugins/nextseek/bin:${PATH}"
 
 USER user
 WORKDIR /home/user

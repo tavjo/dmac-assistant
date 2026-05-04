@@ -79,7 +79,7 @@ image-check-docker:
 sync-vendor-deps:
 	@./scripts/sync-vendor-deps.sh
 
-image-build: image-check-docker image-preflight image-stage sync-vendor-deps
+image-build: image-check-docker image-preflight sync-vendor-deps
 	@if docker image inspect dmac-assistant:poc >/dev/null 2>&1; then \
 	  echo "Retagging prior dmac-assistant:poc -> dmac-assistant:poc-prev"; \
 	  docker tag dmac-assistant:poc dmac-assistant:poc-prev; \
