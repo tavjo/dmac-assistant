@@ -7,24 +7,14 @@ Tests cover:
     references anywhere in the file.
   - Auto-gen sentinel block structural integrity: BEGIN/END markers present.
   - Auto-gen pipeline regression: a hermetic orchestrator.ingest() call using
-    fake fetcher/parser writes a non-empty block to a tmp CLAUDE.md (proves
+    a fake loader writes a non-empty block to a tmp CLAUDE.md (proves
     B16's hand-edit did NOT break the regeneration pipeline).
 
 The test does NOT import chat_nextseek; no importorskip needed.
 """
 from __future__ import annotations
 
-import sys
-import types
 from pathlib import Path
-
-# markitdown is intentionally scoped to the sibling build_tools uv project,
-# not the root bridge/container environment. This root-level unit test only
-# exercises orchestrator.ingest() with an injected parser, so provide the
-# import-time symbol without pulling markitdown into the root project.
-markitdown_stub = types.ModuleType("markitdown")
-markitdown_stub.MarkItDown = object
-sys.modules.setdefault("markitdown", markitdown_stub)
 
 from build_tools.ingest_nextseek_docs import __main__ as orchestrator
 from build_tools.ingest_nextseek_docs.constants import BEGIN_MARKER, END_MARKER
@@ -44,13 +34,8 @@ def _seed_claude_md(path: Path) -> None:
     path.write_text(seeded)
 
 
-def _fake_fetcher(url: str) -> bytes:
+def _fake_loader(url: str) -> str:
     assert url == "https://fake.example/nextseek-docs"
-    return b"fake-bytes"
-
-
-def _fake_parser(source: bytes) -> str:
-    assert source == b"fake-bytes"
     return "# Welcome\n\nIntro paragraph.\n\n# Submit Data\n\nSubmission guidance.\n"
 
 
@@ -122,7 +107,7 @@ def test_auto_gen_sentinel_block_intact():
 
 def test_ingest_pipeline_produces_non_empty_block_hermetically(tmp_path):
     """Regression: the docs-ingest pipeline writes a non-empty generated block
-    to tmp paths with fake fetcher/parser inputs. This never touches production
+    to tmp paths with fake loader input. This never touches production
     docs/nextseek/, never touches production container/CLAUDE.md, and never
     fetches the live GitBook URL."""
     docs_dir = tmp_path / "docs" / "nextseek"
@@ -134,8 +119,7 @@ def test_ingest_pipeline_produces_non_empty_block_hermetically(tmp_path):
         claude_md_path=tmp_claude,
         doc_url="https://fake.example/nextseek-docs",
         force=True,
-        fetcher=_fake_fetcher,
-        parser=_fake_parser,
+        loader=_fake_loader,
     )
     assert rc == orchestrator.EXIT_CHANGES_WRITTEN
 
