@@ -39,6 +39,7 @@ dev = [
 [tool.pytest.ini_options]
 addopts = "--disable-socket -q --cov=tests.harness --cov=src/dmac_assistant --cov-report=term-missing --cov-fail-under=95"
 testpaths = ["tests"]
+norecursedirs = ["tests/image", ".git", "__pycache__", "*.egg-info"]
 pythonpath = ["src"]
 markers = [
     "live: marks live end-to-end tests requiring ~/.env (deselect with '-m \"not live\"')",
