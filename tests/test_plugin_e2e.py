@@ -1,9 +1,8 @@
 """Live NExtSEEK plugin E2E for dmac-assistant:poc.
 
-Runs after T07 (same xdist group). Invokes the baked-in `nextseek-api`
-plugin through `claude --print` with a natural-language prompt, extracts
-the JSON payload from the assistant's final turn, and validates it
-against the canonical DRF-style list shape.
+Runs after T07 (same xdist group). Invokes the baked-in `nextseek`
+plugin (post-B14 image) through `claude --print` with a natural-language
+prompt and validates the plugin's credential handling and log-safety.
 
 Spec deviations from §5b (justified by already-locked DDs):
   * DD-31: ``--verbose`` is required for ``claude --print --output-format
@@ -49,23 +48,34 @@ from tests.harness.plugin_schema import parse_list_response
 from tests.harness.stream_json import StreamJSONParser, ToolUseEvent, parse_stream
 
 
-# H-3: match the actual baked-in script names, not any token containing
-# "nextseek-". A substring check would false-positive on `grep nextseek-*`,
-# `ls /app/plugins/nextseek-api/bin/`, or a comment mentioning the plugin
-# name. The regex enumerates the real executables shipped in the image's
-# PATH (DD-37) plus ``nextseek-session`` used by the SKILL.md docs.
+# H-3 (updated B17b): match the actual baked-in script names shipped by the
+# new `nextseek` plugin (post-B14 image). Legacy names (nextseek-call,
+# nextseek-init, nextseek-spec, nextseek-exec, nextseek-validate,
+# nextseek-vocab, nextseek-session) are no longer in the image PATH;
+# their removal from this regex is intentional, not accidental drift.
+# A substring check would false-positive on `grep nextseek-*`,
+# `ls /app/plugins/nextseek/bin/`, or a comment mentioning the plugin name.
 _NEXTSEEK_SCRIPT_RE = re.compile(
-    r"\bnextseek-(call|init|spec|exec|validate|vocab|session)\b"
+    r"\bnextseek-("
+    r"entity-extract"
+    r"|parse"
+    r"|plan"
+    r"|api-read"
+    r"|api-write"
+    r"|graph"
+    r"|report"
+    r"|generate-submission"
+    r")\b"
 )
 
 
 def _is_nextseek_invocation(evt: ToolUseEvent) -> bool:
-    """A tool_use event proves the nextseek-api plugin was actually called.
+    """A tool_use event proves the nextseek plugin was actually called.
 
     Per ADR-008 the plugin is bash-scripted (MCP rejected for POC plugins);
     its commands surface as ``Bash`` tool_use events whose ``input.command``
-    invokes one of the ``nextseek-*`` scripts (``nextseek-call``,
-    ``nextseek-spec``, ``nextseek-vocab``, etc.). A future MCP-style
+    invokes one of the ``nextseek-*`` scripts (``nextseek-entity-extract``,
+    ``nextseek-parse``, ``nextseek-api-read``, etc.). A future MCP-style
     surfacing where the tool name itself contains ``nextseek`` is also
     accepted defensively.
     """
@@ -261,16 +271,19 @@ def _bash_evt(command: str) -> ToolUseEvent:
 @pytest.mark.parametrize(
     "cmd",
     [
-        "nextseek-call --env dev --op 'List Projects'",
-        "nextseek-init --env dev --assume-yes",
-        "nextseek-spec 'List Samples'",
-        "nextseek-validate --op foo",
-        "/app/plugins/nextseek-api/bin/nextseek-exec --op foo",
-        "cd /tmp && nextseek-vocab",
+        'nextseek-entity-extract --query "Find DNA samples"',
+        "nextseek-parse --query 'list projects'",
+        "nextseek-plan --query 'multi-step lineage query'",
+        "nextseek-api-read --parser-plan '{\"operation_id\": \"list_projects\"}'",
+        "nextseek-api-write --parser-plan '{\"operation_id\": \"create_sample\"}' --confirmed-write",
+        "/app/plugins/nextseek/bin/nextseek-graph --query 'lineage of DNA1'",
+        "nextseek-report --mode samples --project MyProj",
+        "cd /tmp && nextseek-generate-submission --type GEO --uids 1,2,3",
     ],
 )
 def test_is_nextseek_invocation_matches_real_scripts(cmd: str) -> None:
-    """H-3: regex matches every script name the plugin actually ships."""
+    """H-3 (updated B17b): regex matches every script name the new nextseek
+    plugin actually ships in the post-B14 image."""
     assert _is_nextseek_invocation(_bash_evt(cmd))
 
 
@@ -280,15 +293,21 @@ def test_is_nextseek_invocation_matches_real_scripts(cmd: str) -> None:
         # Trailing dash with no script name — the original substring check
         # matched, the regex rejects.
         "grep -R 'nextseek-' /app",
-        # `nextseek-api` is the plugin directory name, not a script name;
-        # the original substring check would have accepted this.
-        "ls /app/plugins/nextseek-api/bin/",
+        # `nextseek-api` is a legacy plugin directory name and also a valid
+        # shim token — but it is NOT in the new plugin's shim set. Substring
+        # would match; enumerated regex rejects (post-B17b).
+        "ls /app/plugins/nextseek/bin/",
         # Made-up name outside the script enum — substring would match,
         # the enumerated regex rejects.
         "echo 'plans to run nextseek-doesnotexist later'",
         "cat /tmp/nextseek-whatever.log",
         # `nextseek` alone (no hyphen) never matches.
         "echo 'see the nextseek project for details'",
+        # Old legacy shim names that are no longer in the image — must
+        # NOT match the new regex even though they have the nextseek- prefix.
+        "nextseek-call --env dev --op 'List Projects'",
+        "nextseek-init --env dev --assume-yes",
+        "nextseek-vocab",
     ],
 )
 def test_is_nextseek_invocation_rejects_substring_matches(cmd: str) -> None:
@@ -306,8 +325,8 @@ def test_is_nextseek_invocation_rejects_substring_matches(cmd: str) -> None:
 @pytest.mark.parametrize(
     "cmd",
     [
-        "which nextseek-call",
-        "echo 'see the nextseek-call script at bin/'",
+        "which nextseek-parse",
+        "echo 'see the nextseek-entity-extract script at bin/'",
     ],
 )
 def test_is_nextseek_invocation_known_edge_cases_accepted(cmd: str) -> None:
@@ -316,7 +335,11 @@ def test_is_nextseek_invocation_known_edge_cases_accepted(cmd: str) -> None:
     (``which X``, quoted docs) still returns True. This is the accepted
     trade-off over the prior substring match; the contract is recorded
     here so a future tighten cannot slip past review without a visibly
-    failing regression test."""
+    failing regression test.
+
+    B17b update: examples use new-plugin shim names (nextseek-parse,
+    nextseek-entity-extract) since legacy names (nextseek-call) are no
+    longer in the image and were removed from the regex."""
     assert _is_nextseek_invocation(_bash_evt(cmd))
 
 
@@ -329,7 +352,7 @@ def test_is_nextseek_invocation_accepts_mcp_style_tool_name() -> None:
 
 def test_is_nextseek_invocation_rejects_non_bash_tool() -> None:
     """Bash-path only — Read/Glob/Grep commands are not plugin invocations."""
-    evt = ToolUseEvent(id="t-3", name="Read", input={"file_path": "/app/plugins/nextseek-api/SKILL.md"})
+    evt = ToolUseEvent(id="t-3", name="Read", input={"file_path": "/app/plugins/nextseek/skills/nextseek/SKILL.md"})
     assert not _is_nextseek_invocation(evt)
 
 
@@ -441,11 +464,15 @@ def test_unauth_request_fails_proving_creds_are_used(
     container_mounts: tuple[dict, str, Path, Path],
 ) -> None:
     """DD-19 verification: strip NEXTSEEK_USERNAME + NEXTSEEK_PASSWORD from
-    the env and the plugin MUST surface a 401/403/auth error. Proves the
-    entrypoint's env-var alias actually handed working credentials to the
-    plugin in ``test_plugin_invokes_list_endpoint``; a green result there
-    paired with a green result here rules out the plugin silently
-    succeeding with cached or default creds.
+    the env and the plugin MUST surface a 401/403/auth error or CONFIG_MISSING
+    exit. Proves the entrypoint's env-var alias actually hands working
+    credentials to the plugin; a green result in test_plugin_invokes_list_endpoint
+    paired with a green result here rules out the plugin silently succeeding with
+    cached or default credentials.
+
+    Updated B17b: prompt now targets the new `nextseek` plugin surface
+    (nextseek-entity-extract -> nextseek-parse -> nextseek-api-read) instead of
+    the legacy nextseek-api / nextseek-call surface removed by B14.
     """
     del live_socket
     mounts, _, _, _ = container_mounts
@@ -454,8 +481,10 @@ def test_unauth_request_fails_proving_creds_are_used(
         env.pop(k, None)
 
     prompt = (
-        "Use the nextseek-api plugin to list the first 3 samples in any "
-        "dev study. Return whatever the plugin emits."
+        "Use the nextseek plugin to list the first 3 samples in any "
+        "dev study. Start by running nextseek-entity-extract, then "
+        "nextseek-parse, then nextseek-api-read with the parser plan. "
+        "Return whatever the plugin emits."
     )
 
     del docker_client  # fixture presence asserts image exists
@@ -475,8 +504,11 @@ def test_unauth_request_fails_proving_creds_are_used(
         or b"403" in combined
         or b"unauthorized" in lowered
         or b"auth" in lowered
+        or b"config_missing" in lowered
+        or b"api_user" in lowered
+        or b"api_pass" in lowered
     ), (
-        f"Expected auth/401/403 when creds stripped; "
+        f"Expected auth/401/403/CONFIG_MISSING when creds stripped; "
         f"got tail: {combined[-500:]!r}"
     )
 
@@ -493,6 +525,11 @@ def test_plugin_credentials_never_logged(
     """DD-27 adj: NEXTSEEK_PASSWORD must not appear in stdout/stderr/docker
     logs OR in any file under the host-side ``.claude/`` / ``/data/scratch/``
     mount trees. Password-in-a-file is as bad as password-on-a-socket.
+
+    Updated B17b: prompt now targets the new `nextseek` plugin surface
+    (nextseek-entity-extract) instead of the legacy nextseek-api surface
+    removed by B14. The credential-redaction assertion semantics are
+    preserved exactly — only the trigger prompt changes.
     """
     from tests.harness.canaries import scan_dir_for_secret
 
@@ -505,7 +542,8 @@ def test_plugin_credentials_never_logged(
     del docker_client  # fixture presence asserts image exists
     result = run_claude_print(
         env, mounts,
-        "Use nextseek-api to check the session status; say 'ok'.",
+        "Use the nextseek plugin to check what entities can be extracted. "
+        "Run nextseek-entity-extract --query 'samples' and say 'ok'.",
         timeout=LIVE_TIMEOUT_SECONDS,
     )
     combined = (
