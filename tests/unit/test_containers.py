@@ -698,5 +698,9 @@ def test_password_key_redacts_in_repr_and_model_dump(
     assert "<REDACTED>" in text
     dumped = spec.model_dump()
     assert dumped["environment"][redacted_key] == "<REDACTED>"
-    assert canary not in json.dumps(dumped)
-    assert canary not in spec.model_dump_json()
+    dumped_json = json.dumps(dumped)
+    assert canary not in dumped_json
+    assert "<REDACTED>" in dumped_json
+    spec_json = spec.model_dump_json()
+    assert canary not in spec_json
+    assert '"<REDACTED>"' in spec_json
