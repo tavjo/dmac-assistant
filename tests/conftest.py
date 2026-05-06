@@ -223,7 +223,7 @@ def pytest_terminal_summary(
     del exitstatus, config
     if _live_guard_should_fail():
         terminalreporter.write_line(
-            "SESSION GUARD FAIL: ~/.env loaded and live tests were selected "
+            f"SESSION GUARD FAIL: {_ENV_FILE} loaded and live tests were selected "
             "but none actually ran (passed call phase). Exiting non-zero.",
             red=True,
         )
