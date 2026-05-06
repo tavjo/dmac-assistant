@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -35,7 +36,9 @@ def allow_unix_socket_only():
 
 
 @pytest.fixture
-def bridge_config() -> BridgeConfig:
+def bridge_config(tmp_path) -> BridgeConfig:
+    catalog = tmp_path / "agent_model_catalog.json"
+    catalog.write_text('{"default": {}}', encoding="utf-8")
     return BridgeConfig(
         users={
             "alice": UserRecord(password="s3cret-alice", projects=["proj-a"]),
@@ -45,6 +48,7 @@ def bridge_config() -> BridgeConfig:
         scratch_root="/tmp/scratch",
         dropbox_root="/tmp/dropbox",
         output_root="/tmp/output",
+        catalog_file=catalog,
         bridge_host="127.0.0.1",
         bridge_port=8000,
     )
@@ -140,6 +144,7 @@ def test_revoke_removes_token(bridge_config: BridgeConfig) -> None:
 
 def test_get_config_loads_from_environment(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setenv(
         "DMAC_USERS",
@@ -149,6 +154,9 @@ def test_get_config_loads_from_environment(
     monkeypatch.setenv("DMAC_SCRATCH_ROOT", "./var/scratch")
     monkeypatch.setenv("DMAC_DROPBOX_ROOT", "./dropbox")
     monkeypatch.setenv("DMAC_OUTPUT_ROOT", "./var/output")
+    catalog = tmp_path / "agent_model_catalog.json"
+    catalog.write_text('{"default": {}}', encoding="utf-8")
+    monkeypatch.setenv("DMAC_CATALOG_FILE_HOST_PATH", str(catalog))
 
     loaded = get_config()
 

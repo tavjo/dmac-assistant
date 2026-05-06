@@ -17,6 +17,9 @@ REQUIRED_VARS: list[str] = [
     "NEXTSEEK_USERNAME",
     "NEXTSEEK_PASSWORD",
     "NEXTSEEK_URL",
+    # B17c: required for chat_nextseek's GCP profile (D23).
+    # No shape rule — presence + non-empty + non-BOM is sufficient.
+    "GCP_API_KEY",
 ]
 
 _AWS_REGION_RE = re.compile(

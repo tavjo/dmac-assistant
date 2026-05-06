@@ -60,6 +60,7 @@ _CONTAINER_CLAUDE_HOME = "/home/user/.claude"
 _CONTAINER_SCRATCH = "/data/scratch"
 _CONTAINER_PROJECTS_PREFIX = "/data/projects"
 _CONTAINER_OUTPUT = "/data/output"
+_CONTAINER_CATALOG_FILE = "/etc/dmac/agent_model_catalog.json"
 
 
 class ContainerSpec(BaseModel):
@@ -233,6 +234,12 @@ def _build_volumes(
         "bind": _CONTAINER_OUTPUT,
         "mode": "ro",
     }
+    # B17c: host-mounted agent model catalog (read-only). The container path
+    # is fixed; the host path is configurable via DMAC_CATALOG_FILE_HOST_PATH.
+    volumes[str(config.catalog_file)] = {
+        "bind": _CONTAINER_CATALOG_FILE,
+        "mode": "ro",
+    }
     return volumes
 
 
@@ -259,6 +266,8 @@ def _build_environment(
     ):
         if forwarded_key in bridge_env:
             env[forwarded_key] = bridge_env[forwarded_key]
+    # B17c: catalog file is always mounted; CATALOG_FILE points at the bind.
+    env["CATALOG_FILE"] = _CONTAINER_CATALOG_FILE
     return env
 
 

@@ -21,6 +21,7 @@ def _good_env() -> dict[str, str]:
         "NEXTSEEK_USERNAME": "alice",
         "NEXTSEEK_PASSWORD": "s3cret",
         "NEXTSEEK_URL": "https://nextseek-dev.example.mit.edu",
+        "GCP_API_KEY": "gcp-fake-key",
     }
 
 
@@ -31,6 +32,7 @@ def test_required_vars_constant_exact() -> None:
         "NEXTSEEK_USERNAME",
         "NEXTSEEK_PASSWORD",
         "NEXTSEEK_URL",
+        "GCP_API_KEY",
     ]
 
 
@@ -193,7 +195,8 @@ def test_cli_via_subprocess_happy_path(tmp_path: Path) -> None:
         "AWS_REGION=us-east-1\n"
         "NEXTSEEK_USERNAME=alice\n"
         "NEXTSEEK_PASSWORD=s3cret\n"
-        "NEXTSEEK_URL=https://nextseek-dev.example.mit.edu\n",
+        "NEXTSEEK_URL=https://nextseek-dev.example.mit.edu\n"
+        "GCP_API_KEY=gcp-fake-key\n",
         encoding="utf-8",
     )
     child_env = {k: v for k, v in os.environ.items() if k not in REQUIRED_VARS}
