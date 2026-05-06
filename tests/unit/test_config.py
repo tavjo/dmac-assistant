@@ -7,6 +7,13 @@ from pathlib import Path
 import pytest
 
 
+def _make_catalog(tmp_path: Path) -> Path:
+    """Write a minimal-but-valid JSON catalog under tmp_path and return it."""
+    catalog = tmp_path / "agent_model_catalog.json"
+    catalog.write_text('{"default": {}}', encoding="utf-8")
+    return catalog
+
+
 GOOD_USERS = {
     "alice": {"password": "s3cret-alice", "projects": ["proj-a"]},
     "bob-1": {"password": "s3cret-bob", "projects": ["proj-a", "proj-b"]},
@@ -15,13 +22,21 @@ GOOD_USERS = {
 
 @pytest.fixture
 def clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> pytest.MonkeyPatch:
-    """Strip all bridge variables so each test sets only what it needs."""
+    """Strip all bridge variables so each test sets only what it needs.
+
+    B17c: also pre-populates DMAC_CATALOG_FILE_HOST_PATH so existing tests
+    that don't care about catalog wiring still resolve a valid catalog file.
+    Tests that DO care (the catalog_file tests) call monkeypatch.setenv /
+    monkeypatch.delenv themselves to override.
+    """
     for var in (
         "DMAC_DEV_MODE",
         "DMAC_USERS",
         "DMAC_CLAUDE_USERS_ROOT",
         "DMAC_SCRATCH_ROOT",
         "DMAC_DROPBOX_ROOT",
+        "DMAC_OUTPUT_ROOT",
+        "DMAC_CATALOG_FILE_HOST_PATH",
         "DMAC_BRIDGE_HOST",
         "DMAC_BRIDGE_PORT",
     ):
@@ -32,6 +47,12 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> pytest.MonkeyP
     isolated = tmp_path / "no_dotenv_here"
     isolated.mkdir()
     monkeypatch.setattr(config_mod, "_REPO_ROOT", isolated, raising=False)
+
+    # B17c: provide a default valid catalog so the new required-field load
+    # path resolves. Tests that exercise catalog-file behavior override this.
+    default_catalog = tmp_path / "agent_model_catalog_default.json"
+    default_catalog.write_text('{"default": {}}', encoding="utf-8")
+    monkeypatch.setenv("DMAC_CATALOG_FILE_HOST_PATH", str(default_catalog))
     return monkeypatch
 
 
@@ -43,6 +64,7 @@ def _set_good_env(
     scratch_root: str = "./var/scratch",
     dropbox_root: str = "/tmp/dropbox-fake",
     output_root: str = "/tmp/output-fake",
+    catalog_file: str | None = None,
     bridge_host: str = "127.0.0.1",
     bridge_port: str = "8000",
 ) -> None:
@@ -51,6 +73,8 @@ def _set_good_env(
     monkeypatch.setenv("DMAC_SCRATCH_ROOT", scratch_root)
     monkeypatch.setenv("DMAC_DROPBOX_ROOT", dropbox_root)
     monkeypatch.setenv("DMAC_OUTPUT_ROOT", output_root)
+    if catalog_file is not None:
+        monkeypatch.setenv("DMAC_CATALOG_FILE_HOST_PATH", catalog_file)
     monkeypatch.setenv("DMAC_BRIDGE_HOST", bridge_host)
     monkeypatch.setenv("DMAC_BRIDGE_PORT", bridge_port)
 
@@ -412,6 +436,212 @@ def test_missing_users_still_raises_with_dotenv_miss(
     from dmac_assistant.config import ConfigError, load_config
 
     with pytest.raises(ConfigError, match="DMAC_USERS"):
+        load_config()
+
+
+# ---------------------------------------------------------------------------
+# B17c: catalog_file resolution tests (D-NEW-2, D-NEW-7)
+#
+# Test isolation contract: every test below sets ALL bridge-required env vars
+# explicitly, NOT via ambient ~/.env. _BRIDGE_REQUIRED is cross-checked against
+# BridgeConfig's actual fields:
+#   users (DMAC_USERS), claude_users_root (DMAC_CLAUDE_USERS_ROOT),
+#   scratch_root (DMAC_SCRATCH_ROOT), dropbox_root (DMAC_DROPBOX_ROOT),
+#   output_root (DMAC_OUTPUT_ROOT), catalog_file (DMAC_CATALOG_FILE_HOST_PATH),
+#   plus optional bridge_host / bridge_port.
+# ---------------------------------------------------------------------------
+
+
+_BRIDGE_REQUIRED = {
+    "DMAC_USERS": json.dumps(GOOD_USERS),
+    "DMAC_CLAUDE_USERS_ROOT": "/tmp/claude-users-fake",
+    "DMAC_SCRATCH_ROOT": "/tmp/scratch-fake",
+    "DMAC_DROPBOX_ROOT": "/tmp/dropbox-fake",
+    "DMAC_OUTPUT_ROOT": "/tmp/output-fake",
+}
+
+
+def _set_required_bridge_vars(
+    monkeypatch: pytest.MonkeyPatch, **overrides: str | None
+) -> None:
+    """Set every required bridge env var deterministically.
+
+    Each B17c test calls this BEFORE load_config() so disk .env is irrelevant.
+    `overrides` lets a test omit a var (pass None) or change its value.
+    """
+    for k, v in _BRIDGE_REQUIRED.items():
+        if k in overrides:
+            override_value = overrides[k]
+            if override_value is None:
+                monkeypatch.delenv(k, raising=False)
+                continue
+            monkeypatch.setenv(k, override_value)
+        else:
+            monkeypatch.setenv(k, v)
+
+
+@pytest.fixture
+def b17c_clean_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> pytest.MonkeyPatch:
+    """Isolated env for catalog_file tests (no defaults, no ambient .env)."""
+    for var in (
+        "DMAC_DEV_MODE",
+        "DMAC_USERS",
+        "DMAC_CLAUDE_USERS_ROOT",
+        "DMAC_SCRATCH_ROOT",
+        "DMAC_DROPBOX_ROOT",
+        "DMAC_OUTPUT_ROOT",
+        "DMAC_CATALOG_FILE_HOST_PATH",
+        "DMAC_BRIDGE_HOST",
+        "DMAC_BRIDGE_PORT",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    import dmac_assistant.config as config_mod
+
+    isolated = tmp_path / "no_dotenv_here"
+    isolated.mkdir()
+    monkeypatch.setattr(config_mod, "_REPO_ROOT", isolated, raising=False)
+    return monkeypatch
+
+
+def test_bridge_config_resolves_catalog_file_from_env(
+    b17c_clean_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """DMAC_CATALOG_FILE_HOST_PATH overrides the dev default."""
+    catalog = tmp_path / "agent_model_catalog.json"
+    catalog.write_text('{"default": {}}', encoding="utf-8")
+    _set_required_bridge_vars(b17c_clean_env)
+    b17c_clean_env.setenv("DMAC_CATALOG_FILE_HOST_PATH", str(catalog))
+
+    from dmac_assistant.config import load_config
+
+    cfg = load_config()
+    assert cfg.catalog_file == catalog
+
+
+def test_bridge_config_rejects_missing_catalog_file(
+    b17c_clean_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Non-existent path raises ConfigError."""
+    _set_required_bridge_vars(b17c_clean_env)
+    b17c_clean_env.setenv(
+        "DMAC_CATALOG_FILE_HOST_PATH", str(tmp_path / "nope.json")
+    )
+
+    from dmac_assistant.config import ConfigError, load_config
+
+    with pytest.raises(
+        ConfigError,
+        match="catalog_file does not exist|DMAC_CATALOG_FILE_HOST_PATH does not exist",
+    ):
+        load_config()
+
+
+def test_bridge_config_rejects_malformed_catalog_json(
+    b17c_clean_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """B17c D-NEW-7: malformed JSON at boot raises ConfigError, not deferred to container."""
+    catalog = tmp_path / "agent_model_catalog.json"
+    catalog.write_text("{this is not json", encoding="utf-8")
+    _set_required_bridge_vars(b17c_clean_env)
+    b17c_clean_env.setenv("DMAC_CATALOG_FILE_HOST_PATH", str(catalog))
+
+    from dmac_assistant.config import ConfigError, load_config
+
+    with pytest.raises(ConfigError, match="catalog_file is not valid JSON"):
+        load_config()
+
+
+def test_bridge_config_dev_mode_uses_vendored_default(
+    b17c_clean_env: pytest.MonkeyPatch,
+) -> None:
+    """In DMAC_DEV_MODE=true, missing env resolves to vendor/chat_nextseek/agent_model_catalog.json.
+
+    Requires the vendored chat_nextseek tree (scripts/sync-vendor-deps.sh).
+    """
+    _set_required_bridge_vars(b17c_clean_env)
+    b17c_clean_env.setenv("DMAC_DEV_MODE", "true")
+    b17c_clean_env.delenv("DMAC_CATALOG_FILE_HOST_PATH", raising=False)
+
+    # The dev-default is repo-anchored, not _REPO_ROOT-monkeypatched (b17c_clean_env
+    # patches _REPO_ROOT to a tmp dir that has no vendor/). Restore the real one.
+    import dmac_assistant.config as config_mod
+
+    real_repo_root = Path(config_mod.__file__).resolve().parent.parent.parent
+    real_default = (
+        real_repo_root / "vendor" / "chat_nextseek" / "agent_model_catalog.json"
+    )
+    if not real_default.is_file():
+        pytest.skip(
+            "vendor/chat_nextseek/agent_model_catalog.json missing; run "
+            "scripts/sync-vendor-deps.sh"
+        )
+    b17c_clean_env.setattr(config_mod, "_REPO_ROOT", real_repo_root, raising=False)
+    b17c_clean_env.setattr(
+        config_mod, "_DEV_DEFAULT_CATALOG_FILE", real_default, raising=False
+    )
+
+    from dmac_assistant.config import load_config
+
+    cfg = load_config()
+    assert cfg.catalog_file.name == "agent_model_catalog.json"
+    assert cfg.catalog_file.parts[-3:] == (
+        "vendor",
+        "chat_nextseek",
+        "agent_model_catalog.json",
+    )
+
+
+def test_bridge_config_field_validator_rejects_missing_catalog_file(tmp_path):
+    """Direct BridgeConfig construction also gates catalog_file existence."""
+    from pydantic import ValidationError
+
+    from dmac_assistant.config import BridgeConfig, UserRecord
+
+    catalog = tmp_path / "missing_catalog.json"
+    with pytest.raises(ValidationError, match="catalog_file does not exist"):
+        BridgeConfig(
+            users={"alice": UserRecord(password="x", projects=["p"])},
+            claude_users_root=tmp_path / "cu",
+            scratch_root=tmp_path / "sc",
+            dropbox_root=tmp_path / "db",
+            output_root=tmp_path / "out",
+            catalog_file=catalog,
+        )
+
+
+def test_bridge_config_field_validator_rejects_malformed_catalog_json(tmp_path):
+    """Direct BridgeConfig construction also gates catalog_file JSON shape."""
+    from pydantic import ValidationError
+
+    from dmac_assistant.config import BridgeConfig, UserRecord
+
+    catalog = tmp_path / "agent_model_catalog.json"
+    catalog.write_text("{not valid", encoding="utf-8")
+    with pytest.raises(ValidationError, match="catalog_file is not valid JSON"):
+        BridgeConfig(
+            users={"alice": UserRecord(password="x", projects=["p"])},
+            claude_users_root=tmp_path / "cu",
+            scratch_root=tmp_path / "sc",
+            dropbox_root=tmp_path / "db",
+            output_root=tmp_path / "out",
+            catalog_file=catalog,
+        )
+
+
+def test_bridge_config_non_dev_requires_catalog_env(
+    b17c_clean_env: pytest.MonkeyPatch,
+) -> None:
+    """Production-like load with no env raises ConfigError."""
+    _set_required_bridge_vars(b17c_clean_env)
+    b17c_clean_env.delenv("DMAC_DEV_MODE", raising=False)
+    b17c_clean_env.delenv("DMAC_CATALOG_FILE_HOST_PATH", raising=False)
+
+    from dmac_assistant.config import ConfigError, load_config
+
+    with pytest.raises(ConfigError, match="DMAC_CATALOG_FILE_HOST_PATH is required"):
         load_config()
 
 

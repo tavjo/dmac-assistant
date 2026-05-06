@@ -21,12 +21,15 @@ def _identity():
 
 
 def _config(tmp_path: Path) -> BridgeConfig:
+    catalog = tmp_path / "agent_model_catalog.json"
+    catalog.write_text('{"default": {}}', encoding="utf-8")
     return BridgeConfig(
         users={"alice": UserRecord(password=SecretStr("pw"), projects=["demo"])},
         claude_users_root=tmp_path / "claude",
         scratch_root=tmp_path / "scratch",
         dropbox_root=tmp_path / "dropbox",
         output_root=tmp_path / "output",
+        catalog_file=catalog,
     )
 
 

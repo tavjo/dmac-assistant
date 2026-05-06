@@ -16,6 +16,7 @@ VALID_ENV = {
     "NEXTSEEK_USERNAME": "alice",
     "NEXTSEEK_PASSWORD": "s3cret",
     "NEXTSEEK_URL": "https://dev.nextseek.example.com/api",
+    "GCP_API_KEY": "gcp-fake-key",
 }
 
 

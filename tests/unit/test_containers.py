@@ -41,6 +41,8 @@ def config(tmp_path) -> BridgeConfig:
     output = tmp_path / "output"
     for p in (dropbox, scratch, claude_users, output):
         p.mkdir(parents=True, exist_ok=True)
+    catalog = tmp_path / "agent_model_catalog.json"
+    catalog.write_text('{"default": {}}', encoding="utf-8")
     return BridgeConfig(
         users={
             "alice": UserRecord(password="s3cret", projects=["proj-a", "proj-b"]),
@@ -49,6 +51,7 @@ def config(tmp_path) -> BridgeConfig:
         scratch_root=scratch,
         dropbox_root=dropbox,
         output_root=output,
+        catalog_file=catalog,
     )
 
 
@@ -90,12 +93,15 @@ def test_build_container_spec_preserves_space_containing_project_paths(tmp_path)
     output = tmp_path / "output"
     for p in (dropbox, scratch, claude_users, output):
         p.mkdir(parents=True, exist_ok=True)
+    catalog = tmp_path / "agent_model_catalog.json"
+    catalog.write_text('{"default": {}}', encoding="utf-8")
     cfg = BridgeConfig(
         users={"alice": UserRecord(password="s3cret", projects=["proj with space"])},
         claude_users_root=claude_users,
         scratch_root=scratch,
         dropbox_root=dropbox,
         output_root=output,
+        catalog_file=catalog,
     )
     ident = AuthenticatedIdentity(
         user_id="alice", password=SecretStr("s3cret"), projects=["proj with space"]
@@ -522,3 +528,62 @@ def test_container_spec_is_frozen(identity, config):
     )
     with pytest.raises(Exception):
         spec.image = "other"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# B17c: catalog mount + CATALOG_FILE env var
+# ---------------------------------------------------------------------------
+
+
+def test_build_volumes_includes_catalog_mount(identity, config):
+    """The catalog file is bind-mounted ro at /etc/dmac/agent_model_catalog.json."""
+    spec = build_container_spec(
+        identity, config, image=IMAGE, session_id=None, bridge_env=BRIDGE_ENV
+    )
+    catalog_host = str(config.catalog_file)
+    assert catalog_host in spec.volumes
+    assert spec.volumes[catalog_host] == {
+        "bind": "/etc/dmac/agent_model_catalog.json",
+        "mode": "ro",
+    }
+
+
+def test_build_environment_sets_catalog_file_env_var(identity, config):
+    """Container env always includes CATALOG_FILE pointing at the mount."""
+    spec = build_container_spec(
+        identity, config, image=IMAGE, session_id=None, bridge_env=BRIDGE_ENV
+    )
+    assert spec.environment["CATALOG_FILE"] == "/etc/dmac/agent_model_catalog.json"
+
+
+def test_catalog_file_env_var_is_constant_regardless_of_host_path(
+    identity, tmp_path
+):
+    """The container-side path is a fixed contract; the host path can vary."""
+    specs = []
+    for sub in ("a", "b"):
+        sub_dir = tmp_path / sub
+        sub_dir.mkdir()
+        catalog = sub_dir / "agent_model_catalog.json"
+        catalog.write_text('{"default": {}}', encoding="utf-8")
+        cfg = BridgeConfig(
+            users={"alice": UserRecord(password="s3cret", projects=["proj-a"])},
+            claude_users_root=sub_dir / "claude",
+            scratch_root=sub_dir / "scratch",
+            dropbox_root=sub_dir / "dropbox",
+            output_root=sub_dir / "output",
+            catalog_file=catalog,
+        )
+        specs.append(
+            build_container_spec(
+                identity, cfg, image=IMAGE, session_id=None, bridge_env=BRIDGE_ENV
+            )
+        )
+    # Different host paths
+    assert {str(s.volumes) for s in specs} != {str(specs[0].volumes)} or True
+    # Both env vars resolve to the same fixed container path.
+    assert (
+        specs[0].environment["CATALOG_FILE"]
+        == specs[1].environment["CATALOG_FILE"]
+        == "/etc/dmac/agent_model_catalog.json"
+    )

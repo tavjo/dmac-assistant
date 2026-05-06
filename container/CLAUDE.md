@@ -14,6 +14,27 @@ The image ships one plugin, discoverable at fixed paths:
 
 When a user asks about NExtSEEK data, read the SKILL.md first. The plugin's CLI tools are in `/app/plugins/nextseek/bin/` and read credentials from `NEXTSEEK_USERNAME` / `NEXTSEEK_PASSWORD` (translated to `API_USER` / `API_PASS` by the container entrypoint).
 
+## Credential masking when debugging
+
+**STOPGAP — pending architectural fix.** The defense of record is the output-scrubber design at `docs/superpowers/specs/2026-05-01-output-scrubber-design.md`. Until that lands, follow the rules below to reduce credential exposure in the stream-json transcript.
+
+When you need to inspect environment variables to debug a plugin failure, you MUST mask values:
+
+- **Never** run bare `env`, `printenv`, or `set` commands. The full output (including `NEXTSEEK_PASSWORD`, `GCP_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`) lands in the Bash tool_result block and is logged to the host transcript.
+- **Always** mask values with `sed`:
+  ```bash
+  env | grep -E '<your filter>' | sed 's/=.*/=***/'
+  ```
+- **Or** filter to non-secret prefixes only:
+  ```bash
+  env | grep -E '(NEXTSEEK_(URL|MODE|USERNAME)|CATALOG_FILE|USE_DEV_API)' | sort
+  ```
+- When checking specific values, use `[ -n "$VAR" ] && echo VAR=set || echo VAR=unset` patterns rather than echoing the value.
+
+**Treat all environment values as secrets by default.** This includes API keys, passwords, tokens, and database credentials. The masking rule applies to ALL env-introspection commands without exception.
+
+This guidance is non-deterministic protection: the architectural defense is the output scrubber. Do not rely on it as the only barrier.
+
 ## Clarification policy
 
 - **Never call `AskUserQuestion`.** The chat UI does not render MCQ widgets; the question sits unanswered and the session dies.

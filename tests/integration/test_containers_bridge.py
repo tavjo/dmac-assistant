@@ -54,12 +54,15 @@ def live_config(tmp_path) -> BridgeConfig:
     output = tmp_path / "output"
     for p in (project, scratch, claude_root, output):
         p.mkdir(parents=True, exist_ok=True)
+    catalog = tmp_path / "agent_model_catalog.json"
+    catalog.write_text('{"default": {}}', encoding="utf-8")
     return BridgeConfig(
         users={"alice": UserRecord(password="s3cret", projects=["proj-a"])},
         claude_users_root=tmp_path / "claude-users",
         scratch_root=tmp_path / "scratch",
         dropbox_root=dropbox,
         output_root=output,
+        catalog_file=catalog,
     )
 
 

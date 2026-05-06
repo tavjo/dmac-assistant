@@ -28,12 +28,15 @@ def test_path_mappings_emitted(tmp_path):
         password=SecretStr("pw"),
         projects=["demo"],
     )
+    catalog = tmp_path / "agent_model_catalog.json"
+    catalog.write_text('{"default": {}}', encoding="utf-8")
     cfg = BridgeConfig(
         users={"alice": UserRecord(password=SecretStr("pw"), projects=["demo"])},
         claude_users_root=tmp_path / "claude",
         scratch_root=tmp_path / "scratch",
         dropbox_root=tmp_path / "dropbox",
         output_root=tmp_path / "output",
+        catalog_file=catalog,
     )
     env = _build_bridge_env(config=cfg, identity=identity)
     mappings = json.loads(env["DMAC_PATH_MAPPINGS"])
