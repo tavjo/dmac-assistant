@@ -11,7 +11,18 @@ import pytest
 from build_tools.verify_env import REQUIRED_VARS, validate_env
 
 
-_ENV_FILE = Path(os.path.expanduser("~/.env"))
+def _locate_env_file() -> Path:
+    """Find the canonical project .env. Walks up from this file so a git
+    worktree (which lacks gitignored .env) falls back to the parent repo."""
+    start = Path(__file__).resolve().parent
+    for parent in [start, *start.parents]:
+        candidate = parent / ".env"
+        if candidate.exists():
+            return candidate
+    return start.parent / ".env"
+
+
+_ENV_FILE = _locate_env_file()
 _SESSION_LIVE_STATE: dict[str, object] = {
     "env_loaded": False,
     "live_selected": 0,
@@ -83,7 +94,7 @@ def _block_production_paths(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(scope="session")
 def live_env() -> dict[str, str]:
-    """Load ~/.env once for live tests and skip when it is absent or invalid."""
+    """Load project-root .env once for live tests; skip when absent or invalid."""
     file_values = _load_dotenv_file(_ENV_FILE)
     merged_values = {**file_values, **os.environ}
 
