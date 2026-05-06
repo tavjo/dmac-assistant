@@ -15,6 +15,7 @@ from dmac_assistant.config import BridgeConfig, UserRecord
 from dmac_assistant.containers import (
     BridgeAttachSocket,
     ContainerSpec,
+    _REDACTED_ENV_KEYS,
     attach,
     async_attach,
     async_start_container,
@@ -23,6 +24,35 @@ from dmac_assistant.containers import (
     start_container,
     stop_and_remove,
 )
+
+
+# T4 Amendment-4 forwarded-key list (12 keys; prod-MySQL keys excluded).
+NEW_FORWARDED_KEYS = (
+    "MYSQL_HOST_DEV",
+    "MYSQL_PORT",
+    "MYSQL_USER",
+    "MYSQL_DEV_PASSWORD",
+    "SESSION_DB_TYPE",
+    "SESSION_DB_HOST",
+    "SESSION_DB_PORT",
+    "SESSION_DB_USER",
+    "SESSION_DB_PASSWORD",
+    "SESSION_DB_NAME",
+    "SESSION_DB_PATH",
+    "NEO4J_DATABASE",
+)
+PRE_EXISTING_FORWARDED_KEYS = (
+    "NEXTSEEK_URL",
+    "GCP_API_KEY",
+    "NEO4J_URI",
+    "NEO4J_USER",
+    "NEO4J_PASSWORD",
+    "DMAC_PATH_MAPPINGS",
+)
+_MINIMUM_BRIDGE_ENV = {
+    "AWS_REGION": "us-east-1",
+    "AWS_BEARER_TOKEN_BEDROCK": "bearer-abc",
+}
 
 
 IMAGE = "dmac-assistant:poc"
@@ -587,3 +617,86 @@ def test_catalog_file_env_var_is_constant_regardless_of_host_path(
         == specs[1].environment["CATALOG_FILE"]
         == "/etc/dmac/agent_model_catalog.json"
     )
+
+
+# ---------------------------------------------------------------------------
+# T5 Group A — per-new-key parameterized forwarding tests (12 keys × 2 dirs)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("new_key", NEW_FORWARDED_KEYS)
+def test_new_forwarded_key_round_trips_when_present(new_key, identity, config):
+    sentinel = f"sentinel-{new_key}"
+    bridge_env = dict(_MINIMUM_BRIDGE_ENV, **{new_key: sentinel})
+    spec = build_container_spec(
+        identity, config, image=IMAGE, session_id=None, bridge_env=bridge_env
+    )
+    assert spec.environment.get(new_key) == sentinel
+
+
+@pytest.mark.parametrize("new_key", NEW_FORWARDED_KEYS)
+def test_new_forwarded_key_absent_when_missing_from_bridge_env(
+    new_key, identity, config
+):
+    spec = build_container_spec(
+        identity,
+        config,
+        image=IMAGE,
+        session_id=None,
+        bridge_env=dict(_MINIMUM_BRIDGE_ENV),
+    )
+    assert new_key not in spec.environment
+
+
+# ---------------------------------------------------------------------------
+# T5 Group B — pre-existing keys still forward (regression, non-parameterized)
+# ---------------------------------------------------------------------------
+def test_pre_existing_forwarded_keys_still_round_trip(identity, config):
+    bridge_env = dict(_MINIMUM_BRIDGE_ENV)
+    bridge_env.update(
+        {
+            "NEXTSEEK_URL": "https://nextseek-dev.example.mit.edu",
+            "GCP_API_KEY": "gcp-key-XYZ",
+            "NEO4J_URI": "bolt://neo4j.example:7687",
+            "NEO4J_USER": "neo4j-user",
+            "NEO4J_PASSWORD": "neo4j-pw",
+            "DMAC_PATH_MAPPINGS": "proj-a:/data/projects/proj-a",
+        }
+    )
+    spec = build_container_spec(
+        identity, config, image=IMAGE, session_id=None, bridge_env=bridge_env
+    )
+    for key in PRE_EXISTING_FORWARDED_KEYS:
+        assert spec.environment.get(key) == bridge_env[key], (
+            f"pre-existing key {key} dropped from forwarding tuple/branch"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T5 redaction — 2 new password keys + 1 pre-existing regression
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "redacted_key",
+    ["MYSQL_DEV_PASSWORD", "SESSION_DB_PASSWORD", "NEO4J_PASSWORD"],
+)
+def test_password_key_is_member_of_redacted_env_keys(redacted_key):
+    assert redacted_key in _REDACTED_ENV_KEYS
+
+
+@pytest.mark.parametrize(
+    "redacted_key",
+    ["MYSQL_DEV_PASSWORD", "SESSION_DB_PASSWORD", "NEO4J_PASSWORD"],
+)
+def test_password_key_redacts_in_repr_and_model_dump(
+    redacted_key, identity, config
+):
+    canary = f"CANARY-{redacted_key}-VAL-92Z"
+    bridge_env = dict(_MINIMUM_BRIDGE_ENV, **{redacted_key: canary})
+    spec = build_container_spec(
+        identity, config, image=IMAGE, session_id=None, bridge_env=bridge_env
+    )
+    text = repr(spec)
+    assert canary not in text
+    assert "<REDACTED>" in text
+    dumped = spec.model_dump()
+    assert dumped["environment"][redacted_key] == "<REDACTED>"
+    assert canary not in json.dumps(dumped)
+    assert canary not in spec.model_dump_json()
