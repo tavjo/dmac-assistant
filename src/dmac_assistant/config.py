@@ -21,6 +21,11 @@ _DEV_DEFAULT_OUTPUT_ROOT = Path("~/dmac-dev/output").expanduser()
 # Repo root (…/dmac_assistant): .env is loaded from here regardless of process cwd.
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
+# B17c: dev-mode default catalog (vendored chat_nextseek 121-line catalog).
+_DEV_DEFAULT_CATALOG_FILE = (
+    _REPO_ROOT / "vendor" / "chat_nextseek" / "agent_model_catalog.json"
+)
+
 
 class ConfigError(ValueError):
     """Raised when bridge configuration cannot be loaded safely."""
@@ -52,8 +57,27 @@ class BridgeConfig(BaseModel):
     scratch_root: Path
     dropbox_root: Path
     output_root: Path
+    catalog_file: Path
     bridge_host: str = "127.0.0.1"
     bridge_port: int = 8000
+
+    @field_validator("catalog_file")
+    @classmethod
+    def _validate_catalog_file(cls, value: Path) -> Path:
+        if not value.is_file():
+            raise ValueError(f"catalog_file does not exist: {value}")
+        # B17c D-NEW-7: parse-only JSON validation at bridge boot.
+        # Catches malformed JSON before it reaches the container, where it
+        # would surface as a chat_nextseek RuntimeError → agent debug → leak.
+        # NO schema validation — chat_nextseek's _normalize_agent_model_catalog
+        # remains the canonical shape gate.
+        try:
+            json.loads(value.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"catalog_file is not valid JSON: {value} ({exc})"
+            ) from exc
+        return value
 
     @field_validator("users")
     @classmethod
@@ -89,6 +113,29 @@ def _required_path(name: str, default: Path | None = None) -> Path:
     if default is not None and _is_dev_mode():
         return default
     raise ConfigError(f"{name} is required")
+
+
+def _resolve_catalog_file() -> Path:
+    """Resolve + validate DMAC_CATALOG_FILE_HOST_PATH at bridge boot (B17c).
+
+    Existence + JSON-parseability checks run here so callers see a precise
+    ConfigError message (D-NEW-7) instead of the generic "Bridge configuration
+    is invalid" wrapper that pydantic ValidationError gets when raised from
+    BridgeConfig._validate_catalog_file.
+    """
+    path = _required_path(
+        "DMAC_CATALOG_FILE_HOST_PATH",
+        default=_DEV_DEFAULT_CATALOG_FILE,
+    )
+    if not path.is_file():
+        raise ConfigError(f"catalog_file does not exist: {path}")
+    try:
+        json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConfigError(
+            f"catalog_file is not valid JSON: {path} ({exc})"
+        ) from exc
+    return path
 
 
 def _load_users(raw_users: str) -> dict[str, UserRecord]:
@@ -142,6 +189,7 @@ def load_config() -> BridgeConfig:
                 "DMAC_OUTPUT_ROOT",
                 default=_DEV_DEFAULT_OUTPUT_ROOT,
             ),
+            catalog_file=_resolve_catalog_file(),
             bridge_host=os.environ.get("DMAC_BRIDGE_HOST", "127.0.0.1"),
             bridge_port=int(os.environ.get("DMAC_BRIDGE_PORT", "8000")),
         )

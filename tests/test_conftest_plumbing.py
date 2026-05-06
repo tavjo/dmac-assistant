@@ -58,7 +58,8 @@ def test_live_env_fixture_provides_vars_when_env_present(
         "AWS_REGION=us-east-1\n"
         "NEXTSEEK_USERNAME=u\n"
         "NEXTSEEK_PASSWORD=p\n"
-        "NEXTSEEK_URL=https://nextseek-dev.example.mit.edu\n",
+        "NEXTSEEK_URL=https://nextseek-dev.example.mit.edu\n"
+        "GCP_API_KEY=g\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("HOME", str(fake_home))
@@ -89,7 +90,8 @@ def test_live_socket_fixture_allows_computed_bedrock_and_nextseek_hosts(
         "AWS_REGION=us-east-1\n"
         "NEXTSEEK_USERNAME=u\n"
         "NEXTSEEK_PASSWORD=p\n"
-        "NEXTSEEK_URL=https://nextseek-dev.example.mit.edu\n",
+        "NEXTSEEK_URL=https://nextseek-dev.example.mit.edu\n"
+        "GCP_API_KEY=g\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("HOME", str(fake_home))
@@ -122,7 +124,8 @@ def test_live_socket_is_session_scoped(
         "AWS_REGION=us-east-1\n"
         "NEXTSEEK_USERNAME=u\n"
         "NEXTSEEK_PASSWORD=p\n"
-        "NEXTSEEK_URL=https://nextseek-dev.example.mit.edu\n",
+        "NEXTSEEK_URL=https://nextseek-dev.example.mit.edu\n"
+        "GCP_API_KEY=g\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("HOME", str(fake_home))
@@ -158,7 +161,8 @@ def test_terminal_hook_stays_silent_when_no_live_selected(
         "AWS_REGION=us-east-1\n"
         "NEXTSEEK_USERNAME=u\n"
         "NEXTSEEK_PASSWORD=p\n"
-        "NEXTSEEK_URL=https://nextseek-dev.example.mit.edu\n",
+        "NEXTSEEK_URL=https://nextseek-dev.example.mit.edu\n"
+        "GCP_API_KEY=g\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("HOME", str(fake_home))
@@ -197,7 +201,8 @@ def test_terminal_hook_fails_when_live_selected_but_none_ran(
         "AWS_REGION=us-east-1\n"
         "NEXTSEEK_USERNAME=u\n"
         "NEXTSEEK_PASSWORD=p\n"
-        "NEXTSEEK_URL=https://nextseek-dev.example.mit.edu\n",
+        "NEXTSEEK_URL=https://nextseek-dev.example.mit.edu\n"
+        "GCP_API_KEY=g\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("HOME", str(fake_home))
@@ -235,7 +240,8 @@ def test_terminal_hook_silent_when_all_live_skip(
         "AWS_REGION=us-east-1\n"
         "NEXTSEEK_USERNAME=u\n"
         "NEXTSEEK_PASSWORD=p\n"
-        "NEXTSEEK_URL=https://nextseek-dev.example.mit.edu\n",
+        "NEXTSEEK_URL=https://nextseek-dev.example.mit.edu\n"
+        "GCP_API_KEY=g\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("HOME", str(fake_home))

@@ -17,6 +17,11 @@ def base_env(tmp_path, monkeypatch):
     monkeypatch.setenv("DMAC_DROPBOX_ROOT", str(tmp_path / "dropbox"))
     monkeypatch.delenv("DMAC_OUTPUT_ROOT", raising=False)
     monkeypatch.delenv("DMAC_DEV_MODE", raising=False)
+    # B17c: catalog_file is now a required BridgeConfig field; set a valid path
+    # so this fixture's tests focus solely on output_root behavior.
+    catalog = tmp_path / "agent_model_catalog.json"
+    catalog.write_text('{"default": {}}', encoding="utf-8")
+    monkeypatch.setenv("DMAC_CATALOG_FILE_HOST_PATH", str(catalog))
     return tmp_path
 
 
