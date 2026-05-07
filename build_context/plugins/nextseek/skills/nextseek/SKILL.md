@@ -100,6 +100,38 @@ The parser routes this to `refine_last_search` or `ask_about_last_results` autom
 
 ---
 
+## Tool capability matrix — what each tool does
+
+This is the authoritative contract. Do NOT infer capabilities from binary names, repeated `--help` invocations, or by reading `/app/plugins/nextseek/bin/*` source. If a question can't be answered from this matrix, ask the user — don't go spelunking.
+
+| Tool | What it does | Input | Output | Class | When to use |
+|---|---|---|---|---|---|
+| `nextseek-query` | Full read pipeline: entity → parser → api/memory/reporter/graph/system → chatter. The parser already routes "build a GEO/SRA/PRIDE submission for ..." to reporter mode `report_generation` and calls `report_writer_agent` with the user's full question + a reporter-agent-built plan. | `--query "<text>"` (+ optional `--planner`, `--json`) | Plain-text reply on stdout (or full dict with `--json`) | Read-only | **Default for everything** — search, retrieve-by-UID, refine, recall, sample-tree / lineage, project summary reports (samples/protocols/published/rppr), submission generation (GEO/SRA/PRIDE/nf-core), system-capability questions |
+| `nextseek-api-write` | Direct POST/PUT/DELETE against NExtSEEK | parser-plan body + `--confirmed-write` | JSON API response | **WRITE** (3-layer protocol applies) | Explicit create/update/delete after L3 user confirmation |
+| `nextseek-generate-submission` | Low-level shortcut: skips the parser + reporter agents and calls `report_writer_agent` directly with a minimal plan. Receives an *empty* user-question string, so it has less context than `nextseek-query` and frequently returns nulls. | `--type {GEO,SRA,NFCORE_RNASEQ,NFCORE_SCRNASEQ,PRIDE}` + `--uids <comma-list>` | JSON `{"report": <bundle-or-null>, "type": "<type>"}` on stdout | Read-fetch + local file write | **Rarely.** Only when scripting and you intentionally want to bypass the parser. For any user-facing GEO/SRA/PRIDE/nf-core ask, prefer `nextseek-query`. |
+| `nextseek-report` | Standalone project-summary report (same surface `nextseek-query` reaches via reporter mode) | `--mode {samples,protocols,published,rppr} --project <name>` | JSON report | Read-only | Rarely — `nextseek-query` reaches the same place from natural language. Use only when you have both `--mode` and `--project` named explicitly and want to skip the parser. |
+| `nextseek-entity-extract`, `nextseek-parse`, `nextseek-plan`, `nextseek-api-read`, `nextseek-graph` | Single-stage debug probes | varies | structured JSON | Read-only | Debug ladder ONLY — invoke when `nextseek-query` returned something you don't trust and you need to inspect a specific stage |
+
+### `nextseek-query` IS the path for submissions — don't reach for the shortcut
+
+A user asking "Build me a GEO submission for D.SEQ-... and D.SEQ-..." is a normal `nextseek-query` call. The parser detects "geo / sra / pride" in the query text (`_infer_report_type_from_query`), routes to reporter mode `report_generation`, the reporter_agent builds a full `ReportWriterPlan` from the user's question, and `report_writer_agent` runs with that plan **plus the user's verbatim question**. Same downstream agent, much more context. Just do:
+
+```bash
+nextseek-query --query "<the user's full question, verbatim>"
+```
+
+The standalone `nextseek-generate-submission` exists for scripting cases where you have a UID list and want to bypass the parser. It calls `report_writer_agent(config, "", ReportWriterPlan(report_type, uids))` — note the empty question string and the minimal plan. With that little context, the agent often returns null fields. **Do not use it as the default for user-facing submission asks. Do not use it as a "lower-level retry" if `nextseek-query` returned something unexpected — that's the wrong direction.**
+
+### Things `nextseek-query` does NOT do
+
+- It does **not** write to NExtSEEK. Writes go through `nextseek-api-write` under the L3 protocol.
+
+### What "nulls" / empty fields from `nextseek-generate-submission` mean
+
+If you ended up calling `nextseek-generate-submission` directly and got a `{"report": null}` or all-null fields, the most likely cause is the empty-question / minimal-plan invocation above — the writer agent had nothing to anchor on. The correct recovery is to run the user's actual question through `nextseek-query` instead. Other possible causes (UIDs not published, UIDs typo'd, credential scope) only matter if `nextseek-query` ALSO comes back empty — at which point apply the Stop-after-2 rule and ask the user.
+
+---
+
 ## When NOT to use `nextseek-query` — the four escape-hatch categories
 
 Drop into a fine-grained tool only in these explicit cases:
@@ -108,13 +140,15 @@ Drop into a fine-grained tool only in these explicit cases:
 
 `nextseek-query` is read-only. For any operation that creates, updates, or deletes data on the NExtSEEK server, route through `nextseek-api-write` and apply the **3-layer write safety** below. Layer 1 (Claude Code permission allowlist) blocks `nextseek-api-write` unless explicitly approved by the user; Layer 2 (the shim) refuses without `--confirmed-write`; Layer 3 is the behavioral protocol in this file.
 
-### 2. Submission generation
+### 2. Submission generation — actually still `nextseek-query`
 
-GEO / SRA / nf-core / PRIDE submission files are produced by `nextseek-generate-submission`. These are heavy, side-effecting operations the user must request explicitly:
+GEO / SRA / nf-core / PRIDE submission asks are **not** an escape hatch. The parser routes them to reporter mode `report_generation` automatically. Default path:
 
 ```bash
-nextseek-generate-submission --type <GEO|SRA|NFCORE_RNASEQ|NFCORE_SCRNASEQ|PRIDE> --uids <UID-1,UID-2,...>
+nextseek-query --query "Build me a GEO submission for <UID-1>, <UID-2>, ..."
 ```
+
+The standalone `nextseek-generate-submission` exists, but per the capability matrix above it is a low-level shortcut that bypasses the parser/reporter agents and frequently returns nulls. Reach for it only when scripting around the parser; never as a fallback for an unexpected `nextseek-query` result.
 
 ### 3. Project summary reports
 
@@ -183,19 +217,31 @@ Then wait for the user's next message. If the user responds "yes" / "go ahead" /
 
 ---
 
-## Stop-after-2 rule
+## Stop-after-2 rule (load-bearing)
 
-If `nextseek-query` returns an unsupported answer, an empty result that looks wrong for the question, or a non-zero exit, you MAY retry **once** — typically by rephrasing the user's question to remove ambiguity, fixing a literal that you typo'd, or adding `--planner` for a clearly multi-step ask. **Do NOT retry a third time.**
+This rule applies to **every** `nextseek-*` tool, not just `nextseek-query`. If a `nextseek-*` tool returns an unsupported answer, empty/null fields that look wrong for the question, or a non-zero exit, you MAY retry **once** with a corrected invocation — rephrase the question, fix a typo'd literal, add `--planner` for a multi-step ask, correct a wrong `--type` / `--uids` value. **Do NOT make a third attempt, and do NOT switch to a different `nextseek-*` tool to "preflight" or reverse-engineer the failure** (e.g. running `nextseek-query` to fetch metadata after `nextseek-generate-submission` returned nulls — see the matrix above; those tools do not chain).
 
 If the second attempt also fails, STOP and reply to the user in plain text with:
 
-- What was attempted (the two queries you sent)
+- What was attempted (the two calls you made, including arguments)
 - The error / unexpected output you observed
-- One specific clarifying question that would unblock you (e.g. "Did you mean sample type X or Y?", "Should I include unpublished records?", "Which project should I scope this to?")
+- One specific clarifying question that would unblock you (e.g. "Did you mean sample type X or Y?", "Are these UIDs published?", "Which project should I scope this to?")
 
-Do NOT, after a second failure, drop into the escape-hatch debug ladder (`nextseek-entity-extract` / `nextseek-parse` / `nextseek-api-read`) to reverse-engineer what `nextseek-query` would have returned. The escape hatches exist for cases where the user explicitly asks for them or where the failure is mechanical (e.g. you need to inspect a parser_plan to construct an `nextseek-api-write` body). They are NOT a fallback for unknown answers.
+The dmac-assistant chat UI does not render `AskUserQuestion`, so the clarification MUST be plain text.
 
-This is a hard cap: two attempts per user question, then plain-text clarification ask. The dmac-assistant chat UI does not render `AskUserQuestion`, so the clarification MUST be plain text.
+### Hard prohibitions after a failed nextseek-* call
+
+After a `nextseek-*` tool returns nulls, empty data, or a non-zero exit, you MUST NOT do any of the following — these are budget-sinks that cannot produce a correct answer:
+
+- `Read` any file under `/app/plugins/nextseek/bin/` — those are the runner internals, not user-facing docs
+- `Grep` or `Glob` `/app/plugins/nextseek/bin/` or the in-image `chat_nextseek` source for keywords (`dry_run`, `report_writer`, `submission`, etc.)
+- run `python3 -c "import inspect; inspect.getsource(...)"` against any `chat_nextseek.*` symbol
+- call `--help` repeatedly looking for hidden flags — the matrix above is the complete contract; there are no hidden flags
+- call a sibling `nextseek-*` tool to attempt to "fetch what the failed tool needed"
+
+The escape-hatch debug ladder (`nextseek-entity-extract` / `nextseek-parse` / `nextseek-api-read`) exists for a narrow purpose: the user explicitly asked you to inspect a specific pipeline stage, or the failure is mechanical (e.g. you need a parser_plan to construct an `nextseek-api-write` body). It is **not** a fallback for unknown answers.
+
+This is a hard cap: two attempts per user question across all `nextseek-*` tools combined, then plain-text clarification ask.
 
 ## Errors
 

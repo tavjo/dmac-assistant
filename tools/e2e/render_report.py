@@ -281,7 +281,7 @@ footer { color: var(--text-light); font-size: 11px; margin-top: 24px; text-align
             el('td', null, idCode),
             el('td', { class: 'qtext' }, (s.query_text || '').slice(0, 200)),
             el('td', { class: 'num' }, (s.latency_seconds || 0).toFixed(1) + 's'),
-            el('td', { class: 'num' }, '$' + (s.cost_usd || 0).toFixed(4)),
+            el('td', { class: 'num' }, (s.cost_estimated ? '~$' : '$') + (s.cost_usd || 0).toFixed(4)),
             el('td', { class: 'num' }, String(s.tool_calls_total || 0)),
             el('td', null, s.answer_provided ? '✓' : '—'),
             el('td', null, pillFor(s)),
@@ -387,11 +387,25 @@ def _hydrate_summaries(manifest: dict, manifest_dir: pathlib.Path) -> dict:
         if not rp:
             continue
         rec_path = pathlib.Path(rp)
-        if not rec_path.is_absolute():
-            rec_path = manifest_dir / rec_path
-        try:
-            rec = json.loads(rec_path.read_text())
-        except Exception:
+        # record_path in run_batch.py is written relative to CWD (where
+        # run_batch was invoked). Try as-is first; if that misses, fall
+        # back to looking next to the manifest by basename — this handles
+        # both stored-relative and stored-absolute paths, and lets the
+        # report be rendered after the run dir was moved.
+        candidates = []
+        if rec_path.is_absolute():
+            candidates.append(rec_path)
+        else:
+            candidates.append(rec_path)  # relative to CWD
+            candidates.append(manifest_dir / rec_path.name)
+        rec = None
+        for cand in candidates:
+            try:
+                rec = json.loads(cand.read_text())
+                break
+            except Exception:
+                continue
+        if rec is None:
             continue
         s["final_answer"] = rec.get("final_answer")
         s.setdefault("tool_use_summary", rec.get("tool_use_summary", []))

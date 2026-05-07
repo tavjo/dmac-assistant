@@ -37,6 +37,30 @@ def _err(code: str, message: str, exit_code: int) -> None:
     sys.exit(exit_code)
 
 
+def _sanitize_env_quotes() -> None:
+    """Strip matching outer quote characters from every env var.
+
+    `docker run --env-file` and `python-dotenv.dotenv_values()` preserve any
+    surrounding `"..."` or `'...'` from .env literals, leaving values like
+    `'"fairdata-dev.mit.edu"'` (the literal quote characters become part of
+    the value). chat_nextseek reads these directly via `os.getenv` without
+    de-quoting, so MySQL hosts, passwords, and Basic-auth credentials all
+    arrive at downstream libraries with garbage characters and connections /
+    HTTP auth fail.
+
+    Bash's `set -a; . .env; set +a` strips quotes implicitly, so this only
+    bites containerised / library-loaded env paths. We normalise here, in
+    one place, before importing chat_nextseek. We only strip when the first
+    and last characters are the same quote char and len >= 2 — never partial
+    quotes, never mismatched.
+    """
+    for key, value in list(os.environ.items()):
+        if (len(value) >= 2
+                and value[0] == value[-1]
+                and value[0] in ('"', "'")):
+            os.environ[key] = value[1:-1]
+
+
 def _dry_run() -> bool:
     return os.environ.get("NEXTSEEK_DRY_RUN") == "1"
 
@@ -48,6 +72,37 @@ def _load_config():
         _err("IMPORT_FAILED", f"chat_nextseek not importable: {exc}", 2)
     if not os.environ.get("API_USER") or not os.environ.get("API_PASS"):  # pragma: no cover
         _err("CONFIG_MISSING", "API_USER / API_PASS not set", 2)  # pragma: no cover
+
+    # CHAT_NEXTSEEK_DB_ENV selects which MySQL host the reporter / context
+    # bootstrap connects to. chat_nextseek's own callers hardcode env="prod"
+    # at four sites (config.__init__, helpers reporter paths). When the
+    # deploy only has dev credentials (MYSQL_HOST_DEV / MYSQL_DEV_PASSWORD),
+    # those calls fail with `[CONFIG][DB] Host not configured for env 'prod'`.
+    # We patch the bound class methods so all internal `env="prod"` calls
+    # transparently route to dev. Default unchanged ("prod") for backward
+    # compat with existing deployments.
+    db_env = (os.environ.get("CHAT_NEXTSEEK_DB_ENV") or "prod").strip().lower()
+    if db_env not in ("dev", "prod"):  # pragma: no cover
+        _err("VALIDATION",
+             f"CHAT_NEXTSEEK_DB_ENV must be 'dev' or 'prod', got {db_env!r}", 3)
+    if db_env == "dev":  # pragma: no cover
+        _orig_connect = ChatConfig._connect_db
+        _orig_ensure = ChatConfig._ensure_context_files
+        _orig_fetch = ChatConfig._fetch_context_files_from_db
+
+        def _connect_db_dev(self, env: str = "prod"):
+            return _orig_connect(self, env="dev")
+
+        def _ensure_context_files_dev(self, env: str = "prod"):
+            return _orig_ensure(self, env="dev")
+
+        def _fetch_context_files_dev(self, env: str = "prod"):
+            return _orig_fetch(self, env="dev")
+
+        ChatConfig._connect_db = _connect_db_dev
+        ChatConfig._ensure_context_files = _ensure_context_files_dev
+        ChatConfig._fetch_context_files_from_db = _fetch_context_files_dev
+
     return ChatConfig({})  # pragma: no cover
 
 
@@ -313,6 +368,11 @@ def main() -> None:
     p.add_argument("--planner", action="store_true",  # for query
                    help="Use run_query_plan instead of run_query (multi-step capable)")
     args = p.parse_args()
+
+    # Normalise env once, before chat_nextseek's config reads any of it.
+    # See _sanitize_env_quotes docstring for the rationale (docker --env-file
+    # / dotenv_values preserve surrounding quotes from .env literals).
+    _sanitize_env_quotes()
 
     if _dry_run():
         config = None

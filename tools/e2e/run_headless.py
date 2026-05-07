@@ -70,8 +70,71 @@ _ENV_KEYS = {
     "AWS_REGION", "AWS_BEARER_TOKEN_BEDROCK", "CLAUDE_CODE_USE_BEDROCK",
     "GCP_API_KEY", "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "CATALOG_FILE",
+    # DB credentials read by chat_nextseek's reporter / context bootstrap.
+    # Without these forwarded, reporter-mode queries fail with
+    # `[CONFIG][DB] Host not configured for env '<env>'`. The runner's
+    # _sanitize_env_quotes() strips surrounding quotes before chat_nextseek
+    # reads them.
+    "MYSQL_HOST_PROD", "MYSQL_HOST_DEV", "MYSQL_PORT", "MYSQL_USER",
+    "MYSQL_PROD_PASSWORD", "MYSQL_DEV_PASSWORD",
+    # Neo4j credentials read by the graph agent.
+    "NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD", "NEO4J_DATABASE",
+    "NEO4J_URI_PROD", "NEO4J_USER_PROD", "NEO4J_PASSWORD_PROD",
+    "NEO4J_DATABASE_PROD",
+    # Session DB (chat_nextseek SQLiteSessionState + future remote session
+    # store). Forwarded so the remote variant works when the deployment
+    # opts into it.
+    "SESSION_DB_HOST", "SESSION_DB_USER", "SESSION_DB_PASSWORD",
+    "SESSION_DB_NAME", "SESSION_DB_PATH", "SESSION_DB_TYPE",
 }
 _TIMEOUT_HARD_MAX = 180  # seconds; project rule
+
+# Bedrock list pricing for Anthropic Claude models, USD per 1M tokens.
+# Used only as a fallback estimate when stream-json's `result` event is
+# missing (e.g. timeout). Real cost when available comes straight from
+# `total_cost_usd`. Keep these synced with AWS Bedrock pricing for the
+# models the dmac-assistant image ships.
+_BEDROCK_PRICE_PER_MTOK = {
+    "claude-sonnet-4-6":   {"in": 3.00, "out": 15.00, "cache_w": 3.75, "cache_r": 0.30},
+    "claude-sonnet-4-5":   {"in": 3.00, "out": 15.00, "cache_w": 3.75, "cache_r": 0.30},
+    "claude-opus-4-7":     {"in": 15.00, "out": 75.00, "cache_w": 18.75, "cache_r": 1.50},
+    "claude-haiku-4-5":    {"in": 1.00, "out": 5.00, "cache_w": 1.25, "cache_r": 0.10},
+}
+
+
+def _estimate_cost_from_usage(events: list[dict]) -> float:
+    """Sum per-assistant-event `usage` blocks against a static price table.
+
+    Used only when stream-json's terminal `result` event is missing. The
+    figure is a best-effort estimate; the record marks it via
+    `cost_estimated: true`. Returns 0.0 if no usable events were seen.
+    """
+    total = 0.0
+    for e in events:
+        if e.get("type") != "assistant":
+            continue
+        msg = e.get("message", {})
+        usage = msg.get("usage") or {}
+        model = msg.get("model") or ""
+        # match on substring so region-prefixed Bedrock model IDs still work
+        prices = None
+        for key, val in _BEDROCK_PRICE_PER_MTOK.items():
+            if key in model:
+                prices = val
+                break
+        if not prices:
+            continue
+        in_tok = usage.get("input_tokens", 0) or 0
+        out_tok = usage.get("output_tokens", 0) or 0
+        cache_w = usage.get("cache_creation_input_tokens", 0) or 0
+        cache_r = usage.get("cache_read_input_tokens", 0) or 0
+        total += (
+            in_tok    * prices["in"]
+            + out_tok   * prices["out"]
+            + cache_w   * prices["cache_w"]
+            + cache_r   * prices["cache_r"]
+        ) / 1_000_000.0
+    return total
 
 
 def load_env_file(path: pathlib.Path) -> dict[str, str]:
@@ -203,9 +266,31 @@ def run_one(*, query_text: str, query_id: str, image: str,
     ]
     if max_budget_usd is not None and max_budget_usd > 0:
         claude_args.extend(["--max-budget-usd", str(max_budget_usd)])
+    # The skill formats artifact paths to the user using DMAC_PATH_MAPPINGS
+    # to translate container paths back to host paths. The bridge supplies
+    # this in prod; in the headless harness we know the mapping exactly
+    # because we own the mount, so inject it here. Without this the user
+    # sees `/data/scratch/...` which doesn't exist on the host.
+    path_mappings = json.dumps({"/data/scratch": str(scratch_dir)})
+    # CHAT_NEXTSEEK_DB_ENV: only dev credentials are populated in our .env
+    # (MYSQL_HOST_DEV / MYSQL_DEV_PASSWORD). Without this var, chat_nextseek's
+    # reporter / context bootstrap defaults to env="prod" and fails with
+    # `[CONFIG][DB] Host not configured for env 'prod'`. Caller can override
+    # by setting CHAT_NEXTSEEK_DB_ENV in the .env file (env-file wins over
+    # later -e flags only if the same key isn't repeated; we set it here as
+    # the headless default so a stock .env Just Works).
+    env_overrides = [
+        "-e", f"DMAC_PATH_MAPPINGS={path_mappings}",
+    ]
+    if os.environ.get("CHAT_NEXTSEEK_DB_ENV"):
+        env_overrides.extend(["-e",
+            f"CHAT_NEXTSEEK_DB_ENV={os.environ['CHAT_NEXTSEEK_DB_ENV']}"])
+    else:
+        env_overrides.extend(["-e", "CHAT_NEXTSEEK_DB_ENV=dev"])
     cmd = [
         "docker", "run", "--rm", "-i",
         "--env-file", str(env_path),
+        *env_overrides,
         "-v", f"{catalog_host_path}:/etc/dmac/agent_model_catalog.json:ro",
         "-v", f"{scratch_dir}:/data/scratch:rw",
         "-v", f"{claude_dir}:/home/user/.claude:rw",
@@ -310,11 +395,20 @@ def _build_record(*, qid: str, qtext: str, stdout_path: pathlib.Path,
         err = "runner-error"
 
     cost = 0.0
+    cost_estimated = False
     if result_event and "total_cost_usd" in result_event:
         try:
             cost = float(result_event["total_cost_usd"])
         except (TypeError, ValueError):
             cost = 0.0
+    else:
+        # No `result` event (typically: timeout killed the process before
+        # Claude Code emitted the final summary). Best-effort estimate from
+        # the per-assistant-event `usage` blocks. Better than reporting
+        # $0.00 on a multi-tool-call timeout, which under-reports the run's
+        # actual budget burn and corrupts manifest totals.
+        cost = _estimate_cost_from_usage(events)
+        cost_estimated = cost > 0.0
 
     return {
         "query_id": qid,
@@ -322,7 +416,8 @@ def _build_record(*, qid: str, qtext: str, stdout_path: pathlib.Path,
         "started_at": started.isoformat().replace("+00:00", "Z"),
         "completed_at": completed.isoformat().replace("+00:00", "Z"),
         "latency_seconds": round(latency, 3),
-        "cost_usd": cost,
+        "cost_usd": round(cost, 6),
+        "cost_estimated": cost_estimated,
         "answer_provided": answer_provided,
         "final_answer": final_answer,
         "tool_use_summary": tool_use_summary,

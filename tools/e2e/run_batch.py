@@ -135,6 +135,12 @@ def main() -> None:
     ap.add_argument("--keep-state", action="store_true",
                     help="reuse a single scratch + claude mount root "
                          "across the entire batch (chained refine/memory)")
+    ap.add_argument("--scratch-dir",
+                    help="absolute path to use as the /data/scratch mount "
+                         "for every query; outputs land under this dir "
+                         "(no temp dir, no cleanup). Useful for landing "
+                         "outputs in a Dropbox project folder so the user "
+                         "can see them.")
     ap.add_argument("--stop-on-fail", action="store_true",
                     help="abort the batch as soon as one query "
                          "fails / times out")
@@ -170,9 +176,42 @@ def main() -> None:
     output_dir = pathlib.Path(args.output_dir) / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    fixed_scratch: pathlib.Path | None = None
+    artifacts_root: pathlib.Path | None = None
+    if args.scratch_dir:
+        # User-supplied scratch (typically a Dropbox project folder).
+        # Layout we create inside it for clean browsing:
+        #
+        #   <scratch-dir>/<user>/<run_id>/
+        #     artifacts/<qid>/    ← user-facing outputs (xlsx, html, png ...)
+        #     raw/                ← bind-mounted as /data/scratch; debug tree
+        #
+        # Why split: chat_nextseek dumps a per-call timestamped folder with
+        # console.txt, api_requests.json, intermediate JSONs, etc. into the
+        # same tree as the report .xlsx. Mixing run metadata with the actual
+        # deliverable makes "where's my GEO submission" unnecessarily hard.
+        # We bind-mount only the raw/ subtree as /data/scratch so the
+        # container can write freely; after each query we snapshot the
+        # filesystem and copy artifact-typed files to artifacts/<qid>/.
+        scratch_root = pathlib.Path(
+            args.scratch_dir,
+        ).expanduser().resolve()
+        if not scratch_root.exists():
+            raise SystemExit(
+                f"--scratch-dir does not exist: {scratch_root}",
+            )
+        user_id = env.get("API_USER") or env.get("NEXTSEEK_USERNAME") or "demo"
+        session_root = scratch_root / user_id / run_id
+        fixed_scratch = session_root / "raw"
+        artifacts_root = session_root / "artifacts"
+        fixed_scratch.mkdir(parents=True, exist_ok=True)
+        artifacts_root.mkdir(parents=True, exist_ok=True)
+        os.chmod(fixed_scratch, 0o777)
+
     if args.keep_state:
-        scratch_dir = output_dir / "_state" / "scratch"
-        claude_dir = output_dir / "_state" / "claude"
+        # Docker -v rejects relative paths, so resolve before mounting.
+        scratch_dir = (output_dir / "_state" / "scratch").resolve()
+        claude_dir = (output_dir / "_state" / "claude").resolve()
         scratch_dir.mkdir(parents=True, exist_ok=True)
         claude_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(scratch_dir, 0o777)
@@ -190,19 +229,46 @@ def main() -> None:
     aborted = False
     abort_reason: str | None = None
 
+    # Files that count as user-facing artifacts (vs run metadata that stays
+    # in raw/). Deliberately narrow: .json/.txt are usually intermediate
+    # state, not what the user opens.
+    _artifact_exts = {
+        ".xlsx", ".xls", ".csv", ".tsv",
+        ".html", ".htm",
+        ".pptx", ".pdf",
+        ".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp",
+        ".docx", ".md",
+    }
+
+    def _snapshot_files(root: pathlib.Path) -> set[pathlib.Path]:
+        if not root.exists():
+            return set()
+        return {p for p in root.rglob("*") if p.is_file()}
+
     for i, (qid, qtext) in enumerate(pairs, 1):
         if args.keep_state:
             qscratch = scratch_dir
             qclaude = claude_dir
         else:
-            qscratch = pathlib.Path(
-                tempfile.mkdtemp(prefix="dmac-batch-scratch-"),
-            )
+            if fixed_scratch is not None:
+                qscratch = fixed_scratch
+            else:
+                qscratch = pathlib.Path(
+                    tempfile.mkdtemp(prefix="dmac-batch-scratch-"),
+                )
+                os.chmod(qscratch, 0o777)
             qclaude = pathlib.Path(
                 tempfile.mkdtemp(prefix="dmac-batch-claude-"),
             )
-            os.chmod(qscratch, 0o777)
             os.chmod(qclaude, 0o777)
+
+        # Snapshot raw/ before this query so we can isolate what THIS query
+        # produced. With a shared mount across queries (fixed_scratch is
+        # the same path each iteration), set difference gives us exactly
+        # the new files written during run_one().
+        pre_snapshot = (
+            _snapshot_files(fixed_scratch) if fixed_scratch is not None else set()
+        )
 
         print(
             f"[{i}/{len(pairs)}] {qid}  q={qtext[:60]!r}",
@@ -220,14 +286,44 @@ def main() -> None:
             )
         finally:
             if not args.keep_state:
-                shutil.rmtree(qscratch, ignore_errors=True)
+                # Never remove a user-supplied --scratch-dir (that's their
+                # Dropbox / project data). Only clean up our own tempdirs.
+                if fixed_scratch is None:
+                    shutil.rmtree(qscratch, ignore_errors=True)
                 shutil.rmtree(qclaude, ignore_errors=True)
+
+        # Promote artifacts (xlsx, html, csv, etc.) from raw/ into
+        # artifacts/<qid>/ so the user can find deliverables without
+        # spelunking through chat_nextseek's per-call dirs.
+        promoted_paths: list[str] = []
+        if fixed_scratch is not None and artifacts_root is not None:
+            new_files = _snapshot_files(fixed_scratch) - pre_snapshot
+            qartifacts = artifacts_root / qid
+            qartifacts.mkdir(parents=True, exist_ok=True)
+            for src in sorted(new_files):
+                if src.suffix.lower() not in _artifact_exts:
+                    continue
+                dest = qartifacts / src.name
+                n = 1
+                while dest.exists():
+                    dest = qartifacts / f"{src.stem}__{n}{src.suffix}"
+                    n += 1
+                shutil.copy2(src, dest)
+                promoted_paths.append(str(dest))
+            if not promoted_paths:
+                # No artifacts produced — keep the listing tidy.
+                try:
+                    qartifacts.rmdir()
+                except OSError:
+                    pass
 
         summaries.append({
             "query_id": record["query_id"],
             "query_text": record["query_text"],
             "latency_seconds": record["latency_seconds"],
             "cost_usd": record["cost_usd"],
+            "cost_estimated": record.get("cost_estimated", False),
+            "artifacts": promoted_paths,
             "tool_use_summary": record["tool_use_summary"],
             "tool_calls_total": record["tool_calls_total"],
             "answer_provided": record["answer_provided"],
@@ -238,9 +334,10 @@ def main() -> None:
             "stop_reason": record["stop_reason"],
             "record_path": record["record_path"],
         })
+        cost_marker = "~" if record.get("cost_estimated") else ""
         print(
             f"    -> latency={record['latency_seconds']:.1f}s  "
-            f"cost=${record['cost_usd']:.4f}  "
+            f"cost={cost_marker}${record['cost_usd']:.4f}  "
             f"tools={record['tool_calls_total']}  "
             f"answer={'Y' if record['answer_provided'] else 'N'}"
             + (f"  ERROR={record['error']}" if record['error'] else ""),
@@ -256,6 +353,7 @@ def main() -> None:
 
     total_latency = sum(s["latency_seconds"] for s in summaries)
     total_cost = sum(s["cost_usd"] for s in summaries)
+    n_cost_estimated = sum(1 for s in summaries if s.get("cost_estimated"))
     n = len(summaries)
     n_answered = sum(1 for s in summaries if s["answer_provided"])
     n_errored = sum(1 for s in summaries if s["is_error"])
@@ -278,6 +376,7 @@ def main() -> None:
         "answer_rate": (n_answered / n) if n else 0.0,
         "total_latency_seconds": round(total_latency, 3),
         "total_cost_usd": round(total_cost, 6),
+        "queries_cost_estimated": n_cost_estimated,
         "avg_latency_seconds": round(total_latency / n, 3) if n else 0.0,
         "avg_cost_usd": round(total_cost / n, 6) if n else 0.0,
         "aborted": aborted,
