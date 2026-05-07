@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# nextseek-validate — shim for scripts/validate_request.py
+# Static validator for a RequestSpec JSON blob; no network call.
+set -euo pipefail
+SCRIPT_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/skills/nextseek-api/scripts"
+exec uv run --with httpx --with pydantic --with python-dotenv python "$SCRIPT_DIR/validate_request.py" "$@"

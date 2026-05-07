@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# nextseek-session — shim for scripts/session_status.py
+# Reports the current SchemaRAG session TTL + expiry state (task-02, issue #17).
+# CLAUDE_PLUGIN_ROOT is set by Claude Code at plugin-enablement time.
+set -euo pipefail
+SCRIPT_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/skills/nextseek-api/scripts"
+exec uv run --with httpx --with pydantic --with python-dotenv python "$SCRIPT_DIR/session_status.py" "$@"

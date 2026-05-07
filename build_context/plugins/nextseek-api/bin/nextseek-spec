@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# nextseek-spec — shim for scripts/fetch_spec.py
+# Fetches the full OpenAPI-style spec for a single NExtSEEK endpoint by operation_id.
+set -euo pipefail
+SCRIPT_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/skills/nextseek-api/scripts"
+exec uv run --with httpx --with pydantic --with python-dotenv python "$SCRIPT_DIR/fetch_spec.py" "$@"

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# nextseek-init — shim for scripts/init_session.py
+# Invoked via Claude Code's Bash tool after the plugin is enabled.
+# CLAUDE_PLUGIN_ROOT is set by Claude Code at plugin-enablement time.
+set -euo pipefail
+SCRIPT_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/skills/nextseek-api/scripts"
+exec uv run --with httpx --with pydantic --with python-dotenv python "$SCRIPT_DIR/init_session.py" "$@"

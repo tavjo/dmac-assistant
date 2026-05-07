@@ -1,0 +1,37 @@
+[project]
+name = "nextseek-api"
+version = "0.1.0"
+description = "Claude Code plugin for NExtSEEK API queries via SchemaRAG endpoint discovery."
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.28",
+    "pydantic>=2.10",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "pyyaml>=6.0",
+    "respx>=0.21",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["skills/nextseek-api/tests"]
+pythonpath = ["skills/nextseek-api/scripts"]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["skills/nextseek-api/scripts"]
+omit = [
+    "*/tests/*",
+    "*/__init__.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]

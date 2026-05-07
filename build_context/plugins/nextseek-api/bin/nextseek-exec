@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# nextseek-exec — shim for scripts/execute_request.py
+# Live HTTP executor; subject to Layer 1 (Claude Code permissions allowlist)
+# and Layer 2 (script-internal denylist + --confirmed-write flag).
+set -euo pipefail
+SCRIPT_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/skills/nextseek-api/scripts"
+exec uv run --with httpx --with pydantic --with python-dotenv python "$SCRIPT_DIR/execute_request.py" "$@"
