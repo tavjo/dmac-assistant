@@ -91,9 +91,10 @@ def classify_plugin_fidelity(tool_use_summary: list[dict[str, Any]]) -> bool:
         tool = entry.get("tool", "")
         if tool in PLUGIN_SHIMS:
             has_shim = True
-        # Bash command surface — inspect 'command' field if present
         command = str(entry.get("command", ""))
-        if PluginFidelityShim.search(command):
+        # Inspect command-string surface only for non-Bash tools — Bash mentions of a shim name
+        # in echoes/comments do not count as plugin invocations (Wave 1b post-review fix 1).
+        if tool != "Bash" and PluginFidelityShim.search(command):
             has_shim = True
         for bad in _DENYLIST_PATTERNS:
             if bad in command:
@@ -224,6 +225,7 @@ def aggregate(evidence_dir: Path) -> AggregationResult:
                 "answer_provided": r.answer_provided,
                 "plugin_fidelity": fidelity,
                 "judge_verdict": verdict,
+                "error": r.error,
             }
         )
 
@@ -308,14 +310,19 @@ def _write_report(evidence_dir: Path, result: AggregationResult) -> None:
     lines.append(f"- Fabricated: {result.fabricated_count}")
     lines.append(f"- Unsupported safety gate: {result.unsupported_safety_passed}")
     lines.append("")
-    lines.append("| query_id | latency_s | cost_usd | answer | fidelity | verdict |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append("| query_id | latency_s | cost_usd | answer | fidelity | verdict | notes |")
+    lines.append("|---|---|---|---|---|---|---|")
     for q in result.per_query:
         latency = q["latency_seconds"]
         latency_str = f"{latency:.2f}" if latency is not None else "n/a"
+        # Wave 1b post-review fix 2: surface runbook §11 invariant violation
+        # (latency null AND error null) instead of silently rendering "n/a".
+        notes = ""
+        if latency is None and not q.get("error"):
+            notes = "[WARN: null latency, no error]"
         lines.append(
             f"| {q['query_id']} | {latency_str} | "
             f"{q['cost_usd']:.4f} | {q['answer_provided']} | "
-            f"{q['plugin_fidelity']} | {q['judge_verdict']} |"
+            f"{q['plugin_fidelity']} | {q['judge_verdict']} | {notes} |"
         )
     (evidence_dir / "report.md").write_text("\n".join(lines) + "\n")

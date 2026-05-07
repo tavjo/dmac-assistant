@@ -37,13 +37,14 @@ def _make_record(
     judge_verdict: str | None = None,
     judge_reasoning: str | None = None,
     judge_model: str | None = None,
+    latency_seconds: float | None = 10.0,
 ) -> QueryRecord:
     return QueryRecord(
         query_id=query_id,
         query_text=f"text for {query_id}",
         started_at="2026-05-06T15:00:00Z",
         completed_at="2026-05-06T15:00:10Z",
-        latency_seconds=10.0,
+        latency_seconds=latency_seconds,
         cost_usd=0.04,
         answer_provided=answer_provided,
         plugin_fidelity=plugin_fidelity,
@@ -230,6 +231,24 @@ class TestJudgeQuery:
             )
             assert updated.judge_verdict == "error"
             assert "timeout" in (updated.judge_reasoning or "").lower()
+
+    def test_judge_query_marks_error_when_docker_missing(
+        self, evidence_dir: Path, out_dir: Path
+    ) -> None:
+        # Wave 1b post-review fix 3: cover the FileNotFoundError path
+        # (docker not on PATH) — was uncovered in T3 baseline.
+        record_path = _write_record(evidence_dir, _make_record())
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = FileNotFoundError("docker not found")
+            updated = judge_query(
+                record_path=record_path,
+                image_tag="dmac-assistant:e2e-20260506",
+                evidence_dir=evidence_dir,
+                out_dir=out_dir,
+            )
+            assert updated.judge_verdict == "error"
+            assert updated.judge_model is None
+            assert (updated.judge_reasoning or "")
 
     def test_judge_query_marks_error_on_unparseable_stdout(
         self, evidence_dir: Path, out_dir: Path
@@ -497,6 +516,33 @@ class TestAggregate:
         # Verdicts surfaced
         assert "passed" in body
         assert "refused" in body
+
+    def test_aggregate_report_warns_on_null_latency_with_no_error(
+        self, evidence_dir: Path
+    ) -> None:
+        # Wave 1b post-review fix 2: runbook §11 invariant violation
+        # (latency null AND error null) must surface as a WARN note in report.md.
+        records = []
+        for i in range(1, 11):
+            qid = f"Q-{i}" if i != 10 else "Unsupported-1"
+            verdict = "passed" if i != 10 else "refused"
+            extra: dict[str, object] = {}
+            if i == 1:
+                extra = {"latency_seconds": None, "error": None}
+            records.append(
+                _make_record(
+                    query_id=qid,
+                    tool_use_summary=[{"tool": "nextseek-api-read", "count": 1}],
+                    judge_verdict=verdict,
+                    judge_reasoning="r",
+                    judge_model="m",
+                    **extra,
+                )
+            )
+        self._populate_evidence_dir(evidence_dir, records)
+        aggregate(evidence_dir)
+        body = (evidence_dir / "report.md").read_text()
+        assert "[WARN: null latency, no error]" in body
 
     def test_aggregate_skips_non_record_files_in_dir(self, evidence_dir: Path) -> None:
         """report.md, queries.json, and arbitrary files in dir must not be parsed as records."""
