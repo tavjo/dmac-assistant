@@ -34,3 +34,9 @@ docs/superpowers/
 
 # Vendored sources (host-side sync via scripts/sync-vendor-deps.sh)
 vendor/
+
+# T5 — BAML codegen output (regenerated at image-build time, not committed)
+tools/e2e/baml_client/
+
+# T1 — E2E evidence artifacts (per-run; not committed)
+evidence/
