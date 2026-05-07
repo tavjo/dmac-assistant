@@ -1,0 +1,229 @@
+{
+  "_meta": {
+    "chat_nextseek_sha": "5588f3becbbc7d8f735c7f009e4940cddf97000b",
+    "generated_at": "2026-05-07T04:12:54Z",
+    "source": "/Users/taishajoseph/Documents/Projects/work/chat_nextseek/testing.json",
+    "section": "full_test"
+  },
+  "queries": [
+    {
+      "id": "Search-Basic-1",
+      "query": "Find me mice treated with NDMA.",
+      "notes": "Returns mouse samples filtered by NDMA treatment",
+      "pass_criteria": [
+        {
+          "field": "parser_plan.mode",
+          "op": "eq",
+          "value": "new_search"
+        },
+        {
+          "field": "entity_sampletype_codes",
+          "op": "contains",
+          "value": "MUS"
+        },
+        {
+          "field": "api_plan.endpoint",
+          "op": "contains",
+          "value": "advanced_search"
+        },
+        {
+          "field": "api_plan.requestBody.filter_searchText",
+          "op": "contains",
+          "value": "NDMA"
+        }
+      ],
+      "name": "Search-Basic-1",
+      "setup_queries": [],
+      "debug_queries": [],
+      "planner_pass_criteria": []
+    },
+    {
+      "id": "Search-Refine-1",
+      "query": "Which of those monkeys are depleted of CD8?",
+      "notes": "Narrows the prior NHP result set by adding a CD8-depletion attribute filter",
+      "setup_queries": [
+        "Find all NHP samples in the database."
+      ],
+      "pass_criteria": [
+        {
+          "field": "parser_plan.mode",
+          "op": "eq",
+          "value": "refine_last_search"
+        },
+        {
+          "field": "entity_sampletype_codes",
+          "op": "contains",
+          "value": "NHP"
+        }
+      ],
+      "name": "Search-Refine-1",
+      "debug_queries": [],
+      "planner_pass_criteria": []
+    },
+    {
+      "id": "Memory-1",
+      "query": "What sample types were represented in those results?",
+      "notes": "Extracts distinct sample type codes from the previously retrieved result bundle",
+      "setup_queries": [
+        "Find mice treated with NDMA."
+      ],
+      "pass_criteria": [
+        {
+          "field": "parser_plan.mode",
+          "op": "eq",
+          "value": "ask_about_last_results"
+        }
+      ],
+      "name": "Memory-1",
+      "debug_queries": [],
+      "planner_pass_criteria": []
+    },
+    {
+      "id": "Retrieve-1",
+      "query": "Retrieve all samples associated with NHP-220630FLY-5-PUB.",
+      "notes": "Fetches the full metadata record for the specified NHP sample UID",
+      "pass_criteria": [
+        {
+          "field": "parser_plan.mode",
+          "op": "eq",
+          "value": "new_search"
+        },
+        {
+          "field": "api_plan.endpoint",
+          "op": "contains",
+          "value": "/admin/samples/retrieve/"
+        }
+      ],
+      "name": "Retrieve-1",
+      "setup_queries": [],
+      "debug_queries": [],
+      "planner_pass_criteria": []
+    },
+    {
+      "id": "SampleTree-1",
+      "query": "Show me all samples derived from CEL-250319WHI-1-PUB.",
+      "notes": "Returns the downstream derivation tree (children and descendants) for the given cell sample",
+      "pass_criteria": [
+        {
+          "field": "parser_plan.mode",
+          "op": "eq",
+          "value": "new_search"
+        },
+        {
+          "field": "api_plan.endpoint",
+          "op": "contains",
+          "value": "sample-tree"
+        }
+      ],
+      "name": "SampleTree-1",
+      "setup_queries": [],
+      "debug_queries": [],
+      "planner_pass_criteria": []
+    },
+    {
+      "id": "Graph-Lineage-1",
+      "query": "Find me all mice that have sequencing data.",
+      "notes": "Multi-hop graph traversal from MUS ancestors to D.SEQ descendants \u2014 BUG: currently routes to new_search instead of graph_query",
+      "pass_criteria": [
+        {
+          "field": "parser_plan.mode",
+          "op": "eq",
+          "value": "graph_query"
+        }
+      ],
+      "name": "Graph-Lineage-1",
+      "setup_queries": [],
+      "debug_queries": [],
+      "planner_pass_criteria": []
+    },
+    {
+      "id": "Reporter-Summary-1",
+      "query": "How many samples were uploaded for IMPACT from 2023 to 2025?",
+      "notes": "Returns sample upload counts for the IMPACT project over the specified date range",
+      "pass_criteria": [
+        {
+          "field": "parser_plan.mode",
+          "op": "eq",
+          "value": "reporter"
+        },
+        {
+          "field": "reporter_plan.reporter_mode",
+          "op": "eq",
+          "value": "summary"
+        },
+        {
+          "field": "reporter_plan.summary_mode",
+          "op": "eq",
+          "value": "samples"
+        },
+        {
+          "field": "reporter_plan.project",
+          "op": "eq",
+          "value": "IMPACT"
+        }
+      ],
+      "name": "Reporter-Summary-1",
+      "setup_queries": [],
+      "debug_queries": [],
+      "planner_pass_criteria": []
+    },
+    {
+      "id": "Report-GEO-1",
+      "query": "Build me a GEO Submission for D.SEQ-221031SHA-67-PUB and D.SEQ-221031SHA-65-PUB.",
+      "notes": "Generates a GEO submission XLSX for the two specified sequencing samples",
+      "pass_criteria": [
+        {
+          "field": "parser_plan.mode",
+          "op": "eq",
+          "value": "reporter"
+        },
+        {
+          "field": "reporter_plan.reporter_mode",
+          "op": "eq",
+          "value": "report_generation"
+        },
+        {
+          "field": "reporter_plan.report_type",
+          "op": "eq",
+          "value": "GEO"
+        }
+      ],
+      "name": "Report-GEO-1",
+      "setup_queries": [],
+      "debug_queries": [],
+      "planner_pass_criteria": []
+    },
+    {
+      "id": "Write-Create-1",
+      "query": "Create Investigation 'Testing 404'.",
+      "notes": "Attempts to create a new investigation record \u2014 correctly routes to unsupported (no create endpoint exists)",
+      "pass_criteria": [
+        {
+          "field": "parser_plan.mode",
+          "op": "eq",
+          "value": "unsupported"
+        }
+      ],
+      "name": "Write-Create-1",
+      "setup_queries": [],
+      "debug_queries": [],
+      "planner_pass_criteria": []
+    },
+    {
+      "id": "Unsupported-1",
+      "query": "Make me a bar chart of sample counts by type.",
+      "notes": "Visualization request \u2014 system cannot generate charts; should explain scope limitation",
+      "pass_criteria": [
+        {
+          "field": "parser_plan.mode",
+          "op": "eq",
+          "value": "unsupported"
+        }
+      ],
+      "name": "Unsupported-1",
+      "setup_queries": [],
+      "debug_queries": [],
+      "planner_pass_criteria": []
+    }
+  ]
+}
