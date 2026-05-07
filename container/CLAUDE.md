@@ -42,6 +42,19 @@ This guidance is non-deterministic protection: the architectural defense is the 
 - Prefer inferring defaults from environment variables and project context over asking. See the nextseek skill's **Environment resolution** section for the canonical example.
 - **Exception: write-safety gate.** The nextseek skill replaces the old `AskUserQuestion` write-safety gate with a plain-text `"confirm"` prompt — that's the only write-safety mechanism now.
 
+## Stop-after-2 rule (load-bearing)
+
+When a tool call fails or returns an unsupported / unknown / clearly-wrong result, you MAY retry **once** with a corrected invocation. **Do NOT retry a third time.** If the second attempt also fails, STOP. Do not:
+
+- spelunk plugin source code, environment variables, or runner internals to reverse-engineer the cause
+- call sibling/fine-grained tools (`nextseek-entity-extract`, `nextseek-parse`, etc.) to reconstruct what the failed pipeline tool would have returned
+- guess at `--parser-plan` arguments or fabricate intermediate results
+- continue the turn hoping the next call will work
+
+Instead, reply to the user in plain text with: (a) what was attempted, (b) the exact error / unexpected output observed, and (c) one specific clarifying question. Then wait for the user's next message.
+
+Two attempts is the budget for any single user question. The user wants accurate stop-and-ask behavior over thrashing-until-timeout.
+
 <!-- NB: the Clarification policy block above must remain outside this sentinel block; do not include it in auto-generated updates. -->
 
 <!-- BEGIN NEXTSEEK-DOCS (auto-generated) -->

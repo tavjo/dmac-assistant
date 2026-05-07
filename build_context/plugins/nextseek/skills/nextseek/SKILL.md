@@ -183,6 +183,20 @@ Then wait for the user's next message. If the user responds "yes" / "go ahead" /
 
 ---
 
+## Stop-after-2 rule
+
+If `nextseek-query` returns an unsupported answer, an empty result that looks wrong for the question, or a non-zero exit, you MAY retry **once** — typically by rephrasing the user's question to remove ambiguity, fixing a literal that you typo'd, or adding `--planner` for a clearly multi-step ask. **Do NOT retry a third time.**
+
+If the second attempt also fails, STOP and reply to the user in plain text with:
+
+- What was attempted (the two queries you sent)
+- The error / unexpected output you observed
+- One specific clarifying question that would unblock you (e.g. "Did you mean sample type X or Y?", "Should I include unpublished records?", "Which project should I scope this to?")
+
+Do NOT, after a second failure, drop into the escape-hatch debug ladder (`nextseek-entity-extract` / `nextseek-parse` / `nextseek-api-read`) to reverse-engineer what `nextseek-query` would have returned. The escape hatches exist for cases where the user explicitly asks for them or where the failure is mechanical (e.g. you need to inspect a parser_plan to construct an `nextseek-api-write` body). They are NOT a fallback for unknown answers.
+
+This is a hard cap: two attempts per user question, then plain-text clarification ask. The dmac-assistant chat UI does not render `AskUserQuestion`, so the clarification MUST be plain text.
+
 ## Errors
 
 The runner emits structured errors as one-line JSON to stderr with these codes (exit code in parens):

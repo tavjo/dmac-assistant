@@ -169,7 +169,19 @@ def cleanup_running_container(label: str) -> None:
 def run_one(*, query_text: str, query_id: str, image: str,
             env: dict[str, str], timeout: int, output_dir: pathlib.Path,
             catalog_host_path: pathlib.Path, scratch_dir: pathlib.Path,
-            claude_dir: pathlib.Path) -> dict:
+            claude_dir: pathlib.Path,
+            max_budget_usd: float | None = None) -> dict:
+    """Run a single query through dmac-assistant headless.
+
+    Returns the structured QueryRecord dict. Also writes side files under
+    output_dir: <qid>.input.jsonl, <qid>.stdout.jsonl, <qid>.stderr.log,
+    <qid>.record.json. The env-file is written with mode 0600 and deleted
+    on completion regardless of outcome.
+
+    Importable from a batch driver. Pass per-query mounts (scratch_dir,
+    claude_dir) for an isolated session, or shared roots for chained
+    refine/memory queries.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
 
     stdin_path = output_dir / f"{query_id}.input.jsonl"
@@ -183,6 +195,14 @@ def run_one(*, query_text: str, query_id: str, image: str,
     stderr_path = output_dir / f"{query_id}.stderr.log"
 
     label = f"dmac-headless-{query_id}-{uuid.uuid4().hex[:6]}"
+    claude_args = [
+        "claude", "--print",
+        "--input-format", "stream-json",
+        "--output-format", "stream-json",
+        "--verbose", "--dangerously-skip-permissions",
+    ]
+    if max_budget_usd is not None and max_budget_usd > 0:
+        claude_args.extend(["--max-budget-usd", str(max_budget_usd)])
     cmd = [
         "docker", "run", "--rm", "-i",
         "--env-file", str(env_path),
@@ -191,10 +211,7 @@ def run_one(*, query_text: str, query_id: str, image: str,
         "-v", f"{claude_dir}:/home/user/.claude:rw",
         "--label", label,
         image,
-        "claude", "--print",
-        "--input-format", "stream-json",
-        "--output-format", "stream-json",
-        "--verbose", "--dangerously-skip-permissions",
+        *claude_args,
     ]
 
     started_at = datetime.now(timezone.utc)
@@ -220,12 +237,18 @@ def run_one(*, query_text: str, query_id: str, image: str,
     except Exception:
         pass
 
-    return _build_record(
+    record = _build_record(
         qid=query_id, qtext=query_text, stdout_path=stdout_path,
         stderr_path=stderr_path, started=started_at, completed=completed_at,
         latency=latency, timed_out=timed_out, rc=rc, image=image,
         timeout=timeout,
     )
+    if max_budget_usd is not None:
+        record["max_budget_usd"] = max_budget_usd
+    record_path = output_dir / f"{query_id}.record.json"
+    record_path.write_text(json.dumps(record, indent=2) + "\n")
+    record["record_path"] = str(record_path)
+    return record
 
 
 def _build_record(*, qid: str, qtext: str, stdout_path: pathlib.Path,
@@ -356,6 +379,9 @@ def main() -> None:
     ap.add_argument("--timeout", type=int, default=120,
                     help=f"per-query timeout in seconds (default: 120; hard "
                          f"max: {_TIMEOUT_HARD_MAX})")
+    ap.add_argument("--max-budget-usd", type=float, default=0.50,
+                    help="hard dollar cap per query (passed to claude "
+                         "--max-budget-usd; 0 to disable; default: 0.50)")
     ap.add_argument("--keep-state", action="store_true",
                     help="reuse stable scratch + claude mount roots under "
                          "evidence/headless/_state/ (persists session DB "
@@ -434,15 +460,14 @@ def main() -> None:
         env=env, timeout=timeout, output_dir=output_dir,
         catalog_host_path=catalog_host,
         scratch_dir=scratch_dir, claude_dir=claude_dir,
+        max_budget_usd=(
+            args.max_budget_usd if args.max_budget_usd > 0 else None
+        ),
     )
 
     if not args.keep_state:
         shutil.rmtree(scratch_dir, ignore_errors=True)
         shutil.rmtree(claude_dir, ignore_errors=True)
-
-    record_path = output_dir / f"{qid}.record.json"
-    record_path.write_text(json.dumps(record, indent=2) + "\n")
-    record["record_path"] = str(record_path)
 
     summary = {
         "query_id": record["query_id"],
