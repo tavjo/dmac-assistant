@@ -476,5 +476,6 @@ Before exiting and signaling Phase 6 complete:
 - [ ] §9.2 verifications surfaced (image present, GCP_API_KEY set, judge-output dir writable).
 - [ ] Cumulative-vs-per-call cost interpretation chosen (§5.3) is documented in `_meta.json`.
 - [ ] Empirical event-name verification (§5.4) is documented in `_meta.json`.
+- [ ] **Reproducibility — `chat_nextseek_sha` propagated**: copy `queries.json._meta.chat_nextseek_sha` into `evidence/run-2026-05-07/_meta.json` under key `chat_nextseek_sha` so T7 and any future audit can trace which `chat_nextseek` commit the corpus was extracted from. (Wave 1a post-merge review fix 4.)
 
 When the checklist is complete, T6 is done and T7 may dispatch.

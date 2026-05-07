@@ -34,7 +34,7 @@ EXPECTED_VERDICT_SET = {
 
 @pytest.fixture
 def minimal_walkthrough_payload() -> dict:
-    """A complete 12-field walkthrough payload — judge fields stay default None."""
+    """A complete 13-field walkthrough payload — judge fields stay default None."""
     return {
         "query_id": "Search-Basic-1",
         "query_text": "Find all human samples in study X.",
@@ -160,7 +160,7 @@ def test_invalid_verdict_rejected(
 
 
 # ---------------------------------------------------------------------------
-# 12 walkthrough field types — Pydantic constraint coverage
+# 13 walkthrough field types — Pydantic constraint coverage
 # ---------------------------------------------------------------------------
 
 
@@ -169,6 +169,15 @@ def test_latency_seconds_must_be_non_negative(minimal_walkthrough_payload: dict)
     payload["latency_seconds"] = -0.1
     with pytest.raises(ValidationError):
         QueryRecord(**payload)
+
+
+def test_latency_seconds_accepts_none_for_crashed_query(minimal_walkthrough_payload: dict) -> None:
+    payload = dict(minimal_walkthrough_payload)
+    payload["latency_seconds"] = None
+    payload["error"] = "crashed before assistant response"
+    record = QueryRecord(**payload)
+    assert record.latency_seconds is None
+    assert record.error == "crashed before assistant response"
 
 
 def test_cost_usd_must_be_non_negative(minimal_walkthrough_payload: dict) -> None:

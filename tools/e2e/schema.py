@@ -38,12 +38,12 @@ class QueryRecord(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    # --- 12 walkthrough fields (populated by T6) ---
+    # --- 13 walkthrough fields (populated by T6; ui_answer declared below judge block) ---
     query_id: str = Field(min_length=1)
     query_text: str = Field(min_length=1)
     started_at: str = Field(min_length=1)  # ISO-8601 string
     completed_at: str = Field(min_length=1)  # ISO-8601 string
-    latency_seconds: float = Field(ge=0.0)
+    latency_seconds: float | None = Field(default=None, ge=0.0)
     cost_usd: float = Field(ge=0.0)
     answer_provided: bool
     plugin_fidelity: bool
