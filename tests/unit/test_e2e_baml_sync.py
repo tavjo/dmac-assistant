@@ -7,6 +7,7 @@ match T2's Pydantic JUDGE_VERDICT_LITERALS exactly.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -19,11 +20,16 @@ BAML_PATH = Path(__file__).resolve().parents[2] / "tools" / "e2e" / "baml_src" /
 
 @pytest.mark.parametrize("verdict", JUDGE_VERDICT_LITERALS)
 def test_each_t2_verdict_appears_in_judge_baml(verdict: str) -> None:
+    """N3 sync gate: each T2 lowercase literal must appear as a BAML @alias value
+    (not merely anywhere in the file — comments and docstrings would otherwise
+    let alias typos slip through)."""
     if not BAML_PATH.exists():
         pytest.skip("judge.baml not yet authored — run during T5 GREEN phase")
     text = BAML_PATH.read_text()
-    assert verdict in text, (
-        f"verdict literal {verdict!r} missing from judge.baml — N3 sync gate violated"
+    pattern = rf'@alias\(\s*"{re.escape(verdict)}"\s*\)'
+    assert re.search(pattern, text), (
+        f"verdict literal {verdict!r} not found as a BAML @alias value in judge.baml "
+        f"— N3 sync gate violated (substring presence is insufficient)"
     )
 
 

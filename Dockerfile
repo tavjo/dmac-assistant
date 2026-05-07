@@ -101,7 +101,7 @@ RUN baml-cli generate --from /app/tools/e2e/baml_src \
 # T5 — make `python -m tools.e2e.judge_runner` and `from tools.e2e import ...`
 # resolve from any WORKDIR (image is invoked with WORKDIR /home/user; without
 # this PYTHONPATH the in-image `tools` package would not be discoverable).
-ENV PYTHONPATH="/app:${PYTHONPATH}"
+ENV PYTHONPATH="/app"
 
 # DD-37 (PATH half, moved below pre-warm per L-4): put the plugin's bin/ on
 # PATH so Claude can invoke `nextseek-call` etc. without spelling the full

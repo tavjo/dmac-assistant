@@ -81,13 +81,22 @@ def main() -> int:
     if entry is None:
         print(f"query_id {query_id!r} not found in queries.json", file=sys.stderr)
         return 2
-    pass_criteria = entry.get("pass_criteria") or ""
-    if not pass_criteria:
+    pass_criteria_raw = entry.get("pass_criteria")
+    if not pass_criteria_raw:
         print(
             f"queries.json entry for {query_id!r} missing pass_criteria",
             file=sys.stderr,
         )
         return 2
+    # F4 (Wave 1c post-review): T1's pass_criteria is a list[dict] of
+    # {field, op, value} assertions. BAML's SimpleEvaluatorInput.pass_criteria
+    # is typed `string`, so serialize as JSON before handoff. Strings pass
+    # through unchanged for forward-compat with future T1 schema variants.
+    pass_criteria = (
+        pass_criteria_raw
+        if isinstance(pass_criteria_raw, str)
+        else json.dumps(pass_criteria_raw)
+    )
 
     # Amendment 4 / F-05-03 fix: ui_answer is now a canonical field on
     # QueryRecord (T2 spec, added in Amendment 4). T6 writes the assistant's
