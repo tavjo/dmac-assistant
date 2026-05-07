@@ -9,8 +9,10 @@ wheels/
 # Virtual environments
 .venv
 
-# Staged Docker build context
-build_context/
+# Staged Docker build context: only build_context/plugins/ is tracked
+# (plugin sources COPY'd into /app/plugins/ at image build). Everything else
+# under build_context/ (e.g. docs/, vendored sync targets) stays untracked.
+build_context/docs/
 
 # Local env file for live runs
 .env

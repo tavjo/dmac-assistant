@@ -255,7 +255,40 @@ def _dispatch_generate_submission(args, config, session):
     return out.model_dump() if hasattr(out, "model_dump") else out
 
 
+def _dispatch_query(args, config, session):
+    """Single-shot orchestrator: runs the entire chat_nextseek pipeline
+    (entity -> parser -> api/memory/reporter/graph/system -> chatter) in one call.
+
+    This is the default fast path. Returns the final dict shaped as
+    `{"reply": str, "debug": {...}, "bundle_id": int|None, "artifacts"?, "files"?}`.
+    Avoids the multi-turn agentic loop that the fine-grained tools force on
+    Container-Claude.
+
+    chat_nextseek's orchestrator prints debug events (`[CHATTER]`,
+    `[ENTITY]`, etc.) to stdout during the run; if we let those land on our
+    own stdout they corrupt the runner's final JSON line. We redirect FD 1
+    to FD 2 for the duration of the run_query call so debug noise lands on
+    stderr (the agent and any wrapper script can ignore it) and only
+    main()'s `json.dumps(result)` writes to the real stdout.
+    """
+    if _dry_run():  # pragma: no branch
+        return {"reply": "[dry-run]", "debug": {}, "bundle_id": None}  # pragma: no cover
+    from chat_nextseek.orchestrator import run_query, run_query_plan  # pragma: no cover
+    runner = run_query_plan if args.planner else run_query  # pragma: no cover
+    saved_fd = os.dup(1)  # pragma: no cover
+    try:  # pragma: no cover
+        sys.stdout.flush()  # pragma: no cover
+        os.dup2(2, 1)  # stdout -> stderr  # pragma: no cover
+        result = runner(session, config, args.query)  # pragma: no cover
+    finally:  # pragma: no cover
+        sys.stdout.flush()  # pragma: no cover
+        os.dup2(saved_fd, 1)  # pragma: no cover
+        os.close(saved_fd)  # pragma: no cover
+    return result  # pragma: no cover
+
+
 _DISPATCH = {
+    "query": _dispatch_query,
     "entity": _dispatch_entity,
     "parse": _dispatch_parse,
     "plan": _dispatch_plan,
@@ -277,6 +310,8 @@ def main() -> None:
     p.add_argument("--project")  # for report
     p.add_argument("--type")  # for generate-submission
     p.add_argument("--uids")  # for generate-submission
+    p.add_argument("--planner", action="store_true",  # for query
+                   help="Use run_query_plan instead of run_query (multi-step capable)")
     args = p.parse_args()
 
     if _dry_run():
