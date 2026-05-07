@@ -100,7 +100,7 @@ Verify each item below before sending the first query. Treat any miss as an abor
 
 | # | Item | How to verify | Expected |
 |---|---|---|---|
-| 1 | Image present locally | `docker images dmac-assistant:e2e-2026-05-07 --format '{{.ID}}\t{{.CreatedAt}}'` | non-empty; image SHA recorded in plan execution log by T5 |
+| 1 | Image present locally | `docker images dmac-assistant:e2e-20260506 --format '{{.ID}}\t{{.CreatedAt}}'` | non-empty; image SHA recorded in plan execution log by T5 |
 | 2 | Bridge URL responsive | `curl -sf http://127.0.0.1:8000/health` (or load `http://127.0.0.1:8000/` in browser) | HTTP 200 / login page renders |
 | 3 | Port 8000 not held by something else | `lsof -i :8000` | the bridge process (uvicorn) is the only listener |
 | 4 | Demo creds in `DMAC_USERS` | env var `DMAC_USERS` parses as JSON containing key `"demo"` with `password`, `nextseek_username`, `nextseek_password` | yes |
@@ -424,7 +424,7 @@ docker run --rm \
   --env NEXTSEEK_EVALUATOR_MODE=gcp \
   --mount type=bind,source="$(pwd)/evidence/run-2026-05-07",target=/evidence,readonly \
   --mount type=bind,source="$(pwd)/evidence/run-2026-05-07/judge-output",target=/judge-output \
-  dmac-assistant:e2e-2026-05-07 \
+  dmac-assistant:e2e-20260506 \
   python -m tools.e2e.judge_runner \
     --record /evidence/query-01-Search-Basic-1.json \
     --output /judge-output/query-01-Search-Basic-1.judged.json
@@ -432,7 +432,7 @@ docker run --rm \
 
 Key invariants:
 
-- **Image tag**: `dmac-assistant:e2e-2026-05-07` (the T5-produced tag for this run date; format `e2e-YYYY-MM-DD`).
+- **Image tag**: `dmac-assistant:e2e-20260506` (the T5-produced tag for this run date; format `e2e-YYYYMMDD` (no dashes; Amendment 4 + 6 — symbolic of run, not literal calendar today)).
 - **Env-var allowlist (EXACTLY these two; per OP-4)**: `GCP_API_KEY` (forwarded from host env) and `NEXTSEEK_EVALUATOR_MODE=gcp` (literal value).
 - **NO `AWS_BEARER_TOKEN_BEDROCK`**, no `AWS_*`, no `NEXTSEEK_USERNAME`/`NEXTSEEK_PASSWORD`, no `DMAC_USERS`. The judge container must NOT have access to Bedrock — it uses GCP Gemini via `NEXTSEEK_EVALUATOR_MODE=gcp`.
 - **Mounts**: evidence dir mounted **read-only** at `/evidence`; a separate writable host output dir (created by T7 — recommend `evidence/run-2026-05-07/judge-output/`) mounted at `/judge-output`.
@@ -442,7 +442,7 @@ Key invariants:
 
 After all 10 records are written, the runbook agent should:
 
-1. Confirm `docker images dmac-assistant:e2e-2026-05-07` is non-empty (T5 produced it).
+1. Confirm `docker images dmac-assistant:e2e-20260506` is non-empty (T5 produced it).
 2. Confirm `GCP_API_KEY` is present in the host env (`echo ${GCP_API_KEY:+set} | grep -q set`).
 3. Confirm `evidence/run-2026-05-07/judge-output/` exists and is writable (`mkdir -p` + `touch`).
 
