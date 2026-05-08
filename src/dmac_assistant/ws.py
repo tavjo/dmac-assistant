@@ -428,9 +428,9 @@ async def chat_ws(
                 finally:
                     start_task = None
             raise
-        except BaseException:
-            # Do not log the exception detail — it may quote env values.
-            log.warning("container start failed")
+        except BaseException as exc:
+            # DEBUG (temp): include exception type to diagnose silent failures.
+            log.warning("container start failed: %s", type(exc).__name__)
             await _send_json_safe(
                 websocket,
                 {"type": "error", "reason": "container_start_failed"},
@@ -440,8 +440,8 @@ async def chat_ws(
 
         try:
             attach_socket = await async_attach(container)
-        except BaseException:
-            log.warning("container attach failed")
+        except BaseException as exc:
+            log.warning("container attach failed: %s", type(exc).__name__)
             await _send_json_safe(
                 websocket,
                 {"type": "error", "reason": "container_start_failed"},
