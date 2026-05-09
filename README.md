@@ -148,6 +148,8 @@ dmac-assistant/
 │   └── entrypoint.sh          # Container entrypoint
 ├── build_tools/               # Sibling uv project: image build + ingest helpers
 ├── build_context/             # Files COPYd into the image (plugins, docs)
+├── tools/                     # Non-shipping evidence/eval helpers (NOT in image)
+│   └── hibayes/               # report.html → 14-column HiBayes-ready CSV exporter
 ├── vendor/                    # Pinned chat_nextseek source (gitignored)
 ├── docs/                      # Bridge protocol notes, ADRs, SDS
 ├── dmac-assistant-sds.md      # Software Design Specification
