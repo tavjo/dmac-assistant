@@ -35,6 +35,6 @@ docs/superpowers/
 # Vendored sources (host-side sync via scripts/sync-vendor-deps.sh)
 vendor/
 
-# T01 (hibayes-runtime-reliability plan): generated CSV input + run output
+# hibayes-runtime-reliability plan: generated CSV input (T02) + run output dir (T01)
 data/hibayes_eval_rows.csv
 out/
