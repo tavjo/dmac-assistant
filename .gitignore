@@ -34,3 +34,6 @@ docs/superpowers/
 
 # Vendored sources (host-side sync via scripts/sync-vendor-deps.sh)
 vendor/
+
+# T01 (hibayes-runtime-reliability plan): runtime output dir for the eval pipeline
+out/

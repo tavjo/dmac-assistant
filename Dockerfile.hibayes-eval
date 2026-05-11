@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1.6
+# hibayes-runtime-reliability:dev — eval pipeline runtime.
+# Built explicitly by T01 of the hibayes-runtime-reliability-2026-05-09 plan.
+# Separate from the existing `dmac-assistant` image; the two do not share layers.
+
+FROM --platform=linux/amd64 python:3.12-slim AS base
+
+# Install uv (Astral). Pinned to a known-good release; bump only via amend.
+ARG UV_VERSION=0.5.18
+# `git` is required at uv-add time because HiBayes is installed via a
+# `git+https://...` URL (R-11 — not on PyPI). Spec §6's original apt-get line
+# omitted it; the build fails at the `uv add` step with "Git executable not
+# found" without this addition.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh \
+    && mv /root/.local/bin/uv /usr/local/bin/uv \
+    && apt-get purge -y --auto-remove curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work
+
+# Copy the host pyproject.toml + uv.lock into the image. The image owns its
+# own copy; the host files are NOT mutated by this build.
+COPY pyproject.toml ./
+COPY uv.lock ./
+
+# Resolve the eval group inside the image (linux/amd64 has jax wheels for
+# every package in HiBayes's compatible jax>=0.5.3 range).
+ARG HIBAYES_SHA
+RUN test -n "${HIBAYES_SHA}" || (echo "ERROR: HIBAYES_SHA build-arg is required" && exit 1)
+# The build context contains only pyproject.toml + uv.lock (not src/), so uv
+# must not try to build the `dmac-assistant` wheel from source.
+#   - `uv add --no-sync` mutates pyproject.toml + lockfile only; venv install
+#     is deferred to the explicit `uv sync` step below. (Spec §6 originally
+#     specified `--no-install-project` on `uv add`, but that flag exists only
+#     on `uv sync` / `uv lock` in uv 0.5.18; `--no-sync` is the correct
+#     mechanism to skip the implicit sync.)
+#   - `uv sync --no-install-project` skips installing the root project (which
+#     would fail without src/ in the context). The project source is bind-
+#     mounted at `docker run` time and reached via `pythonpath = ["src"]` in
+#     pyproject.toml.
+RUN uv add --no-sync --group eval \
+        "hibayes @ git+https://github.com/UKGovernmentBEIS/hibayes.git@${HIBAYES_SHA}" \
+        "numpyro>=0.21.0" \
+        "arviz>=0.21.0,<1.0.0" \
+        jinja2 \
+        matplotlib
+RUN uv sync --no-install-project --group eval --frozen
+
+# Default command: drop into the project venv's interactive Python. The
+# wrapper script (scripts/run_hibayes_eval.sh) overrides this with the
+# task-specific invocation.
+CMD ["uv", "run", "python"]
