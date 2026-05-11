@@ -1,0 +1,16 @@
+{
+  "query_id": "search-basic-001",
+  "task_family": "search-basic",
+  "task_subtype": null,
+  "image": "dmac-assistant:test",
+  "answer_provided": true,
+  "is_error": false,
+  "timed_out": false,
+  "runtime_success": true,
+  "failure_mode": "none",
+  "latency_seconds": 12.34,
+  "cost_usd": 0.05,
+  "tool_calls_total": 3,
+  "artifact_count": 2,
+  "is_opus": 1
+}
