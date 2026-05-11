@@ -23,7 +23,6 @@ docker run --rm \
     --platform linux/amd64 \
     -v "${REPO}/src:/work/src:ro" \
     -v "${REPO}/tests:/work/tests:ro" \
-    -v "${REPO}/build_tools:/work/build_tools:ro" \
     -v "${REPO}/data:/work/data:ro" \
     -v "${REPO}/out:/work/out:rw" \
     -v "${REPO}/src/dmac_assistant/eval/hibayes_runtime_reliability/config:/work/config:ro" \
