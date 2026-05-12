@@ -1,0 +1,13 @@
+query_id,task_family,task_subtype,image,answer_provided,is_error,timed_out,runtime_success,failure_mode,latency_seconds,cost_usd,tool_calls_total,artifact_count,is_opus
+search-basic-001,search-basic,,dmac:test,true,false,false,true,none,10.0,0.05,3,2,1
+search-basic-002,search-basic,,dmac:test,true,false,false,true,none,12.0,0.06,4,1,1
+search-basic-003,search-basic,,dmac:test,true,false,false,true,none,8.0,0.04,2,3,0
+search-basic-004,search-basic,,dmac:test,true,false,false,true,none,11.0,0.05,3,2,0
+qaqc-mixed-001,qaqc-mixed,,dmac:test,true,false,false,true,none,20.0,0.10,5,1,1
+qaqc-mixed-002,qaqc-mixed,,dmac:test,false,false,false,false,no_answer,15.0,0.08,4,0,1
+qaqc-mixed-003,qaqc-mixed,,dmac:test,true,false,false,true,none,22.0,0.11,6,2,0
+qaqc-mixed-004,qaqc-mixed,,dmac:test,false,true,false,false,error,18.0,0.09,5,0,0
+spreadsheet-tricky-001,spreadsheet-tricky,,dmac:test,false,true,false,false,error,30.0,0.20,8,0,1
+spreadsheet-tricky-002,spreadsheet-tricky,,dmac:test,false,false,true,false,timeout,45.0,0.30,10,0,1
+spreadsheet-tricky-003,spreadsheet-tricky,,dmac:test,false,true,false,false,error,28.0,0.18,7,0,0
+spreadsheet-tricky-004,spreadsheet-tricky,,dmac:test,true,false,false,true,none,25.0,0.15,6,1,0
