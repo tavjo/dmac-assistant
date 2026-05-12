@@ -202,6 +202,23 @@ def test_band_for_forces_too_uncertain_below_min_n(
     assert band is ReliabilityBand.TooUncertain
 
 
+def test_posterior_rejects_inverted_hdi() -> None:
+    """_check_hdi_ordering: hdi_low > hdi_high must raise ValidationError (M-1 remediation)."""
+    bad_hdi = dict(
+        task_family="test-family",
+        posterior_mean=0.80,
+        posterior_median=0.80,
+        hdi_low=0.90,
+        hdi_high=0.70,
+        p_success_lt_strong=0.10,
+        p_success_lt_acceptable=0.05,
+        n_total=10,
+        band=ReliabilityBand.Watch,
+    )
+    with pytest.raises(ValidationError, match="hdi_low"):
+        PosteriorTaskFamilyReliability(**bad_hdi)
+
+
 # --- HiBayesRuntimeReport: top-level shape sanity --------------------------------
 
 def test_runtime_report_carries_thresholds_and_aggregates() -> None:
