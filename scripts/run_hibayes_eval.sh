@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # run_hibayes_eval.sh — thin wrapper around `docker run hibayes-runtime-reliability:dev`.
-# Mounts src/, tests/, data/, out/ at the canonical container paths and forwards
+# Mounts src/, tests/, tools/, data/, out/ at the canonical container paths and forwards
 # all remaining args to `uv run` inside the container.
 #
 # Usage:
@@ -23,6 +23,7 @@ docker run --rm \
     --platform linux/amd64 \
     -v "${REPO}/src:/work/src:ro" \
     -v "${REPO}/tests:/work/tests:ro" \
+    -v "${REPO}/tools:/work/tools:ro" \
     -v "${REPO}/data:/work/data:ro" \
     -v "${REPO}/out:/work/out:rw" \
     -v "${REPO}/src/dmac_assistant/eval/hibayes_runtime_reliability/config:/work/config:ro" \
