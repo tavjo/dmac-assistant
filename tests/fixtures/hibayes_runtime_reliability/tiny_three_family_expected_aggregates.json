@@ -1,0 +1,39 @@
+{
+  "aggregates": [
+    {
+      "task_family": "search-basic",
+      "n_total": 4, "n_success": 4, "n_failure": 0,
+      "observed_success_rate": 1.0,
+      "n_error": 0, "n_timeout": 0, "n_no_answer": 0,
+      "n_artifact_rows": 4,
+      "avg_latency_seconds": 10.25,
+      "avg_cost_usd": 0.05,
+      "avg_tool_calls_total": 3.0
+    },
+    {
+      "task_family": "qaqc-mixed",
+      "n_total": 4, "n_success": 2, "n_failure": 2,
+      "observed_success_rate": 0.5,
+      "n_error": 1, "n_timeout": 0, "n_no_answer": 1,
+      "n_artifact_rows": 2,
+      "avg_latency_seconds": 18.75,
+      "avg_cost_usd": 0.095,
+      "avg_tool_calls_total": 5.0
+    },
+    {
+      "task_family": "spreadsheet-tricky",
+      "n_total": 4, "n_success": 1, "n_failure": 3,
+      "observed_success_rate": 0.25,
+      "n_error": 2, "n_timeout": 1, "n_no_answer": 0,
+      "n_artifact_rows": 1,
+      "avg_latency_seconds": 32.0,
+      "avg_cost_usd": 0.2075,
+      "avg_tool_calls_total": 7.75
+    }
+  ],
+  "totals": {
+    "n_total": 12, "n_success": 7, "n_failure": 5,
+    "observed_success_rate": 0.583333,
+    "n_families": 3
+  }
+}
