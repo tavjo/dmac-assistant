@@ -1,0 +1,29 @@
+# Coverage config for in-container runs (task-07 §6.2 / §6.3).
+#
+# The host `pyproject.toml` has `[tool.coverage.run] omit = ["src/dmac_assistant/eval/*"]`
+# so host-side `uv run pytest` excludes the eval pipeline modules from
+# coverage measurement — they can't be exercised host-side because their
+# runtime deps live only in the `hibayes-runtime-reliability:dev` image
+# (DD-13 split-coverage model).
+#
+# Inside the container the eval modules ARE exercised, and the §6.2/§6.3
+# gates need them measured. Bind-mounting the host pyproject.toml carries
+# the host's omit clause into the container, which silently zeroes the
+# in-container coverage report.
+#
+# This file is bind-mounted into the container instead and referenced via
+# `--cov-config=.coveragerc.in-container` on the in-container pytest
+# invocation. coverage.py uses ONLY this file when --cov-config is set;
+# pyproject.toml [tool.coverage] is ignored. That means exclude_lines
+# rules from pyproject.toml must be duplicated here.
+#
+# (Phase 7 H-4, 2026-05-13. See .claude/plans/hibayes-runtime-reliability-
+# 2026-05-09-vet/phase7-review/PHASE7-INDEPENDENT-VERDICT.md.)
+
+[run]
+# No omit — eval modules ARE traced in-container.
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
