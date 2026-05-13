@@ -129,3 +129,34 @@ def test_diagnostic_failure_non_fatal(tmp_path: Path) -> None:
     assert any(s != "fail" for s in other_statuses.values()), (
         f"all non-loo diagnostics also failed: {other_statuses!r}"
     )
+
+
+def test_diagnostic_na_verdict_maps_to_skip(tmp_path: Path) -> None:
+    """R4-01 / Amendment 6.3: HiBayes checker verdict 'NA' must map to status='skip',
+    not silently roll up as 'pass'. Live-probed checker verdict set at the pinned
+    sha is {'pass', 'fail', 'NA'} — 'waic' returns 'NA' when log-likelihood is
+    unavailable, and posterior_predictive_plot can return 'NA' in non-interactive
+    mode. Treating those as 'pass' silences a meaningful signal.
+    """
+    rows, _ = load_runtime_eval_csv(FIXTURES / "tiny_three_family.csv")
+
+    from dmac_assistant.eval.hibayes_runtime_reliability import run_hibayes as mod
+    real_dispatch = mod._dispatch_diagnostic
+
+    def na_for_waic(name: str, state: Any, *, plots_dir: Path) -> str:
+        if name == "waic":
+            return "NA"
+        return real_dispatch(name, state, plots_dir=plots_dir)
+
+    with patch.object(mod, "_dispatch_diagnostic", side_effect=na_for_waic):
+        report = run_hibayes(rows, ReliabilityThresholds(), out_dir=tmp_path, seed=SEED)
+
+    # The NA verdict maps to status="skip" with the explanatory reason.
+    assert report.diagnostics_summary["waic"]["status"] == "skip", (
+        f"expected status='skip' for NA verdict; got {report.diagnostics_summary['waic']!r}"
+    )
+    assert "NA" in report.diagnostics_summary["waic"]["reason"], (
+        f"expected 'NA' in reason; got {report.diagnostics_summary['waic']['reason']!r}"
+    )
+    # Pipeline did not abort and other diagnostics still ran.
+    assert len(report.posteriors) == 3
