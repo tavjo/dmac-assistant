@@ -279,15 +279,22 @@ def _run_diagnostics(
     for name in DIAGNOSTIC_NAMES:
         try:
             verdict = _dispatch_diagnostic(name, state, plots_dir=plots_dir)
-            # Map HiBayes checker verdicts onto the {pass,fail,skip} contract.
-            # "pass" / "fail" pass through; anything else (e.g. "NA" from a
-            # non-interactive plot run) maps to "pass" since the checker
-            # executed without exception — DD-10 only treats raised exceptions
-            # as failure.
-            if verdict == "fail":
-                status, reason = "fail", "checker verdict: fail"
-            else:
+            # Map HiBayes 1.0.0 checker verdicts onto T03's {pass, fail, skip}
+            # status contract. Live-probed verdict set at the pinned sha:
+            # {"pass", "fail", "NA"}; "skip" is never emitted. "NA" means the
+            # checker could not be computed (e.g. waic when log-likelihood is
+            # unavailable, posterior_predictive_plot in non-interactive mode)
+            # — that's a skip semantically, not a pass. Unknown verdicts fail
+            # loudly so the reporter surfaces the surprise rather than silently
+            # rolling up as pass.
+            if verdict == "pass":
                 status, reason = "pass", ""
+            elif verdict == "fail":
+                status, reason = "fail", "checker verdict: fail"
+            elif verdict == "NA":
+                status, reason = "skip", "checker verdict: NA (could not be computed)"
+            else:
+                status, reason = "fail", f"checker verdict: unexpected {verdict!r}"
             summary[name] = {"status": status, "reason": reason}
         except NotImplementedError as e:
             summary[name] = {"status": "skip", "reason": f"NotImplementedError: {e}"}
