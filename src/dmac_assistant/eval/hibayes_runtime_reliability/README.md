@@ -317,9 +317,10 @@ T06's tests produce — they are NOT real MCMC outputs from a production run.
 
 **Cautionary note**: HDIs are NOT confidence intervals. The Bayesian
 credibility reading — "94% sure the rate is in this range, given the data and
-the prior" — is what users want, but the prior choice (Beta(1, 1) under
-`two_level_group_binomial`'s default partial pooling) noticeably influences
-narrow-`n` families. Single-row families produce wide HDIs by design — that
+the prior" — is what users want, but the prior choice
+(`two_level_group_binomial(prior_sigma_group_scale=2.0)` per Amendment 6 —
+the HiBayes default `sgs=0.1` over-shrinks small-`n` families) noticeably
+influences narrow-`n` families. Single-row families produce wide HDIs by design — that
 is why the `min_n_for_classification = 3` guard exists.
 
 ### Reliability bands (DD-06)
@@ -474,7 +475,7 @@ above have well-defined contents. **Two files change**:
 ```python
 # v1
 from hibayes.model.models import two_level_group_binomial
-model_builder = two_level_group_binomial()
+model_builder = two_level_group_binomial(prior_sigma_group_scale=2.0)  # Amendment 6
 
 # v1+1: a built-in that accepts a row-level covariate
 from hibayes.model.models import linear_group_binomial
