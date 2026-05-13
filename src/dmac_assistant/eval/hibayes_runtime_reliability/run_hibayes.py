@@ -469,9 +469,11 @@ def _resolve_config_path(supplied: Path | None) -> Path:
 
 
 def _load_thresholds(config_path: Path) -> ReliabilityThresholds:
-    """Returns thresholds or raises FileNotFoundError / yaml.YAMLError / ValidationError."""
-    if not config_path.exists():
-        raise FileNotFoundError(config_path)
+    """Returns thresholds or raises yaml.YAMLError / ValidationError.
+
+    Callers are expected to pre-check ``config_path.exists()`` (see ``main``);
+    therefore no FileNotFoundError branch is implemented here.
+    """
     raw = yaml.safe_load(config_path.read_text())
     return ReliabilityThresholds.model_validate(raw or {})
 
@@ -569,7 +571,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if load_report.rejected:
         first = load_report.rejected[0]
-        truncated = first.error[:200]
+        truncated = first.error.replace("\n", " ")[:200]
         _emit(
             f"error: input csv has {len(load_report.rejected)} invalid rows; "
             f"first rejection: {first.query_id}: {truncated}"

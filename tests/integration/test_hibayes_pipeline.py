@@ -257,12 +257,15 @@ def test_corrupt_csv_returns_exit_input(tmp_path, capsys, fixture_csv):
     rc = main(["--input", str(bad_csv), "--out", str(out_dir)])
     assert rc == EXIT_INPUT
     captured = capsys.readouterr()
+    # §2.5 mandates single-line stderr; normalize-on-emit must guarantee no
+    # embedded newlines in the truncated first-rejection error.
+    assert "\n" not in captured.err.rstrip("\n")
     err = captured.err.strip()
     assert err.startswith("error: input csv has 1 invalid rows;")
     assert captured.out == ""
 
     # Truncation: error msg after "first rejection: <query_id>: " ≤ 200 chars.
-    m = re.search(r"first rejection: ([^:]+): (.*)\Z", err, re.DOTALL)
+    m = re.search(r"first rejection: ([^:]+): (.*)\Z", err)
     assert m is not None, f"could not parse first-rejection from: {err!r}"
     error_msg = m.group(2)
     assert len(error_msg) <= 200
@@ -461,16 +464,6 @@ def test_supplied_config_resolves(tmp_path, fixture_csv, capsys):
     )
     assert rc == EXIT_OK
     capsys.readouterr()  # drain
-
-
-def test_load_thresholds_raises_filenotfound_on_missing(tmp_path):
-    from dmac_assistant.eval.hibayes_runtime_reliability.run_hibayes import (
-        _load_thresholds,
-    )
-
-    missing = tmp_path / "absent.yaml"
-    with pytest.raises(FileNotFoundError):
-        _load_thresholds(missing)
 
 
 def test_load_runtime_eval_csv_oserror_branch(
