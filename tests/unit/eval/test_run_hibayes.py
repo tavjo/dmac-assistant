@@ -122,6 +122,57 @@ def test_posterior_csv_columns_in_order(fitted_report: HiBayesRuntimeReport, tmp
     )
 
 
+def test_extract_posteriors_does_not_mutate_idata(tmp_path_factory) -> None:
+    """F-02 regression (2026-05-13): `_extract_posteriors` must NOT inject a
+    `theta` DataArray into `idata.posterior`.
+
+    The prior implementation hand-computed `theta = sigmoid(group_effects)` and
+    wrote it back into `state.inference_data.posterior`, mutating ArviZ state
+    derived from real samples with a derived variable. This silenced the spec
+    §6 "loud signal" of a HiBayes variable rename and risked future ArviZ
+    consistency-check failures.
+
+    This test runs `run_hibayes` end-to-end on the §8.1 canonical fixture,
+    captures the ModelAnalysisState via a spy on `_persist_artifacts` (which
+    receives the same `state` reference passed to `_extract_posteriors`), and
+    asserts (a) `"theta"` is absent from `idata.posterior.data_vars`,
+    (b) `"group_effects"` is still present (the canonical source variable),
+    and (c) the §8.1 binding posterior-ordering invariant still holds.
+    """
+    from unittest.mock import patch
+
+    from dmac_assistant.eval.hibayes_runtime_reliability import run_hibayes as rh_mod
+
+    captured: dict[str, object] = {}
+    real_persist = rh_mod._persist_artifacts
+
+    def _spy_persist(report, state, *, out_dir, seed):
+        captured["state"] = state
+        return real_persist(report, state, out_dir=out_dir, seed=seed)
+
+    out_dir = tmp_path_factory.mktemp("t05_no_mutation")
+    rows, _ = load_runtime_eval_csv(FIXTURES / "tiny_three_family.csv")
+    with patch.object(rh_mod, "_persist_artifacts", _spy_persist):
+        report = rh_mod.run_hibayes(
+            rows, ReliabilityThresholds(), out_dir=out_dir, seed=SEED
+        )
+
+    state = captured["state"]
+    posterior_vars = set(state.inference_data.posterior.data_vars)
+    assert "theta" not in posterior_vars, (
+        f"F-02 regression: idata.posterior was mutated; data_vars={posterior_vars!r}"
+    )
+    assert "group_effects" in posterior_vars, (
+        f"canonical source variable missing from posterior: {posterior_vars!r}"
+    )
+    # §8.1 binding invariant — the no-mutation path still produces the right
+    # posterior ordering.
+    reliable = _by_family(report.posteriors, "search-basic")
+    brittle = _by_family(report.posteriors, "spreadsheet-tricky")
+    assert reliable.posterior_mean > brittle.posterior_mean
+    assert reliable.posterior_mean - brittle.posterior_mean > 0.20
+
+
 def test_hdi_80_present_per_family(fitted_report: HiBayesRuntimeReport) -> None:
     """RD-T05-2 / M-1: 80% HDI is surfaced via diagnostics_summary['hdi_80'].
 

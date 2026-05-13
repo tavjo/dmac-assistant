@@ -166,39 +166,36 @@ def _extract_posteriors(
     T03's `PosteriorTaskFamilyReliability` schema (R-08).
     """
     idata = state.inference_data
-    # HiBayes 1.0.0 `two_level_group_binomial` does NOT expose a `theta` posterior
-    # variable directly; it exposes `group_effects` (the per-group log-odds) as a
-    # numpyro.deterministic, and computes `p = sigmoid(group_effects)` only inside
-    # the likelihood. Per §6 spec guidance ("If a HiBayes minor renames the
-    # variable, those failures are the signal to adjust the lookup"), we derive
-    # `theta` (per-group success probability) from `group_effects` here. Adding
-    # to idata.posterior as a new DataArray keeps `az.hdi(..., var_names=["theta"])`
-    # working unchanged.
-    if "theta" not in idata.posterior.data_vars:
-        group_effects = idata.posterior["group_effects"]
-        theta_arr = 1.0 / (1.0 + np.exp(-group_effects))
-        # Rename the trailing dim ("group_effects_dim_0") to "group" to match
-        # the coords/dims declared in _fit_model.
-        last_dim = [d for d in theta_arr.dims if d not in ("chain", "draw")][0]
-        theta_arr = theta_arr.rename({last_dim: "group"})
-        theta_arr.name = "theta"
-        idata.posterior["theta"] = theta_arr
-    theta = idata.posterior["theta"]
-    means = theta.mean(dim=("chain", "draw")).values
-    medians = theta.median(dim=("chain", "draw")).values
-    # Coordinate-label selection (not positional indexing on `.values`) for
-    # robustness against future ArviZ axis reordering. `az.hdi(...)["theta"]`
-    # has dims (group, hdi) with hdi coord labels "lower"/"higher".
-    _hdi95 = az.hdi(idata, hdi_prob=0.95, var_names=["theta"])["theta"]
-    hdi95_lower = _hdi95.sel(hdi="lower").values
-    hdi95_higher = _hdi95.sel(hdi="higher").values
+    # F-02 remediation (2026-05-13): compute θ = sigmoid(group_effects) LOCALLY
+    # without mutating `idata.posterior`. The prior implementation injected a
+    # hand-computed `theta` DataArray back into `idata.posterior`, which (a)
+    # mutates ArviZ state derived from real samples with a derived variable —
+    # risking failures of future ArviZ consistency checks — and (b) silenced
+    # the spec §6 "loud signal" of a HiBayes variable rename. HiBayes 1.0.0
+    # `two_level_group_binomial` exposes `group_effects` (per-group log-odds)
+    # as the canonical numpyro.deterministic; sigmoid is monotonic, so HDI
+    # bounds and threshold-exceedance probabilities are computable from
+    # `group_effects` HDI bounds (with sigmoid applied to lower/higher) and
+    # from a locally-built `theta` DataArray respectively.
+    group_effects = idata.posterior["group_effects"]
+    # Local theta DataArray (NOT inserted into idata). `az.hdi` accepts a
+    # DataArray directly.
+    theta_local = 1.0 / (1.0 + np.exp(-group_effects))
+    means = theta_local.mean(dim=("chain", "draw")).values
+    medians = theta_local.median(dim=("chain", "draw")).values
+    # Sigmoid is monotonic increasing, so HDI(sigmoid(X)) = sigmoid(HDI(X)) for
+    # the lower/higher endpoints. Compute HDI on `group_effects` directly via
+    # InferenceData (no mutation) and transform the endpoints.
+    _ge_hdi95 = az.hdi(idata, hdi_prob=0.95, var_names=["group_effects"])["group_effects"]
+    hdi95_lower = (1.0 / (1.0 + np.exp(-_ge_hdi95.sel(hdi="lower").values)))
+    hdi95_higher = (1.0 / (1.0 + np.exp(-_ge_hdi95.sel(hdi="higher").values)))
     # RD-T05-2: 80% HDI is surfaced via diagnostics_summary["hdi_80"], NOT as
     # new fields on PosteriorTaskFamilyReliability (preserves R-08).
-    _hdi80 = az.hdi(idata, hdi_prob=0.80, var_names=["theta"])["theta"]
-    hdi80_lower = _hdi80.sel(hdi="lower").values
-    hdi80_higher = _hdi80.sel(hdi="higher").values
-    p_lt_strong = (theta < thresholds.strong_floor).mean(dim=("chain", "draw")).values
-    p_lt_acceptable = (theta < thresholds.acceptable_floor).mean(dim=("chain", "draw")).values
+    _ge_hdi80 = az.hdi(idata, hdi_prob=0.80, var_names=["group_effects"])["group_effects"]
+    hdi80_lower = (1.0 / (1.0 + np.exp(-_ge_hdi80.sel(hdi="lower").values)))
+    hdi80_higher = (1.0 / (1.0 + np.exp(-_ge_hdi80.sel(hdi="higher").values)))
+    p_lt_strong = (theta_local < thresholds.strong_floor).mean(dim=("chain", "draw")).values
+    p_lt_acceptable = (theta_local < thresholds.acceptable_floor).mean(dim=("chain", "draw")).values
 
     out: list[PosteriorTaskFamilyReliability] = []
     hdi_80_by_family: dict[str, dict[str, float]] = {}
