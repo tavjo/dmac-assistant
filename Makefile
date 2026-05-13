@@ -113,3 +113,24 @@ snapshot-nextseek-catalogs:
 	@cp "$(CHAT_NEXTSEEK_SRC)"/src/chat_nextseek/context/capabilities.md \
 	    build_context/plugins/nextseek/context/
 	@echo "Snapshotted catalogs to build_context/plugins/nextseek/context/ (from $(CHAT_NEXTSEEK_SRC))"
+
+.PHONY: hibayes-eval hibayes-eval-build
+
+# Build the eval image (idempotent; uses docker's layer cache after first build).
+hibayes-eval-build:
+	@HIBAYES_SHA=$$(git ls-remote https://github.com/UKGovernmentBEIS/hibayes.git HEAD | awk '{print $$1}'); \
+	docker build \
+		--platform linux/amd64 \
+		--build-arg HIBAYES_SHA=$${HIBAYES_SHA} \
+		-f Dockerfile.hibayes-eval \
+		-t hibayes-runtime-reliability:dev \
+		.
+
+# Run the analysis end-to-end. Caller may override INPUT / OUT.
+INPUT ?= data/hibayes_eval_rows.csv
+OUT   ?= out/hibayes_runtime_reliability
+
+hibayes-eval:
+	@scripts/run_hibayes_eval.sh python -m dmac_assistant.eval.hibayes_runtime_reliability.run_hibayes \
+		--input $(INPUT) \
+		--out $(OUT)

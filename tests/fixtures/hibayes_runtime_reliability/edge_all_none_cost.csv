@@ -1,0 +1,4 @@
+query_id,task_family,task_subtype,image,answer_provided,is_error,timed_out,runtime_success,failure_mode,latency_seconds,cost_usd,tool_calls_total,artifact_count,is_opus
+nocost-001,nocost-family,,dmac:test,true,false,false,true,none,3.0,,1,0,0
+nocost-002,nocost-family,,dmac:test,true,false,false,true,none,4.0,,2,1,0
+nocost-003,nocost-family,,dmac:test,false,false,false,false,no_answer,2.0,,1,0,0

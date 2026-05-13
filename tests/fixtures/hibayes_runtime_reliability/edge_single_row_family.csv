@@ -1,0 +1,2 @@
+query_id,task_family,task_subtype,image,answer_provided,is_error,timed_out,runtime_success,failure_mode,latency_seconds,cost_usd,tool_calls_total,artifact_count,is_opus
+solo-001,solo-family,,dmac:test,true,false,false,true,none,5.0,0.02,1,0,1
