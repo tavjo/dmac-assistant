@@ -52,6 +52,20 @@ markers = [
     "slow: marks slower local Docker build tests",
 ]
 
+[tool.coverage.run]
+# Eval pipeline modules live in `src/dmac_assistant/eval/` but their runtime
+# deps (pandas, hibayes, numpyro, arviz, jinja2, matplotlib) live in the
+# `hibayes-runtime-reliability:dev` image, not the host bridge venv (DD-13:
+# split-coverage model). Host-side `uv run pytest` cannot exercise them —
+# the eval test files use `pytest.importorskip` to skip cleanly on host —
+# so they contribute 0% to the host coverage gate. The in-container §6.2
+# and §6.3 gates (from task-07 spec) are what enforce 95%+ on these modules.
+# Omitting them from host coverage measurement is the DD-13-compliant fix.
+# (Phase 7 H-2 reopened, 2026-05-13.)
+omit = [
+    "src/dmac_assistant/eval/*",
+]
+
 [tool.coverage.report]
 exclude_lines = [
     "pragma: no cover",
