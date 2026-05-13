@@ -403,3 +403,213 @@ def run_hibayes(
     )
     _persist_artifacts(report, state, out_dir=out_dir, seed=seed)
     return report
+
+
+# --------------------------------------------------------------------------- #
+# T07 — CLI entrypoint (appended by task-07-cli-and-integration).             #
+# --------------------------------------------------------------------------- #
+
+import argparse  # noqa: E402
+import csv as _csv  # noqa: E402
+import importlib.resources  # noqa: E402
+import sys  # noqa: E402
+from typing import Sequence  # noqa: E402
+
+import jinja2  # noqa: E402  -- for jinja2.TemplateError in render_report's except
+from pydantic import ValidationError  # noqa: E402
+
+from .load_csv import load_runtime_eval_csv  # noqa: E402
+from .render_report import render_report  # noqa: E402
+
+EXIT_OK = 0
+EXIT_INPUT = 1
+EXIT_HIBAYES = 2
+
+_DEFAULT_CONFIG_RESOURCE = (
+    "dmac_assistant.eval.hibayes_runtime_reliability",
+    "config/hibayes_runtime_reliability.yaml",
+)
+
+
+def _build_argparser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="hibayes_runtime_reliability",
+        description=(
+            "Run the HiBayes Bayesian runtime-reliability pipeline against an "
+            "exported eval-row CSV."
+        ),
+    )
+    p.add_argument(
+        "--input",
+        required=True,
+        type=Path,
+        help="Path to hibayes_eval_rows.csv produced by tools/hibayes/exporter.py.",
+    )
+    p.add_argument(
+        "--out",
+        required=True,
+        type=Path,
+        help="Output directory. Created if missing. Existing files are overwritten.",
+    )
+    p.add_argument(
+        "--config",
+        required=False,
+        type=Path,
+        default=None,
+        help="YAML overriding ReliabilityThresholds. Defaults to packaged config.",
+    )
+    return p
+
+
+def _resolve_config_path(supplied: Path | None) -> Path:
+    if supplied is not None:
+        return supplied.expanduser().resolve()
+    pkg, rel = _DEFAULT_CONFIG_RESOURCE
+    return Path(importlib.resources.files(pkg) / rel).resolve()
+
+
+def _load_thresholds(config_path: Path) -> ReliabilityThresholds:
+    """Returns thresholds or raises FileNotFoundError / yaml.YAMLError / ValidationError."""
+    if not config_path.exists():
+        raise FileNotFoundError(config_path)
+    raw = yaml.safe_load(config_path.read_text())
+    return ReliabilityThresholds.model_validate(raw or {})
+
+
+def _write_aggregates_csv(report: HiBayesRuntimeReport, out_dir: Path) -> Path:
+    """T07 owns task_family_aggregates.csv. Columns mirror TaskFamilyAggregate fields."""
+    path = out_dir / "task_family_aggregates.csv"
+    cols = [
+        "task_family",
+        "n_total",
+        "n_success",
+        "n_failure",
+        "observed_success_rate",
+        "n_error",
+        "n_timeout",
+        "n_no_answer",
+        "n_artifact_rows",
+        "avg_latency_seconds",
+        "avg_cost_usd",
+        "avg_tool_calls_total",
+    ]
+    with path.open("w", newline="") as fh:
+        w = _csv.writer(fh)
+        w.writerow(cols)
+        for a in report.aggregates:
+            w.writerow([getattr(a, c) for c in cols])
+    return path
+
+
+def _read_plot_paths(out_dir: Path) -> dict[str, Path]:
+    """Read T05's diagnostics.json, resolve diagnostic_plot_paths against out_dir."""
+    diag_path = out_dir / "diagnostics.json"
+    if not diag_path.exists():
+        return {}
+    payload = json.loads(diag_path.read_text())
+    rel = payload.get("diagnostic_plot_paths", {}) or {}
+    return {k: (out_dir / v).resolve() for k, v in rel.items()}
+
+
+def _emit(msg: str) -> None:
+    """Single-line stderr emission; caller includes `error: ` prefix per §2.3."""
+    print(msg, file=sys.stderr)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """CLI entrypoint. See task-07 spec §2 for exit-code matrix + stderr templates."""
+    parser = _build_argparser()
+    args = parser.parse_args(argv)
+    input_path: Path = args.input.expanduser().resolve()
+    out_dir: Path = args.out.expanduser().resolve()
+
+    # --- Step 1: input validation ------------------------------------------
+    if not input_path.exists():
+        _emit(f"error: input csv not found: {input_path}")
+        return EXIT_INPUT
+
+    # --- Step 2: thresholds ------------------------------------------------
+    config_path = _resolve_config_path(args.config)
+    if not config_path.exists():
+        _emit(f"error: config yaml not found: {config_path}")
+        return EXIT_INPUT
+    try:
+        thresholds = _load_thresholds(config_path)
+    except yaml.YAMLError as e:
+        _emit(
+            f"error: failed to parse config yaml {config_path}: "
+            f"{type(e).__name__}: {e}"
+        )
+        return EXIT_INPUT
+    except ValidationError as e:
+        first = e.errors()[0] if e.errors() else {"msg": str(e)}
+        _emit(
+            f"error: invalid thresholds config {config_path}: "
+            f"{first.get('msg', str(e))[:200]}"
+        )
+        return EXIT_INPUT
+
+    # --- Step 3: load + validate rows --------------------------------------
+    try:
+        rows, load_report = load_runtime_eval_csv(input_path)
+    except OSError as e:
+        _emit(
+            f"error: failed to read input csv {input_path}: "
+            f"{type(e).__name__}: {e}"
+        )
+        return EXIT_INPUT
+    except Exception as e:  # noqa: BLE001 -- narrowed by module-prefix check
+        if e.__class__.__module__.startswith("pandas"):
+            _emit(
+                f"error: failed to read input csv {input_path}: "
+                f"{type(e).__name__}: {e}"
+            )
+            return EXIT_INPUT
+        raise
+
+    if load_report.rejected:
+        first = load_report.rejected[0]
+        truncated = first.error[:200]
+        _emit(
+            f"error: input csv has {len(load_report.rejected)} invalid rows; "
+            f"first rejection: {first.query_id}: {truncated}"
+        )
+        return EXIT_INPUT
+    if not rows:
+        _emit(f"error: input csv {input_path} contains no valid rows")
+        return EXIT_INPUT
+
+    # --- Step 4: ensure out dir, then HiBayes pipeline ---------------------
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        report = run_hibayes(rows, thresholds, out_dir=out_dir)
+    except (ValueError, RuntimeError) as e:
+        _emit(f"error: hibayes pipeline failed: {type(e).__name__}: {e}")
+        return EXIT_HIBAYES
+    except Exception as e:  # noqa: BLE001 -- narrowed by module-prefix check
+        mod = e.__class__.__module__
+        if mod.startswith(("jax", "numpyro")):
+            _emit(f"error: hibayes pipeline failed: {type(e).__name__}: {e}")
+            return EXIT_HIBAYES
+        raise
+
+    # --- Step 5: write T07-owned aggregates CSV ----------------------------
+    _write_aggregates_csv(report, out_dir)
+
+    # --- Step 6: render HTML ----------------------------------------------
+    plot_paths = _read_plot_paths(out_dir)
+    try:
+        report_html_path = render_report(
+            report, out_dir=out_dir, plot_paths=plot_paths
+        )
+    except (jinja2.TemplateError, OSError) as e:
+        _emit(f"error: report rendering failed: {type(e).__name__}: {e}")
+        return EXIT_HIBAYES
+
+    # --- Step 7: success ---------------------------------------------------
+    print(str(report_html_path.resolve()))
+    return EXIT_OK
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

@@ -52,4 +52,10 @@ markers = [
     "slow: marks slower local Docker build tests",
 ]
 
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+]
+
 # T7 path-decision: PATH_B image-only — chat_nextseek install deferred to T8 (R4-NEW-5)
