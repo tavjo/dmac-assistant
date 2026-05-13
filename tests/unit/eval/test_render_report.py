@@ -12,7 +12,6 @@ import json
 import re
 import sys
 from html.parser import HTMLParser
-from pathlib import Path  # noqa: F401  # used by fixtures via tmp_path (spec §5 verbatim)
 from typing import Any
 
 import pytest

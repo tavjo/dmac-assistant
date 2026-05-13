@@ -23,9 +23,7 @@ from markupsafe import Markup  # re-exported by jinja2; explicit import for clar
 
 from dmac_assistant.eval.hibayes_runtime_reliability.models import (
     HiBayesRuntimeReport,
-    PosteriorTaskFamilyReliability,  # noqa: F401  # re-exported for API consumers (spec §6)
     ReliabilityBand,
-    TaskFamilyAggregate,  # noqa: F401  # re-exported for API consumers (spec §6)
 )
 
 
