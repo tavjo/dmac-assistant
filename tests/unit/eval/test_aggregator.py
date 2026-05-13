@@ -12,6 +12,17 @@ from pathlib import Path
 
 import pytest
 
+# T04 tests import production modules that require the `eval` dependency
+# group (pandas at minimum, via load_csv.py). Those deps live only inside the
+# `hibayes-runtime-reliability:dev` image. On the host bridge venv pandas is
+# not synced, so collection-time importorskip is needed — see Phase 7 H-2.
+pytest.importorskip(
+    "pandas",
+    reason="eval-group dep; this test file only runs inside the "
+           "hibayes-runtime-reliability:dev image. On the host bridge venv, "
+           "skip cleanly.",
+)
+
 from dmac_assistant.eval.hibayes_runtime_reliability.load_csv import load_runtime_eval_csv
 from dmac_assistant.eval.hibayes_runtime_reliability.models import (
     RuntimeEvalRow,
