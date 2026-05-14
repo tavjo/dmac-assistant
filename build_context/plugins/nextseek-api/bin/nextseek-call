@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# nextseek-call — unified resolve + validate + execute shim.
+# Layer 1 permission gate lives in the bash allowlist; Layer 2 write-safety
+# lives in scripts/call_request.py (requires --confirmed-write for non-GET).
+set -euo pipefail
+SCRIPT_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/skills/nextseek-api/scripts"
+exec uv run --with httpx --with pydantic --with python-dotenv python "$SCRIPT_DIR/call_request.py" "$@"

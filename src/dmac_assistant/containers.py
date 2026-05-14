@@ -42,6 +42,8 @@ _REDACTED_ENV_KEYS = frozenset({
     # Encodes host filesystem layout (output_root + scratch_root paths).
     # Not a credential but R-03 forbids logging bridge_env contents.
     "DMAC_PATH_MAPPINGS",
+    "MYSQL_DEV_PASSWORD",
+    "SESSION_DB_PASSWORD",
 })
 
 _BASE_COMMAND: tuple[str, ...] = (
@@ -263,6 +265,18 @@ def _build_environment(
         "NEO4J_USER",
         "NEO4J_PASSWORD",
         "DMAC_PATH_MAPPINGS",
+        "MYSQL_HOST_DEV",
+        "MYSQL_PORT",
+        "MYSQL_USER",
+        "MYSQL_DEV_PASSWORD",
+        "SESSION_DB_TYPE",
+        "SESSION_DB_HOST",
+        "SESSION_DB_PORT",
+        "SESSION_DB_USER",
+        "SESSION_DB_PASSWORD",
+        "SESSION_DB_NAME",
+        "SESSION_DB_PATH",
+        "NEO4J_DATABASE",
     ):
         if forwarded_key in bridge_env:
             env[forwarded_key] = bridge_env[forwarded_key]

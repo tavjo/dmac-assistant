@@ -86,6 +86,23 @@ COPY vendor/chat_nextseek /tmp/chat_nextseek
 RUN uv pip install /tmp/chat_nextseek \
     && chmod -R a+rX /opt/uv-cache /opt/dmac-venv
 
+# T5 (e2e plan) — bake the JudgeUITranscript BAML client into the image.
+# COPY before RUN: without the COPY, baml-cli generate fails "directory not found".
+# baml-cli ships with the baml-py wheel installed by `uv sync` above; it lives
+# at /opt/dmac-venv/bin/baml-cli (on PATH already).
+COPY tools/__init__.py /app/tools/__init__.py
+COPY tools/e2e/__init__.py /app/tools/e2e/__init__.py
+COPY tools/e2e/baml_src/ /app/tools/e2e/baml_src/
+COPY tools/e2e/judge_runner.py /app/tools/e2e/judge_runner.py
+RUN baml-cli generate --from /app/tools/e2e/baml_src \
+    && test -d /app/tools/e2e/baml_client \
+    && chmod -R a+rX /app/tools
+
+# T5 — make `python -m tools.e2e.judge_runner` and `from tools.e2e import ...`
+# resolve from any WORKDIR (image is invoked with WORKDIR /home/user; without
+# this PYTHONPATH the in-image `tools` package would not be discoverable).
+ENV PYTHONPATH="/app"
+
 # DD-37 (PATH half, moved below pre-warm per L-4): put the plugin's bin/ on
 # PATH so Claude can invoke `nextseek-call` etc. without spelling the full
 # path. Placed AFTER the expensive uv pre-warm so a PATH tweak (e.g. adding

@@ -1,8 +1,11 @@
-"""Plan B · T10 — SKILL.md content contract.
+"""SKILL.md content contract for the single-shot nextseek workflow.
 
 Markdown-only task. No chat_nextseek import; no importorskip needed.
-The 9 assertions enforce the load-bearing invariants from D14, D19, D22,
-CRITICAL-3, CRITICAL-4, and NEW-3.
+The assertions enforce load-bearing invariants of the single-shot design
+that replaced the modular plan: D19 (DMAC_PATH_MAPPINGS) and NEW-3 still
+hold; the modular-specific D14 / D22-L3 / CRITICAL-3 / CRITICAL-4 / tool-
+catalog / routing-decision-tree assertions were rewritten for the single-
+shot SKILL.md when the modular plugin was retired (faster path).
 """
 from __future__ import annotations
 
@@ -16,15 +19,23 @@ SKILL_PATH = (
     / "skills" / "nextseek" / "SKILL.md"
 )
 
-EIGHT_SHIM_NAMES = (
+CAPABILITY_MATRIX_TOOLS = (
+    "nextseek-query",
+    "nextseek-api-write",
+    "nextseek-generate-submission",
+    "nextseek-report",
     "nextseek-entity-extract",
     "nextseek-parse",
     "nextseek-plan",
     "nextseek-api-read",
-    "nextseek-api-write",
     "nextseek-graph",
-    "nextseek-report",
-    "nextseek-generate-submission",
+)
+
+FOUR_ESCAPE_HATCH_HEADINGS = (
+    "### 1. Writes",
+    "### 2. Submission generation",
+    "### 3. Project summary reports",
+    "### 4. Debugging / structured plan inspection",
 )
 
 SIX_EXIT_CODES = (
@@ -59,14 +70,27 @@ def test_yaml_frontmatter_shape():
     )
 
 
-def test_d14_always_first_preamble_present():
-    """D14: every /nextseek invocation MUST run nextseek-entity-extract first."""
+def test_default_path_is_single_nextseek_query_call():
+    """Single-shot replacement for D14: every /nextseek invocation defaults to
+    one `nextseek-query` call that runs the full pipeline internally; the
+    SKILL.md must expressly forbid pre-calling the fine-grained shims."""
     text = _read_skill()
-    assert "## Always-first preamble" in text
-    # The exact bash command from plan body line 1833.
-    assert "nextseek-entity-extract --query" in text
-    # The 'never skip' enforcement phrasing.
-    assert "Never skip" in text or "never skip" in text
+    assert "## Default path: `nextseek-query`" in text, (
+        "SKILL.md must declare `nextseek-query` as the default path"
+    )
+    # The canonical bash invocation.
+    assert 'nextseek-query --query "' in text, (
+        "SKILL.md must show the `nextseek-query --query \"...\"` pattern"
+    )
+    # The prohibition on running fine-grained shims first (the load-bearing
+    # difference vs the retired modular design).
+    assert "Do not run `nextseek-entity-extract`" in text, (
+        "SKILL.md must forbid pre-calling nextseek-entity-extract"
+    )
+    assert "`nextseek-parse`" in text and "`nextseek-plan`" in text, (
+        "SKILL.md must name nextseek-parse and nextseek-plan in the same "
+        "prohibition (load-bearing — these are the discarded modular shims)"
+    )
 
 
 def test_d19_dmac_path_mappings_referenced():
@@ -82,60 +106,95 @@ def test_d19_dmac_path_mappings_referenced():
     )
 
 
-def test_d22_l3_plain_text_prompt_no_askuserquestion():
-    """D22-L3: SKILL.md MUST forbid AskUserQuestion and provide a plain-text
-    confirmation template instead."""
+def test_l3_forbids_askuserquestion_and_uses_plain_text_prompt():
+    """L3 (write-safety behavioral layer) survives the modular→single-shot
+    pivot: SKILL.md MUST forbid AskUserQuestion and provide the plain-text
+    confirmation template. The widget cannot render in the chat UI, so this
+    is a load-bearing user-facing invariant for any write operation."""
     text = _read_skill()
-    # L3 plain-text template (verbatim phrase from plan body line 1891).
+    # L3 plain-text template — verbatim phrase the in-container agent emits
+    # before invoking nextseek-api-write.
     assert "About to execute a WRITE-classified operation" in text
     # The prohibition: 'NEVER' must precede 'AskUserQuestion' nearby.
     pattern = re.compile(r"\*?\*?NEVER\*?\*?[^\n]{0,64}AskUserQuestion", re.MULTILINE)
     assert pattern.search(text), (
-        "D22-L3: SKILL.md must explicitly forbid AskUserQuestion"
+        "SKILL.md must explicitly forbid AskUserQuestion at the L3 boundary"
     )
-    # AskUserQuestion appears EXACTLY once — only inside the prohibition.
-    assert text.count("AskUserQuestion") == 1, (
-        f"AskUserQuestion must appear exactly once (the prohibition); "
-        f"found {text.count('AskUserQuestion')}"
+    # Every line that mentions AskUserQuestion must do so in a prohibition
+    # context (NEVER/MUST be plain text/does not render). A permissive usage
+    # — e.g. "use AskUserQuestion to confirm" — would break the chat UI and
+    # is the failure mode this assertion guards against.
+    askuser_lines = [
+        line for line in text.splitlines() if "AskUserQuestion" in line
+    ]
+    assert askuser_lines, "AskUserQuestion must be referenced at the L3 boundary"
+    negative_pattern = re.compile(
+        r"(NEVER|never|forbid|MUST be plain text|does not render|doesn't render|"
+        r"can't render|don't|do not)",
+        re.IGNORECASE,
     )
+    for line in askuser_lines:
+        assert negative_pattern.search(line), (
+            f"every AskUserQuestion mention must carry a negative qualifier; "
+            f"offending line: {line!r}"
+        )
 
 
-def test_critical_3_4_api_write_excluded_from_l1():
-    """CRITICAL-3 + CRITICAL-4: SKILL.md's Layer-1 description must state
-    nextseek-api-write is NOT allowlisted."""
+def test_layer_1_describes_dangerously_skip_permissions_bypass():
+    """In the single-shot SKILL.md, Layer 1 (Claude Code permission allowlist)
+    is described as BYPASSED in the dmac-assistant POC because the in-
+    container Claude runs with `--dangerously-skip-permissions`. L2 (the
+    `--confirmed-write` shim refusal) and L3 (the behavioral prompt) are the
+    load-bearing layers. This test pins that contract so a future SKILL.md
+    edit can't silently elevate L1 back to load-bearing status without
+    updating the deployment story."""
     text = _read_skill()
-    # Find the Layer-1 sentence(s) and check api-write is mentioned with a
-    # negative qualifier nearby.
-    l1_section = re.search(
-        r"\*\*Layer 1[^\n]*\*\*[^\n]*\n(?:[^\n]+\n){0,4}",
-        text,
+    # The L1 paragraph must reference --dangerously-skip-permissions.
+    assert "--dangerously-skip-permissions" in text, (
+        "Layer 1 description must reference --dangerously-skip-permissions "
+        "(the reason L1 is bypassed in the POC)"
     )
-    assert l1_section, "SKILL.md must contain a 'Layer 1' bold-prefixed paragraph"
-    chunk = l1_section.group(0)
-    assert "nextseek-api-write" in chunk, (
-        "Layer-1 description must mention nextseek-api-write"
+    # The bypass status must be explicit (not implied).
+    assert "BYPASSED" in text, (
+        "Layer 1 description must state BYPASSED for the POC"
     )
-    assert ("not allowlisted" in chunk
-            or "are not allowlisted" in chunk
-            or "is not allowlisted" in chunk), (
-        "Layer-1 description must qualify nextseek-api-write as 'not allowlisted'"
+    # The defense-in-depth qualifier protects against future drift.
+    assert "defense-in-depth" in text or "defence-in-depth" in text, (
+        "Layer 1 must be described as defense-in-depth (not as a guarantee)"
+    )
+    # L2 and L3 must be named explicitly as the load-bearing layers.
+    assert "L2 and L3" in text or "L3 and L2" in text, (
+        "Write-safety section must name L2 and L3 as the load-bearing layers"
     )
 
 
-def test_tool_catalog_lists_all_eight_shims():
+def test_tool_capability_matrix_lists_all_known_tools():
+    """Single-shot replacement for `test_tool_catalog_lists_all_eight_shims`.
+    The single-shot SKILL.md has a capability matrix (not the modular
+    'Tool catalog' heading); it documents one default tool plus the escape-
+    hatch shims (which still exist as debug probes)."""
     text = _read_skill()
-    assert "## Tool catalog" in text
-    for shim in EIGHT_SHIM_NAMES:
-        assert shim in text, f"Tool catalog must reference shim: {shim}"
+    assert "## Tool capability matrix" in text, (
+        "SKILL.md must have a `## Tool capability matrix` section"
+    )
+    for tool in CAPABILITY_MATRIX_TOOLS:
+        assert tool in text, (
+            f"Tool capability matrix must reference: {tool}"
+        )
 
 
-def test_routing_decision_tree_present():
+def test_escape_hatch_section_lists_four_categories():
+    """Single-shot replacement for `test_routing_decision_tree_present`. The
+    single-shot design replaces the modular routing decision tree with a
+    four-category escape-hatch section listing when to depart from the
+    default `nextseek-query` path."""
     text = _read_skill()
-    assert "## Routing decision tree" in text
-    # The 5 numbered routing rules from plan body line 1866-1870.
-    for n in range(1, 6):
-        assert re.search(rf"^{n}\.\s", text, flags=re.MULTILINE), (
-            f"Routing decision tree must contain rule {n}."
+    assert "## When NOT to use `nextseek-query`" in text, (
+        "SKILL.md must have a `## When NOT to use \\`nextseek-query\\`` section"
+    )
+    for heading in FOUR_ESCAPE_HATCH_HEADINGS:
+        assert heading in text, (
+            f"Escape-hatch section must contain heading: {heading}"
         )
 
 

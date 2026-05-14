@@ -22,11 +22,11 @@ Properly formatted Upload Sheets have four sub-sheets: **Instructions, Samples, 
 
 **Assay:** This sheet determines which Assay(s) the uploaded samples should be associated with. The required columns are: SampleType, AssayType, Assay, Direction.
 
-<figure><img src="https://307762428-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FLyjMyzUsC7E9wbJHwIA3%2Fuploads%2FboudTqYSZEHDxBtXkVSW%2Fimage.png?alt=media&#x26;token=ef23a3d7-eebf-4632-a8c3-dcfb81747772" alt=""><figcaption><p>Visual Representation of sheets as explained above</p></figcaption></figure>
+<figure><img src="/files/OcviqOblz5NNc3EYpYSb" alt=""><figcaption><p>Visual Representation of sheets as explained above</p></figcaption></figure>
 
 Attached is an example sample sheet, with notes/annotations as described above.
 
-{% file src="<https://307762428-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FLyjMyzUsC7E9wbJHwIA3%2Fuploads%2FvjOCsCt32ahoFFD9AFhF%2FSampleSheetFormatting_Template_240824.xlsx?alt=media&token=c3a0a80c-0684-4f46-9d5e-82d3a2ae3eeb>" %}
+{% file src="/files/YlgTXLhnssSM0FpO0GpX" %}
 A SampleSheet Template Upload Sheet with some extra notes, as explained above
 {% endfile %}
 
@@ -44,11 +44,11 @@ There are three different types of upload sheets: Assay Sheets, Sample Sheets, a
 
 Below are examples of an Assay Sheet / Update Sheet. An Example of a Sample Sheet is linked above (SampleSheetFormatting\_Template\_240824.xlsx)
 
-{% file src="<https://307762428-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FLyjMyzUsC7E9wbJHwIA3%2Fuploads%2FW6WNAvhu9UuPfkLfFSlt%2FAssaySheet_Template_240824.xlsx?alt=media&token=2d6caa11-67ba-4f38-b967-dda525adafa4>" %}
+{% file src="/files/YIdFE2ptBx9CTVI7CCqf" %}
 This AssaySheet will upload 12 NHP's and 12 TIS's (each of them automatically associated with those NHPs).
 {% endfile %}
 
-{% file src="<https://307762428-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FLyjMyzUsC7E9wbJHwIA3%2Fuploads%2F7Hht8abgsM9TjqE4omwh%2FUpdateSheet_Template_240824.xlsx?alt=media&token=5c146b10-8dfe-4f28-9c43-b541b21305dc>" %}
+{% file src="/files/y2hPKB6wxTj0ql0UZDQz" %}
 This update sheet will only update the two attributes listed (Sex and DateOfBirth) for those 12 NHPs
 {% endfile %}
 
@@ -56,11 +56,11 @@ This update sheet will only update the two attributes listed (Sex and DateOfBirt
 
 Once you have formatted your Assay/Sample Sheet for Upload, there exists a Sample Validation Script on the [Uploading](https://nextseek.mit.edu/seek/samples/upload/) page to check that the sheet is in the correct format.&#x20;
 
-<figure><img src="https://307762428-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FLyjMyzUsC7E9wbJHwIA3%2Fuploads%2FfCiLJu0Arygw4jV1pZYi%2Fimage.png?alt=media&#x26;token=93d9f01e-5840-4e72-ba5b-3aa617b8d7f3" alt=""><figcaption><p>Sample Validation Check on the Upload Page</p></figcaption></figure>
+<figure><img src="/files/lYbQT6nGzJP6BmHlIysP" alt=""><figcaption><p>Sample Validation Check on the Upload Page</p></figcaption></figure>
 
 Choose your prepared Assay/Sample Sheet (*not applicable for update sheets*) and click validate.
 
-<figure><img src="https://307762428-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FLyjMyzUsC7E9wbJHwIA3%2Fuploads%2FzufVp5xK354F4bGDV13b%2Fimage.png?alt=media&#x26;token=6de87dba-986b-4db9-b568-967b8b8c6e45" alt=""><figcaption><p>Logging output function that shows what the validation check looks for</p></figcaption></figure>
+<figure><img src="/files/Zma9cpTs6s3MbhX3UBPp" alt=""><figcaption><p>Logging output function that shows what the validation check looks for</p></figcaption></figure>
 
 The validation script checks:
 
@@ -84,7 +84,7 @@ It is **good practice** to test your sample sheet on sample validation before up
 2. Submit your sheet through Sample Validation.
 3. Following validation success, place your sheet in the upload box. If you are an admin, select which lab/user you are uploading for. If not, leave as default and it will upload as yourself.
 
-<figure><img src="https://307762428-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FLyjMyzUsC7E9wbJHwIA3%2Fuploads%2FzITrGHiHZZEvPGcycwXW%2Fimage.png?alt=media&#x26;token=910af84b-7b19-48ea-aaf5-b9ab263d53cd" alt=""><figcaption><p>Sample Uploading Box</p></figcaption></figure>
+<figure><img src="/files/IuMg3qReFeJWmJUeiwOU" alt=""><figcaption><p>Sample Uploading Box</p></figcaption></figure>
 
 4. Click Upload. Should take around 1 second per sample
    1. To track your upload, head to either Search Page **(INSERT LINK).** Search today's date in YYMMDD format (so 8/23/24 = 240823).
@@ -99,7 +99,7 @@ It is **good practice** to test your sample sheet on sample validation before up
 
 To upload Protocols and Data Files, head to the[ Protocol/Data File Uploading Page](https://nextseek.mit.edu/seek/data/upload/).
 
-<figure><img src="https://307762428-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FLyjMyzUsC7E9wbJHwIA3%2Fuploads%2FzjRbBMASwuyV9OdAWVqH%2Fimage.png?alt=media&#x26;token=1b15a75d-c9f6-484d-9417-c9d2b59fde02" alt=""><figcaption><p>Protocol / Data File Uploading page</p></figcaption></figure>
+<figure><img src="/files/sB3xkUZyhAV6ne71dtzB" alt=""><figcaption><p>Protocol / Data File Uploading page</p></figcaption></figure>
 
 1. Select whether the file(s) you are uploading are Data Files or Protocols
 2. If you are an admin, select which Lab/User you are uploading for. If you are not, leave it as the default
@@ -110,7 +110,7 @@ For Protocols, following the procedure above is sufficient to upload.
 
 Data Files require a Sample with a File\_PrimaryData that == the name of the file you are trying to upload (to automatically match the Data File UID / Link\_PrimaryData to the corresponding samples). If there is not a D. Sample that matches your data file name, you can make a D.FILE sample to trick the system into uploading it- this is particularly useful when the file you are trying to associate is not a primary file, but a supplementary data file, such as a FASTQC.html. Below is a D.FILE\_Template.
 
-{% file src="<https://307762428-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FLyjMyzUsC7E9wbJHwIA3%2Fuploads%2FRBh1oRAmdKSMOKgzCwnu%2FD.FILE_Template_240824.xlsx?alt=media&token=206a6df6-13e9-4d73-914f-79786c5cb98f>" %}
+{% file src="/files/oTM1uGDXfA57Q9LXxeFZ" %}
 
-#### Documentation surrounding Globus (Uploading and Downloading) exists [here:](https://koch-institute-mit.gitbook.io/mit-data-management-analysis-core/searching-downloading#globus)
+#### Documentation surrounding Globus (Uploading and Downloading) exists [here:](/mit-data-management-analysis-core/searching-downloading.md#globus)
 

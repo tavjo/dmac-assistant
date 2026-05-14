@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# nextseek-vocab — shim for scripts/vocab_lookup.py
+# List/search/resolve NExtSEEK vocab terms from the cached entity tree.
+set -euo pipefail
+SCRIPT_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/skills/nextseek-api/scripts"
+exec uv run --with httpx --with pydantic --with python-dotenv python "$SCRIPT_DIR/vocab_lookup.py" "$@"

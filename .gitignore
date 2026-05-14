@@ -9,8 +9,10 @@ wheels/
 # Virtual environments
 .venv
 
-# Staged Docker build context
-build_context/
+# Staged Docker build context: only build_context/plugins/ is tracked
+# (plugin sources COPY'd into /app/plugins/ at image build). Everything else
+# under build_context/ (e.g. docs/, vendored sync targets) stays untracked.
+build_context/docs/
 
 # Local env file for live runs
 .env
@@ -38,3 +40,9 @@ vendor/
 # hibayes-runtime-reliability plan: generated CSV input (T02) + run output dir (T01)
 data/hibayes_eval_rows.csv
 out/
+
+# T5 — BAML codegen output (regenerated at image-build time, not committed)
+tools/e2e/baml_client/
+
+# T1 — E2E evidence artifacts (per-run; not committed)
+evidence/

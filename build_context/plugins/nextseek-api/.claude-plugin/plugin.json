@@ -1,0 +1,9 @@
+{
+  "name": "nextseek-api",
+  "version": "0.1.0",
+  "description": "Deterministic, token-efficient NExtSEEK API query workflow for Claude Code — wraps SchemaRAG endpoint discovery, caches endpoint catalogs, and enforces mechanical write-safety via permission allowlists.",
+  "author": {
+    "name": "BMC"
+  },
+  "keywords": ["nextseek", "api", "schemarag", "bmc", "metadata"]
+}

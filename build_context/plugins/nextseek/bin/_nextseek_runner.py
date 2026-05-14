@@ -37,6 +37,30 @@ def _err(code: str, message: str, exit_code: int) -> None:
     sys.exit(exit_code)
 
 
+def _sanitize_env_quotes() -> None:
+    """Strip matching outer quote characters from every env var.
+
+    `docker run --env-file` and `python-dotenv.dotenv_values()` preserve any
+    surrounding `"..."` or `'...'` from .env literals, leaving values like
+    `'"fairdata-dev.mit.edu"'` (the literal quote characters become part of
+    the value). chat_nextseek reads these directly via `os.getenv` without
+    de-quoting, so MySQL hosts, passwords, and Basic-auth credentials all
+    arrive at downstream libraries with garbage characters and connections /
+    HTTP auth fail.
+
+    Bash's `set -a; . .env; set +a` strips quotes implicitly, so this only
+    bites containerised / library-loaded env paths. We normalise here, in
+    one place, before importing chat_nextseek. We only strip when the first
+    and last characters are the same quote char and len >= 2 — never partial
+    quotes, never mismatched.
+    """
+    for key, value in list(os.environ.items()):
+        if (len(value) >= 2
+                and value[0] == value[-1]
+                and value[0] in ('"', "'")):
+            os.environ[key] = value[1:-1]
+
+
 def _dry_run() -> bool:
     return os.environ.get("NEXTSEEK_DRY_RUN") == "1"
 
@@ -48,6 +72,37 @@ def _load_config():
         _err("IMPORT_FAILED", f"chat_nextseek not importable: {exc}", 2)
     if not os.environ.get("API_USER") or not os.environ.get("API_PASS"):  # pragma: no cover
         _err("CONFIG_MISSING", "API_USER / API_PASS not set", 2)  # pragma: no cover
+
+    # CHAT_NEXTSEEK_DB_ENV selects which MySQL host the reporter / context
+    # bootstrap connects to. chat_nextseek's own callers hardcode env="prod"
+    # at four sites (config.__init__, helpers reporter paths). When the
+    # deploy only has dev credentials (MYSQL_HOST_DEV / MYSQL_DEV_PASSWORD),
+    # those calls fail with `[CONFIG][DB] Host not configured for env 'prod'`.
+    # We patch the bound class methods so all internal `env="prod"` calls
+    # transparently route to dev. Default unchanged ("prod") for backward
+    # compat with existing deployments.
+    db_env = (os.environ.get("CHAT_NEXTSEEK_DB_ENV") or "prod").strip().lower()
+    if db_env not in ("dev", "prod"):  # pragma: no cover
+        _err("VALIDATION",
+             f"CHAT_NEXTSEEK_DB_ENV must be 'dev' or 'prod', got {db_env!r}", 3)
+    if db_env == "dev":  # pragma: no cover
+        _orig_connect = ChatConfig._connect_db
+        _orig_ensure = ChatConfig._ensure_context_files
+        _orig_fetch = ChatConfig._fetch_context_files_from_db
+
+        def _connect_db_dev(self, env: str = "prod"):
+            return _orig_connect(self, env="dev")
+
+        def _ensure_context_files_dev(self, env: str = "prod"):
+            return _orig_ensure(self, env="dev")
+
+        def _fetch_context_files_dev(self, env: str = "prod"):
+            return _orig_fetch(self, env="dev")
+
+        ChatConfig._connect_db = _connect_db_dev
+        ChatConfig._ensure_context_files = _ensure_context_files_dev
+        ChatConfig._fetch_context_files_from_db = _fetch_context_files_dev
+
     return ChatConfig({})  # pragma: no cover
 
 
@@ -255,7 +310,40 @@ def _dispatch_generate_submission(args, config, session):
     return out.model_dump() if hasattr(out, "model_dump") else out
 
 
+def _dispatch_query(args, config, session):
+    """Single-shot orchestrator: runs the entire chat_nextseek pipeline
+    (entity -> parser -> api/memory/reporter/graph/system -> chatter) in one call.
+
+    This is the default fast path. Returns the final dict shaped as
+    `{"reply": str, "debug": {...}, "bundle_id": int|None, "artifacts"?, "files"?}`.
+    Avoids the multi-turn agentic loop that the fine-grained tools force on
+    Container-Claude.
+
+    chat_nextseek's orchestrator prints debug events (`[CHATTER]`,
+    `[ENTITY]`, etc.) to stdout during the run; if we let those land on our
+    own stdout they corrupt the runner's final JSON line. We redirect FD 1
+    to FD 2 for the duration of the run_query call so debug noise lands on
+    stderr (the agent and any wrapper script can ignore it) and only
+    main()'s `json.dumps(result)` writes to the real stdout.
+    """
+    if _dry_run():  # pragma: no branch
+        return {"reply": "[dry-run]", "debug": {}, "bundle_id": None}  # pragma: no cover
+    from chat_nextseek.orchestrator import run_query, run_query_plan  # pragma: no cover
+    runner = run_query_plan if args.planner else run_query  # pragma: no cover
+    saved_fd = os.dup(1)  # pragma: no cover
+    try:  # pragma: no cover
+        sys.stdout.flush()  # pragma: no cover
+        os.dup2(2, 1)  # stdout -> stderr  # pragma: no cover
+        result = runner(session, config, args.query)  # pragma: no cover
+    finally:  # pragma: no cover
+        sys.stdout.flush()  # pragma: no cover
+        os.dup2(saved_fd, 1)  # pragma: no cover
+        os.close(saved_fd)  # pragma: no cover
+    return result  # pragma: no cover
+
+
 _DISPATCH = {
+    "query": _dispatch_query,
     "entity": _dispatch_entity,
     "parse": _dispatch_parse,
     "plan": _dispatch_plan,
@@ -277,7 +365,14 @@ def main() -> None:
     p.add_argument("--project")  # for report
     p.add_argument("--type")  # for generate-submission
     p.add_argument("--uids")  # for generate-submission
+    p.add_argument("--planner", action="store_true",  # for query
+                   help="Use run_query_plan instead of run_query (multi-step capable)")
     args = p.parse_args()
+
+    # Normalise env once, before chat_nextseek's config reads any of it.
+    # See _sanitize_env_quotes docstring for the rationale (docker --env-file
+    # / dotenv_values preserve surrounding quotes from .env literals).
+    _sanitize_env_quotes()
 
     if _dry_run():
         config = None
