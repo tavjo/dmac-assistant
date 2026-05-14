@@ -38,8 +38,12 @@ RUN test -n "${HIBAYES_SHA}" || (echo "ERROR: HIBAYES_SHA build-arg is required"
 #     mechanism to skip the implicit sync.)
 #   - `uv sync --no-install-project` skips installing the root project (which
 #     would fail without src/ in the context). The project source is bind-
-#     mounted at `docker run` time and reached via `pythonpath = ["src"]` in
-#     pyproject.toml.
+#     mounted at `docker run` time at /work/src and made importable by setting
+#     PYTHONPATH=/work/src in scripts/run_hibayes_eval.sh. The
+#     `pythonpath = ["src", "."]` in pyproject.toml is `[tool.pytest.ini_options]`
+#     — pytest-only — and does NOT cover the canonical production entry
+#     `python -m dmac_assistant.eval...run_hibayes`. Do not remove the
+#     `-e PYTHONPATH=/work/src` line from the wrapper.
 RUN uv add --no-sync --group eval \
         "hibayes @ git+https://github.com/UKGovernmentBEIS/hibayes.git@${HIBAYES_SHA}" \
         "numpyro>=0.21.0" \

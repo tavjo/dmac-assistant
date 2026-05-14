@@ -605,3 +605,49 @@ def test_render_report_template_error_returns_exit_hibayes(
     captured = capsys.readouterr()
     assert "error: report rendering failed:" in captured.err
     assert captured.out == ""
+
+
+# --------------------------------------------------------------------------- #
+# Regression: production `python -m` entry must resolve via subprocess        #
+# --------------------------------------------------------------------------- #
+
+
+def test_python_m_entry_resolves_in_subprocess() -> None:
+    """`python -m dmac_assistant.eval...run_hibayes --help` must exit 0.
+
+    The image is built with `uv sync --no-install-project`, so `dmac_assistant`
+    is not installed in /work/.venv. The package is reached only via the live
+    /work/src bind-mount, which needs to be on sys.path. pyproject's
+    `pythonpath = ["src", "."]` is `[tool.pytest.ini_options]` — pytest-only,
+    in-process — and does NOT propagate to subprocesses. So a pytest run can
+    succeed while the production `make hibayes-eval` entry (a non-pytest
+    subprocess) fails with ModuleNotFoundError.
+
+    This regression test runs the production entry as a subprocess so the
+    canonical entry path is verified end-to-end at every pytest invocation.
+    Pre-2026-05-14 wrapper (no `-e PYTHONPATH=/work/src`): this test FAILS.
+    Post-fix: this test PASSES.
+    """
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "dmac_assistant.eval.hibayes_runtime_reliability.run_hibayes",
+            "--help",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        "python -m entry must exit 0; got "
+        f"returncode={result.returncode}\n"
+        f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+    )
+    assert "--input INPUT" in result.stdout, (
+        f"--help output missing --input flag (module resolved to wrong target?): "
+        f"stdout={result.stdout!r}"
+    )
