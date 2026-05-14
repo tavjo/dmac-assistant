@@ -8,11 +8,12 @@ A lab-aware Claude Code agent for the [MIT BioMicro Center (BMC)](https://biomic
 
 ## What this is
 
-DMAC Assistant is **not** a custom agent framework. It is a deliberately small bridge around three load-bearing pieces:
+DMAC Assistant is **not** a custom agent framework. It is a deliberately small bridge around four load-bearing pieces:
 
 1. **A FastAPI bridge** (`src/dmac_assistant/`) that authenticates lab users, resolves the project directories they're authorized to read, starts a per-user Docker container, and relays chat messages between a browser UI and Claude Code's `stream-json` output.
 2. **A Docker image** (`dmac-assistant:poc`) that contains Claude Code, [`uv`](https://github.com/astral-sh/uv), the `nextseek-api` plugin, and the in-container agent instructions.
 3. **Plugin and documentation surfaces** that the in-container Claude runtime reads from fixed paths inside the image — most importantly the NExtSEEK API documentation and the `chat_nextseek` Python orchestrator.
+4. **An offline reliability-analysis pipeline** (`src/dmac_assistant/eval/hibayes_runtime_reliability/`) that consumes the HiBayes-ready CSV emitted by `tools/hibayes/exporter.py` and produces per-task-family Bayesian posterior estimates of agent success probability, plus a self-contained HTML report. Runs inside a sibling Docker image (`hibayes-runtime-reliability:dev`) — see [Reliability analysis pipeline](#reliability-analysis-pipeline) below.
 
 The agent runs **inside the container**. The bridge process never executes user-supplied code; it just forwards bytes.
 
@@ -152,9 +153,22 @@ dmac-assistant/
 │   └── hibayes/               # report.html → 14-column HiBayes-ready CSV exporter
 ├── vendor/                    # Pinned chat_nextseek source (gitignored)
 ├── docs/                      # Bridge protocol notes, ADRs, SDS
+├── src/dmac_assistant/eval/   # Offline reliability-analysis pipeline (in-container)
+│   └── hibayes_runtime_reliability/
+│       ├── models.py          # Pydantic models + ReliabilityBand enum
+│       ├── load_csv.py        # CSV → validated RuntimeEvalRow list
+│       ├── process_runtime_reliability.py  # row list → per-family aggregates
+│       ├── run_hibayes.py     # HiBayes inference + CLI entrypoint
+│       ├── render_report.py   # Jinja2 → self-contained HTML report
+│       ├── config/            # Default thresholds YAML
+│       ├── templates/         # Jinja2 report template
+│       └── README.md          # Pipeline usage + interpretation guide
+├── Dockerfile.hibayes-eval    # Builds hibayes-runtime-reliability:dev image
+├── scripts/run_hibayes_eval.sh  # Wrapper around `docker run hibayes-runtime-reliability:dev`
+├── .coveragerc.in-container   # In-container coverage config (no eval omit)
 ├── dmac-assistant-sds.md      # Software Design Specification
 ├── dmac-assistant-adrs.md     # Architecture Decision Records
-└── Makefile                   # image-build, image-stage, sync-vendor-deps, ingest-nextseek-docs, ...
+└── Makefile                   # image-build, image-stage, sync-vendor-deps, ingest-nextseek-docs, hibayes-eval-build, ...
 ```
 
 ### Authoritative design documents
@@ -191,6 +205,8 @@ The `build_tools/` sibling project has its own `pyproject.toml` and is run separ
 cd build_tools && uv run pytest
 ```
 
+**Split-coverage model for `src/dmac_assistant/eval/`**. The reliability-analysis pipeline modules live under `src/dmac_assistant/eval/hibayes_runtime_reliability/` but their runtime dependencies (HiBayes, NumPyro, ArviZ, pandas, Jinja2, Matplotlib) live exclusively in the `hibayes-runtime-reliability:dev` image — they are not installed in the host bridge venv. Eval test files therefore use `pytest.importorskip` to skip cleanly on host. `pyproject.toml` carries `[tool.coverage.run] omit = ["src/dmac_assistant/eval/*"]` so the host-side gate measures the bridge subtree only. The eval modules are measured by an in-container gate that uses a separate config (`.coveragerc.in-container`, no omit) — see [Reliability analysis pipeline](#reliability-analysis-pipeline). Together the two gates cover the full `src/dmac_assistant/` tree without overlap.
+
 ### What the integration test exercises
 
 `tests/integration/test_chat_ws_post_turn.py` drives `chat_ws` end-to-end with a fake attach socket that emits real Claude `stream-json` frames. It exercises:
@@ -221,11 +237,46 @@ See [`docs/bridge/`](docs/bridge/) for protocol-level documentation of the WebSo
 
 ---
 
+## Reliability analysis pipeline
+
+An offline analysis tool, completely separate from the bridge runtime. It answers one question: **for each task family the headless agent ran, what is the posterior probability of runtime success, and how confident are we in that estimate?**
+
+Inputs:
+- A HiBayes-ready CSV produced by `tools/hibayes/exporter.py` from an evidence-aggregator `report.html` (one row per agent run, 14 fixed columns).
+
+Outputs (all under `out/hibayes_runtime_reliability/`):
+- `report.html` — self-contained HTML report with per-family posterior charts, HDI bars, observed-vs-posterior comparison, failure-mode counts, filterable results table.
+- `task_family_aggregates.csv` — per-family observed counts and rates.
+- `posterior_task_family_reliability.csv` — per-family posterior mean / median / 80% & 95% HDI / P(<0.90) / P(<0.80) / reliability band.
+- `diagnostics.json` — HiBayes diagnostic suite (r_hat, ess_bulk, ess_tail, etc.).
+- `config.resolved.yaml` — the thresholds + priors actually used.
+
+```sh
+# Build the eval image (one-time per HiBayes sha bump)
+make hibayes-eval-build
+
+# Generate the input CSV from an existing evidence-aggregator report
+uv run --group tools python tools/hibayes/exporter.py \
+    evidence/headless/<run>/report.html data/hibayes_eval_rows.csv
+
+# Run the pipeline (wrapper handles the docker mounts)
+scripts/run_hibayes_eval.sh python -m dmac_assistant.eval.hibayes_runtime_reliability.run_hibayes \
+    --input /work/data/hibayes_eval_rows.csv \
+    --out /work/out/hibayes_runtime_reliability
+```
+
+See [`src/dmac_assistant/eval/hibayes_runtime_reliability/README.md`](src/dmac_assistant/eval/hibayes_runtime_reliability/README.md) for the full interpretation guide (what the posterior means, what the bands mean, how to extend with `tool_calls_total` / `cost_usd` / `is_opus` / `image` predictors later).
+
+The pipeline is opt-in. Bridge users do not need it; reliability-evaluation operators do.
+
+---
+
 ## Project status
 
 | Plan | Status | Notes |
 |------|--------|-------|
 | **Plan A** — POC bridge + container + plugin shims | ✅ **Complete** (2026-05-01) | All 12 tasks merged + T11 manual smoke 13/13 ✅ |
+| **HiBayes runtime-reliability pipeline** — offline posterior reliability analysis | ✅ **Complete** (2026-05-13) | All 8 tasks merged; Phase 7 round-4 reviewer PASS; split-coverage model formalized as Amendment 7 |
 | **Plan B** — production hardening, plugin swap-in, multi-user pooling | ⏳ Not started | Unblocked by Plan A closure |
 
 ### What Plan A delivered
