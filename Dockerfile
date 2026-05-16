@@ -48,6 +48,8 @@ COPY docs/nextseek/ /app/docs/nextseek/
 COPY container/CLAUDE.md /app/CLAUDE.md
 COPY container/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
+COPY container/runner_ns.py /opt/dmac/runner_ns.py
+RUN chmod 0755 /opt/dmac/runner_ns.py
 
 # DD-37: claude-code discovers CLAUDE.md from cwd / project tree, not /app/.
 # Symlink the image-baked spec into the WORKDIR so the in-container Claude
