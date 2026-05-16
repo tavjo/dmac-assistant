@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "baml-py>=0.222.0",
+    "baml-py~=0.222.0",
     "docker>=7.1.0",
     "fastapi>=0.116",
     "httpx>=0.28.1",
@@ -63,8 +63,11 @@ markers = [
 # and §6.3 gates (from task-07 spec) are what enforce 95%+ on these modules.
 # Omitting them from host coverage measurement is the DD-13-compliant fix.
 # (Phase 7 H-2 reopened, 2026-05-13.)
+# T1.1: BAML-generated client (Pydantic models) — not human-authored; coverage
+# of generated code is non-load-bearing and noisy. Spec V.O. #5 mandates this entry.
 omit = [
     "src/dmac_assistant/eval/*",
+    "src/dmac_assistant/router/baml_client/*",
 ]
 
 [tool.coverage.report]
@@ -72,5 +75,8 @@ exclude_lines = [
     "pragma: no cover",
     "if __name__ == .__main__.:",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"src/dmac_assistant/router/baml_client/*" = ["F401"]
 
 # T7 path-decision: PATH_B image-only — chat_nextseek install deferred to T8 (R4-NEW-5)

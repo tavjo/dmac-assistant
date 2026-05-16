@@ -315,7 +315,7 @@ tools = [
 
 [package.metadata]
 requires-dist = [
-    { name = "baml-py", specifier = ">=0.222.0" },
+    { name = "baml-py", specifier = "~=0.222.0" },
     { name = "docker", specifier = ">=7.1.0" },
     { name = "fastapi", specifier = ">=0.116" },
     { name = "httpx", specifier = ">=0.28.1" },
