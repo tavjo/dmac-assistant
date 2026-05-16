@@ -132,6 +132,7 @@ class BridgeAttachSocket:
     ) -> None:
         self._raw = raw_socket
         self._stdout_stream = stdout_stream
+        self._line_buffer: bytearray = bytearray()
 
     # ------------------------------------------------------------------ read
     def read_frame(self) -> tuple[str, bytes] | None:
@@ -204,6 +205,53 @@ class BridgeAttachSocket:
         manage any buffering correctly.
         """
         return getattr(self._raw, "_sock", self._raw)
+
+    def read_event_line(self) -> str | None:
+        """Read one UTF-8 line of stdout output, demuxing frames internally.
+
+        Consumes :meth:`read_frame` in a loop until either a full newline-terminated
+        line is available in the internal buffer, or EOF arrives. Handles five
+        edge cases per the locked LLM-router design spec:
+
+        - Multi-line stdout payload: one frame yields several lines.
+        - Line continuation: a line spans multiple frames.
+        - Interleaved stderr: ``stderr`` frames are DEBUG-logged but NOT routed
+          as lines.
+        - EOF with residual: if EOF arrives mid-line, the partial line is
+          returned on the final call. The next call returns ``None``.
+        - Zero-length stdout frame mid-stream: Docker emits ``("stdout", b"")``
+          as a keep-alive / heartbeat. Treated as a no-op continue.
+
+        Returns ``None`` only when ``read_frame`` returns ``None`` (EOF) AND
+        the internal buffer is empty.
+        """
+        while True:
+            newline_idx = self._line_buffer.find(b"\n")
+            if newline_idx >= 0:
+                line_bytes = bytes(self._line_buffer[:newline_idx])
+                del self._line_buffer[: newline_idx + 1]
+                return line_bytes.decode("utf-8", errors="replace")
+
+            frame = self.read_frame()
+            if frame is None:
+                if self._line_buffer:
+                    residual = bytes(self._line_buffer)
+                    self._line_buffer.clear()
+                    return residual.decode("utf-8", errors="replace")
+                return None
+
+            stream_name, payload = frame
+            if stream_name == "stderr":
+                log.debug(
+                    "bridge stderr frame (truncated): %r",
+                    bytes(payload[:80]),
+                )
+                continue
+
+            if not payload:
+                continue
+
+            self._line_buffer.extend(payload)
 
 
 # -------------------------------------------------------------------- helpers
