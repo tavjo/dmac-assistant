@@ -271,9 +271,15 @@ def _build_bridge_env(
 
     Legacy keys (``AWS_REGION``, ``AWS_BEARER_TOKEN_BEDROCK``,
     ``NEXTSEEK_URL``) are always emitted, even as empty strings, to
-    preserve the pre-T9 passthrough contract. New keys
-    (``GCP_API_KEY``, ``NEO4J_URI``, ``NEO4J_USER``, ``NEO4J_PASSWORD``)
-    are skip-if-empty.
+    preserve the pre-T9 passthrough contract. New skip-if-empty keys are
+    ``GCP_API_KEY``, ``NEO4J_URI``, ``NEO4J_USER``, ``NEO4J_PASSWORD``,
+    ``NEO4J_DATABASE``.
+
+    ``NEXTSEEK_BASE_URL`` is DERIVED from ``NEXTSEEK_URL`` when the host
+    env lacks an explicit override (LLM router plan T0.3 / F-T0.3-2 hardener,
+    2026-05-14). Mirrors ``container/entrypoint.sh:14`` because per-turn
+    ``docker exec`` bypasses the entrypoint per DD-04. Always emitted; empty
+    string only when BOTH ``NEXTSEEK_BASE_URL`` and ``NEXTSEEK_URL`` are unset.
 
     When both ``config`` and ``identity`` are supplied, also emits a
     ``DMAC_PATH_MAPPINGS`` JSON env var that maps container paths (the
@@ -283,12 +289,33 @@ def _build_bridge_env(
     """
     env: dict[str, str] = {}
     # Legacy keys: ALWAYS emitted (W3-C2 — preserves pre-T9 contract).
-    # DO NOT change to skip-if-empty — pre-existing chat_ws tests assert
-    # these keys are present in bridge_env even when unset.
+    # DO NOT change to skip-if-empty — `tests/unit/test_ws_bridge_env.py::
+    # test_unset_keys_omitted` asserts these keys are present in bridge_env
+    # even when unset.
     for key in ("AWS_REGION", "AWS_BEARER_TOKEN_BEDROCK", "NEXTSEEK_URL"):
         env[key] = os.environ.get(key, "")
+    # NEXTSEEK_BASE_URL: derived from NEXTSEEK_URL when unset (T0.3 F-T0.3-2
+    # hardener, LLM router plan 2026-05-14). Mirrors `container/entrypoint.sh:14`
+    # `: ${NEXTSEEK_BASE_URL:=${NEXTSEEK_URL:-}}` because per-turn `docker exec`
+    # bypasses the entrypoint per DD-04. Always emitted (legacy contract);
+    # empty string only when BOTH host vars are unset. `chat_nextseek.config.
+    # ChatConfig:273` reads NEXTSEEK_BASE_URL directly with no NEXTSEEK_URL
+    # fallback, so this derivation is load-bearing.
+    env["NEXTSEEK_BASE_URL"] = (
+        os.environ.get("NEXTSEEK_BASE_URL")
+        or os.environ.get("NEXTSEEK_URL", "")
+    )
     # New keys: skip-if-empty.
-    for key in ("GCP_API_KEY", "NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD"):
+    # NEO4J_DATABASE joined in T0.3 (LLM router plan 2026-05-14): chat_nextseek
+    # reads this exact name for entity-graph queries; sibling of the other
+    # NEO4J_* skip-if-empty keys.
+    for key in (
+        "GCP_API_KEY",
+        "NEO4J_URI",
+        "NEO4J_USER",
+        "NEO4J_PASSWORD",
+        "NEO4J_DATABASE",
+    ):
         value = os.environ.get(key)
         if value is not None and value.strip():
             env[key] = value
