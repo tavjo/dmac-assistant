@@ -87,10 +87,18 @@ class _StubWebSocket:
 
 def _make_ns_jsonl_stream(events: list[tuple[str, dict[str, Any]]]) -> bytes:
     """Build a Docker stdcopy multi-frame stdout stream carrying JSONL events."""
+    lines = [
+        json.dumps({"event": name, "payload": payload}) + "\n"
+        for name, payload in events
+    ]
+    return _make_stdcopy_stdout_stream(lines)
+
+
+def _make_stdcopy_stdout_stream(lines: list[str | bytes]) -> bytes:
+    """Build a Docker stdcopy multi-frame stdout stream."""
     out = bytearray()
-    for name, payload in events:
-        line = json.dumps({"event": name, "payload": payload}) + "\n"
-        body = line.encode("utf-8")
+    for line in lines:
+        body = line.encode("utf-8") if isinstance(line, str) else line
         header = bytes([1, 0, 0, 0]) + struct.pack(">I", len(body))
         out.extend(header + body)
     return bytes(out)
@@ -460,6 +468,153 @@ async def test_cc_dispatch_calls_primitive_with_resolved_model_id(
     assert invocations[0]["query"] == "hi"
 
 
+@pytest.mark.asyncio
+async def test_cc_dispatch_fires_post_turn_callback_on_result(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from dmac_assistant.containers import BridgeAttachSocket
+    from dmac_assistant.ws import _dispatch_cc_turn
+
+    ws = _StubWebSocket()
+    stream_bytes = _make_stdcopy_stdout_stream(
+        [
+            json.dumps(
+                {"type": "system", "subtype": "init", "session_id": "sess-cc"}
+            )
+            + "\n",
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": "done"}],
+                    },
+                }
+            )
+            + "\n",
+            json.dumps({"type": "result"}) + "\n",
+        ]
+    )
+    fake_sock = BridgeAttachSocket(_RawSocketFake(stream_bytes))
+    monkeypatch.setattr("dmac_assistant.ws.exec_cc_turn", lambda *a, **kw: fake_sock)
+    copied: list[str] = []
+
+    async def post_turn_callback() -> None:
+        copied.append("copied")
+
+    started, ended, sid = await _dispatch_cc_turn(
+        websocket=ws,
+        container=object(),
+        query="hi",
+        model_id=MODEL_ID_SONNET,
+        session_id=None,
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env(),
+        current_session_id=None,
+        session_started_emitted=False,
+        session_ended_emitted=False,
+        requested_session_id=None,
+        post_turn_callback=post_turn_callback,
+    )
+
+    assert (started, ended, sid) == (True, True, "sess-cc")
+    assert copied == ["copied"]
+    assert [f["type"] for f in ws.sent_frames] == [
+        "session_started",
+        "assistant_message",
+        "session_ended",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cc_dispatch_flushes_partial_init_and_synthetic_end_copies(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from dmac_assistant.containers import BridgeAttachSocket
+    from dmac_assistant.ws import _dispatch_cc_turn
+
+    ws = _StubWebSocket()
+    stream_bytes = _make_stdcopy_stdout_stream(
+        [
+            json.dumps(
+                {"type": "system", "subtype": "init", "session_id": "sess-flush"}
+            )
+            + "\n",
+            "{not-json",
+        ]
+    )
+    fake_sock = BridgeAttachSocket(_RawSocketFake(stream_bytes))
+    monkeypatch.setattr("dmac_assistant.ws.exec_cc_turn", lambda *a, **kw: fake_sock)
+    copied: list[str] = []
+
+    async def post_turn_callback() -> None:
+        copied.append("copied")
+
+    started, ended, sid = await _dispatch_cc_turn(
+        websocket=ws,
+        container=object(),
+        query="hi",
+        model_id=MODEL_ID_SONNET,
+        session_id=None,
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env(),
+        current_session_id=None,
+        session_started_emitted=False,
+        session_ended_emitted=False,
+        requested_session_id=None,
+        post_turn_callback=post_turn_callback,
+    )
+
+    assert (started, ended, sid) == (True, True, "sess-flush")
+    assert copied == ["copied"]
+    assert [f["type"] for f in ws.sent_frames] == [
+        "session_started",
+        "error",
+        "session_ended",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cc_dispatch_ignores_stderr_frames(tmp_path: Path, monkeypatch) -> None:
+    from dmac_assistant.ws import _dispatch_cc_turn
+
+    ws = _StubWebSocket()
+
+    class _StderrSock:
+        def __init__(self) -> None:
+            self._frames: list[tuple[str, bytes] | None] = [
+                ("stderr", b"diagnostic"),
+                None,
+            ]
+
+        def read_frame(self) -> tuple[str, bytes] | None:
+            return self._frames.pop(0)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("dmac_assistant.ws.exec_cc_turn", lambda *a, **kw: _StderrSock())
+
+    started, ended, sid = await _dispatch_cc_turn(
+        websocket=ws,
+        container=object(),
+        query="hi",
+        model_id=MODEL_ID_SONNET,
+        session_id=None,
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env(),
+        current_session_id=None,
+        session_started_emitted=False,
+        session_ended_emitted=False,
+        requested_session_id=None,
+    )
+
+    assert (started, ended, sid) == (False, False, None)
+    assert ws.sent_frames == []
+
+
 def test_start_container_runtime_mode_idle_sets_env_var(tmp_path: Path) -> None:
     from dmac_assistant.containers import build_container_spec
 
@@ -677,6 +832,49 @@ async def test_multi_turn_cc_then_ns_state_isolation(
 
 
 @pytest.mark.asyncio
+async def test_ns_route_fires_post_turn_callback_after_dispatch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from dmac_assistant.router.baml_client.types import Route, RouterDecision
+    from dmac_assistant.ws import _dispatch_one_turn
+
+    ws = _StubWebSocket()
+    decision = RouterDecision(
+        route=Route.NextseekQuery,
+        model_class=None,
+        reasoning="picked ns",
+    )
+
+    async def fake_route(query: str) -> RouterDecision:
+        del query
+        return decision
+
+    fake_agent = AsyncMock()
+    fake_agent.route = fake_route
+    monkeypatch.setattr("dmac_assistant.ws._get_router_agent", lambda: fake_agent)
+    monkeypatch.setattr("dmac_assistant.ws._dispatch_ns_turn", AsyncMock())
+    copied: list[str] = []
+
+    async def post_turn_callback() -> None:
+        copied.append("copied")
+
+    await _dispatch_one_turn(
+        websocket=ws,
+        container=object(),
+        query="find me samples",
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env(),
+        current_session_id=None,
+        session_started_emitted=False,
+        session_ended_emitted=False,
+        post_turn_callback=post_turn_callback,
+    )
+
+    assert copied == ["copied"]
+
+
+@pytest.mark.asyncio
 async def test_cc_dispatch_timeout_calls_kill_exec_pid_and_emits_timeout(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -781,6 +979,63 @@ async def test_ns_dispatch_timeout_calls_kill_exec_pid_and_emits_timeout(
     assert types[-1] == "session_ended"
 
 
+@pytest.mark.asyncio
+async def test_ns_dispatch_drops_invalid_json_and_post_terminal_events(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from dmac_assistant.ws import _dispatch_ns_turn
+
+    ws = _StubWebSocket()
+
+    class _LineSock:
+        def __init__(self) -> None:
+            self._lines = iter(
+                [
+                    "{not-json",
+                    json.dumps(
+                        {
+                            "event": "query_complete",
+                            "payload": {"reply": "done"},
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "event": "agent_started",
+                            "payload": {"agent": "late"},
+                        }
+                    ),
+                    None,
+                ]
+            )
+
+        def read_event_line(self) -> str | None:
+            return next(self._lines)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("dmac_assistant.ws.exec_ns_turn", lambda *a, **kw: _LineSock())
+
+    await _dispatch_ns_turn(
+        websocket=ws,
+        container=object(),
+        query="hi",
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env(),
+        ns_session_key="k",
+    )
+
+    types = [f.get("type") for f in ws.sent_frames]
+    assert types == ["session_started", "assistant_message", "session_ended"]
+    assistant_contents = [
+        f.get("content")
+        for f in ws.sent_frames
+        if f.get("type") == "assistant_message"
+    ]
+    assert assistant_contents == ["done"]
+
+
 def test_router_on_branch_is_inserted_after_dir_creation_block() -> None:
     from pathlib import Path as _Path
 
@@ -808,3 +1063,19 @@ def test_router_on_branch_is_inserted_after_dir_creation_block() -> None:
     assert idx_build_bridge_env < idx_ensure_user_output_dir_call
     assert idx_ensure_user_output_dir_call < idx_scratch_mkdir_call
     assert idx_scratch_mkdir_call < idx_router_enabled
+
+
+def test_router_on_path_preserves_post_turn_copy_hook() -> None:
+    from pathlib import Path as _Path
+
+    import dmac_assistant.ws as _ws_mod
+
+    src = _Path(_ws_mod.__file__).read_text(encoding="utf-8")
+    idx_router_on = src.find("async def _chat_ws_router_on(")
+    assert idx_router_on != -1
+    idx_dispatch_one_turn = src.find("\n\nasync def _dispatch_one_turn", idx_router_on)
+    router_on_src = src[idx_router_on:idx_dispatch_one_turn]
+    assert "pre_turn_files = snapshot_scratch_files(" in router_on_src
+    assert "async def fire_post_turn_copy()" in router_on_src
+    assert "dispatch_post_turn_copy" in router_on_src
+    assert "post_turn_callback=fire_post_turn_copy" in router_on_src
