@@ -294,7 +294,10 @@ def _build_volumes(
 
 
 def _build_environment(
-    identity: AuthenticatedIdentity, bridge_env: Mapping[str, str]
+    identity: AuthenticatedIdentity,
+    bridge_env: Mapping[str, str],
+    *,
+    runtime_mode: str | None = None,
 ) -> dict[str, str]:
     env: dict[str, str] = {
         "CLAUDE_CODE_USE_BEDROCK": "1",
@@ -330,6 +333,8 @@ def _build_environment(
             env[forwarded_key] = bridge_env[forwarded_key]
     # B17c: catalog file is always mounted; CATALOG_FILE points at the bind.
     env["CATALOG_FILE"] = _CONTAINER_CATALOG_FILE
+    if runtime_mode is not None:
+        env["DMAC_RUNTIME_MODE"] = runtime_mode
     return env
 
 
@@ -356,13 +361,16 @@ def build_container_spec(
     image: str,
     session_id: str | None,
     bridge_env: Mapping[str, str],
+    runtime_mode: str | None = None,
 ) -> ContainerSpec:
     """Assemble the frozen ContainerSpec that `start_container` will launch."""
     _validate_user_id(identity.user_id)
     return ContainerSpec(
         image=image,
         command=_build_command(session_id),
-        environment=_build_environment(identity, bridge_env),
+        environment=_build_environment(
+            identity, bridge_env, runtime_mode=runtime_mode
+        ),
         volumes=_build_volumes(identity, config),
         working_dir=_CONTAINER_WORKING_DIR,
         labels={
@@ -380,6 +388,8 @@ def start_container(
     bridge_env: Mapping[str, str],
     config: BridgeConfig,
     client: Any | None = None,
+    runtime_mode: str | None = None,
+    command_override: list[str] | None = None,
 ) -> Container:
     """Build a spec and launch the container detached."""
     spec = build_container_spec(
@@ -388,11 +398,12 @@ def start_container(
         image=image,
         session_id=session_id,
         bridge_env=bridge_env,
+        runtime_mode=runtime_mode,
     )
     client = client or docker.from_env()
     run_kwargs: dict[str, Any] = {
         "image": spec.image,
-        "command": spec.command,
+        "command": command_override if command_override is not None else spec.command,
         "environment": spec.environment,
         "volumes": spec.volumes,
         "working_dir": spec.working_dir,
@@ -461,6 +472,8 @@ async def async_start_container(
     bridge_env: Mapping[str, str],
     config: BridgeConfig,
     client: Any | None = None,
+    runtime_mode: str | None = None,
+    command_override: list[str] | None = None,
 ) -> Container:
     return await asyncio.to_thread(
         start_container,
@@ -470,6 +483,8 @@ async def async_start_container(
         bridge_env=bridge_env,
         config=config,
         client=client,
+        runtime_mode=runtime_mode,
+        command_override=command_override,
     )
 
 
