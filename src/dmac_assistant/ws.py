@@ -815,6 +815,22 @@ async def _chat_ws_router_on(  # pragma: no cover
     ns_session_key = (
         f"{identity.user_id}-ws-{int(asyncio.get_running_loop().time())}"
     )
+    pre_turn_files = snapshot_scratch_files(config.scratch_root, identity.user_id)
+
+    async def fire_post_turn_copy() -> None:
+        after = snapshot_scratch_files(config.scratch_root, identity.user_id)
+        new = diff_files(pre_turn_files, after)
+        if not new:
+            return
+        await asyncio.to_thread(
+            dispatch_post_turn_copy,
+            scratch_root=config.scratch_root,
+            output_root=config.output_root,
+            user_id=identity.user_id,
+            new_files=new,
+        )
+        pre_turn_files.clear()
+        pre_turn_files.update(after)
 
     try:
         container = await async_start_container(
@@ -842,6 +858,7 @@ async def _chat_ws_router_on(  # pragma: no cover
             session_ended_emitted=session_ended_emitted,
             requested_session_id=requested_session_id,
             ns_session_key=ns_session_key,
+            post_turn_callback=fire_post_turn_copy,
         )
 
         while True:
@@ -870,6 +887,7 @@ async def _chat_ws_router_on(  # pragma: no cover
                 session_ended_emitted=session_ended_emitted,
                 requested_session_id=current_session_id,
                 ns_session_key=ns_session_key,
+                post_turn_callback=fire_post_turn_copy,
             )
     finally:
         if container is not None:
@@ -890,6 +908,7 @@ async def _dispatch_one_turn(
     session_ended_emitted: bool,
     requested_session_id: str | None = None,
     ns_session_key: str | None = None,
+    post_turn_callback: Callable[[], Awaitable[None]] | None = None,
 ) -> tuple[bool, bool, str | None]:
     """Route one user_message, emit route_decided, then dispatch the turn."""
     agent = _get_router_agent()
@@ -930,6 +949,7 @@ async def _dispatch_one_turn(
             session_started_emitted=session_started_emitted,
             session_ended_emitted=session_ended_emitted,
             requested_session_id=requested_session_id,
+            post_turn_callback=post_turn_callback,
         )
 
     await _dispatch_ns_turn(
@@ -941,6 +961,8 @@ async def _dispatch_one_turn(
         bridge_env=bridge_env,
         ns_session_key=ns_session_key,
     )
+    if post_turn_callback is not None:
+        await post_turn_callback()
     return session_started_emitted, session_ended_emitted, current_session_id
 
 
@@ -958,6 +980,7 @@ async def _dispatch_cc_turn(
     session_started_emitted: bool,
     session_ended_emitted: bool,
     requested_session_id: str | None,
+    post_turn_callback: Callable[[], Awaitable[None]] | None = None,
 ) -> tuple[bool, bool, str | None]:
     """Run one Claude Code turn via T3.1 exec primitives."""
     sock: Any = None
@@ -1016,7 +1039,7 @@ async def _dispatch_cc_turn(
                         requested_session_id=requested_session_id,
                         parser=parser,
                         awaiting_end=awaiting_end,
-                        post_turn_callback=None,
+                        post_turn_callback=post_turn_callback,
                     )
             for event in parser.flush():
                 (
@@ -1032,7 +1055,7 @@ async def _dispatch_cc_turn(
                     requested_session_id=requested_session_id,
                     parser=parser,
                     awaiting_end=awaiting_end,
-                    post_turn_callback=None,
+                    post_turn_callback=post_turn_callback,
                 )
             if state["session_started_emitted"] and awaiting_end[0]:
                 await _send_json_safe(
@@ -1043,6 +1066,9 @@ async def _dispatch_cc_turn(
                     },
                 )
                 state["session_ended_emitted"] = True
+                awaiting_end[0] = False
+                if post_turn_callback is not None:
+                    await post_turn_callback()
 
         try:
             await asyncio.wait_for(
