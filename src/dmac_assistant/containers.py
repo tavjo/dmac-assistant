@@ -15,6 +15,7 @@ R-03: ContainerSpec.__repr__ redacts sensitive env keys by name.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import struct
@@ -44,6 +45,7 @@ _REDACTED_ENV_KEYS = frozenset({
     "DMAC_PATH_MAPPINGS",
     "MYSQL_DEV_PASSWORD",
     "SESSION_DB_PASSWORD",
+    "API_PASS",
 })
 
 _BASE_COMMAND: tuple[str, ...] = (
@@ -111,8 +113,6 @@ class ContainerSpec(BaseModel):
 
     def model_dump_json(self, *args: Any, **kwargs: Any) -> str:
         """JSON dump with sensitive env keys redacted (see model_dump)."""
-        import json
-
         return json.dumps(self.model_dump())
 
 
@@ -479,3 +479,155 @@ async def async_attach(container: Container) -> BridgeAttachSocket:
 
 async def async_stop_and_remove(container: Container, *, timeout: int = 5) -> None:
     await asyncio.to_thread(stop_and_remove, container, timeout=timeout)
+
+
+# ---------------------------------------------- T3.1: per-turn exec primitives
+
+
+def _build_exec_environment(
+    identity: AuthenticatedIdentity,
+    bridge_env: Mapping[str, str],
+    *,
+    route: str,
+    ns_session_id: str | None = None,
+) -> dict[str, str]:
+    """Assemble the per-exec environment per locked spec L124-126."""
+    env = _build_environment(identity, bridge_env)
+    env["API_USER"] = identity.user_id
+    env["API_PASS"] = identity.password.get_secret_value()
+    env["NEXTSEEK_BASE_URL"] = bridge_env.get("NEXTSEEK_BASE_URL", "")
+    if route == "ns":
+        if ns_session_id is None:
+            # Defensive guard for direct helper misuse. Public exec_ns_turn()
+            # requires session_id: str, so this branch is unreachable there.
+            raise ValueError(  # pragma: no cover
+                "ns_session_id required for route='ns'",
+            )
+        env["OUTPUTS_DIR"] = (
+            f"/data/scratch/{identity.user_id}/chat_nextseek/{ns_session_id}/"
+        )
+        env["CHAT_NEXTSEEK_SESSION_DB"] = (
+            "/home/user/.claude/chat_nextseek/sessions.sqlite"
+        )
+        env["NEXTSEEK_MODE"] = "gcp"
+    return env
+
+
+def exec_cc_turn(
+    container: Container,
+    *,
+    query: str,
+    model_id: str,
+    session_id: str | None,
+    identity: AuthenticatedIdentity,
+    config: BridgeConfig,
+    bridge_env: Mapping[str, str],
+    client: Any | None = None,
+) -> BridgeAttachSocket:
+    """Run one Claude Code turn against the idle container via docker exec."""
+    api_client = client or container.client
+    cmd: list[str] = [
+        "claude",
+        "--print",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--dangerously-skip-permissions",
+        "--model",
+        model_id,
+    ]
+    if session_id:
+        cmd.extend(["--resume", session_id])
+    environment = _build_exec_environment(identity, bridge_env, route="cc")
+    del config
+    exec_info = api_client.api.exec_create(
+        container.id,
+        cmd=cmd,
+        stdin=True,
+        stdout=True,
+        stderr=True,
+        tty=False,
+        environment=environment,
+    )
+    exec_id = exec_info["Id"] if isinstance(exec_info, dict) else exec_info
+    raw_socket = api_client.api.exec_start(exec_id, socket=True)
+    sock = BridgeAttachSocket(raw_socket)
+    sock._exec_id = exec_id  # type: ignore[attr-defined]
+    envelope = json.dumps(
+        {"type": "user", "message": {"role": "user", "content": query}},
+        separators=(",", ":"),
+    )
+    sock.send_stdin((envelope + "\n").encode("utf-8"))
+    sock.close_stdin()
+    return sock
+
+
+def exec_ns_turn(
+    container: Container,
+    *,
+    query: str,
+    session_id: str,
+    identity: AuthenticatedIdentity,
+    config: BridgeConfig,
+    bridge_env: Mapping[str, str],
+    client: Any | None = None,
+) -> BridgeAttachSocket:
+    """Run one NExtSEEK turn against the idle container via docker exec."""
+    api_client = client or container.client
+    cmd: list[str] = ["python", "/opt/dmac/runner_ns.py", "--session", session_id]
+    environment = _build_exec_environment(
+        identity,
+        bridge_env,
+        route="ns",
+        ns_session_id=session_id,
+    )
+    del config
+    exec_info = api_client.api.exec_create(
+        container.id,
+        cmd=cmd,
+        stdin=True,
+        stdout=True,
+        stderr=True,
+        tty=False,
+        environment=environment,
+    )
+    exec_id = exec_info["Id"] if isinstance(exec_info, dict) else exec_info
+    raw_socket = api_client.api.exec_start(exec_id, socket=True)
+    sock = BridgeAttachSocket(raw_socket)
+    sock._exec_id = exec_id  # type: ignore[attr-defined]
+    sock.send_stdin((query + "\n").encode("utf-8"))
+    sock.close_stdin()
+    return sock
+
+
+def kill_exec_pid(
+    container: Container,
+    exec_id: str,
+    *,
+    client: Any | None = None,
+) -> None:
+    """SIGKILL a running docker exec process while leaving the container alive."""
+    api_client = client or container.client
+    try:
+        info = api_client.api.exec_inspect(exec_id)
+    except APIError as exc:
+        log.warning("kill_exec_pid: exec_inspect failed: %s", type(exc).__name__)
+        return
+    pid = info.get("Pid", 0) if isinstance(info, dict) else 0
+    if not pid:
+        return
+    try:
+        kill_info = api_client.api.exec_create(
+            container.id,
+            cmd=["kill", "-9", str(pid)],
+            stdin=False,
+            stdout=False,
+            stderr=False,
+            tty=False,
+        )
+        kill_id = kill_info["Id"] if isinstance(kill_info, dict) else kill_info
+        api_client.api.exec_start(kill_id, detach=True)
+    except APIError as exc:
+        log.warning("kill_exec_pid: kill exec failed: %s", type(exc).__name__)
