@@ -730,6 +730,57 @@ async def test_cc_dispatch_timeout_calls_kill_exec_pid_and_emits_timeout(
     assert "exec_timeout" in reasons
 
 
+@pytest.mark.asyncio
+async def test_ns_dispatch_timeout_calls_kill_exec_pid_and_emits_timeout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from dmac_assistant.ws import _dispatch_ns_turn
+
+    ws = _StubWebSocket()
+
+    class _HangingSock:
+        def __init__(self) -> None:
+            self._exec_id = "exec-ns-hang"
+            self._closed = False
+
+        def read_event_line(self) -> str | None:
+            import time as _t
+
+            _t.sleep(5.0)
+            return None
+
+        def close(self) -> None:
+            self._closed = True
+
+    hang_sock = _HangingSock()
+    monkeypatch.setattr("dmac_assistant.ws.exec_ns_turn", lambda *a, **kw: hang_sock)
+    monkeypatch.setattr("dmac_assistant.ws._NS_TURN_TIMEOUT_SECONDS", 0.05)
+    killed: list[tuple[Any, str]] = []
+
+    def fake_kill(container: Any, exec_id: str, *, client: Any = None) -> None:
+        del client
+        killed.append((container, exec_id))
+
+    monkeypatch.setattr("dmac_assistant.ws.kill_exec_pid", fake_kill)
+
+    sentinel_container = object()
+    await _dispatch_ns_turn(
+        websocket=ws,
+        container=sentinel_container,
+        query="hi",
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env(),
+        ns_session_key="k",
+    )
+
+    assert killed == [(sentinel_container, "exec-ns-hang")]
+    reasons = [f.get("reason") for f in ws.sent_frames if f.get("type") == "error"]
+    assert "exec_timeout" in reasons
+    types = [f.get("type") for f in ws.sent_frames]
+    assert types[-1] == "session_ended"
+
+
 def test_router_on_branch_is_inserted_after_dir_creation_block() -> None:
     from pathlib import Path as _Path
 

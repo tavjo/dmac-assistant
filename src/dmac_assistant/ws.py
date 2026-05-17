@@ -1119,31 +1119,50 @@ async def _dispatch_ns_turn(
             websocket, {"type": "session_started", "session_id": ns_session_id}
         )
 
-        event_index = 0
-        while True:
-            line = await asyncio.to_thread(sock.read_event_line)
-            if line is None:
-                break
-            if terminal_emitted:
-                log.debug("ns event dropped post-terminal: %s", line[:80])
-                continue
-            try:
-                event = json.loads(line)
-            except (TypeError, ValueError):
-                log.debug("ns invalid jsonl line dropped")
-                continue
-            frames, is_terminal = ns_event_to_frames(
-                event, session_id=ns_session_id, event_index=event_index
-            )
-            for frame in frames:
-                await _send_json_safe(websocket, frame)
-            if is_terminal:
-                terminal_emitted = True
-            event_index += 1
+        async def _read_and_dispatch() -> None:
+            nonlocal terminal_emitted
+            event_index = 0
+            while True:
+                line = await asyncio.to_thread(sock.read_event_line)
+                if line is None:
+                    break
+                if terminal_emitted:
+                    log.debug("ns event dropped post-terminal: %s", line[:80])
+                    continue
+                try:
+                    event = json.loads(line)
+                except (TypeError, ValueError):
+                    log.debug("ns invalid jsonl line dropped")
+                    continue
+                frames, is_terminal = ns_event_to_frames(
+                    event, session_id=ns_session_id, event_index=event_index
+                )
+                for frame in frames:
+                    await _send_json_safe(websocket, frame)
+                if is_terminal:
+                    terminal_emitted = True
+                event_index += 1
 
-        if not terminal_emitted:
+            if not terminal_emitted:
+                await _send_json_safe(
+                    websocket, {"type": "error", "reason": "ns_exec_truncated"}
+                )
+                await _send_json_safe(
+                    websocket,
+                    {"type": "session_ended", "session_id": ns_session_id},
+                )
+
+        try:
+            await asyncio.wait_for(
+                _read_and_dispatch(), timeout=_NS_TURN_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            exec_id = getattr(sock, "_exec_id", None) if sock is not None else None
+            if exec_id:
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(kill_exec_pid, container, exec_id)
             await _send_json_safe(
-                websocket, {"type": "error", "reason": "ns_exec_truncated"}
+                websocket, {"type": "error", "reason": "exec_timeout"}
             )
             await _send_json_safe(
                 websocket,
