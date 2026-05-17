@@ -44,7 +44,6 @@ KNOWN_QUERY_ERROR_AGENTS: frozenset[str] = frozenset(
 
 def ns_event_to_frames(
     event: dict[str, Any],
-    *,
     session_id: str,
     event_index: int = 0,
 ) -> tuple[list[dict[str, Any]], bool]:
@@ -91,27 +90,40 @@ def _tool_use_frames(
     ]
 
 
+def _present_and_non_empty(value: Any) -> bool:
+    if value is None:
+        return False
+    if value is False:
+        return False
+    if isinstance(value, str):
+        return bool(value)
+    try:
+        return bool(value)
+    except Exception:  # pragma: no cover - bool() is defensive for arbitrary JSON
+        return True
+
+
 def _detect_query_complete_failure(payload: dict[str, Any]) -> str | None:
     status = payload.get("status")
     if isinstance(status, str) and status in _STATUS_FAILURE_VALUES:
         return status
 
     error_type = payload.get("error_type")
-    if isinstance(error_type, str) and error_type:
+    if _present_and_non_empty(error_type):
         return "unknown"
 
     top_error = payload.get("error")
-    if isinstance(top_error, str) and top_error:
+    if _present_and_non_empty(top_error):
         return "unknown"
 
     debug = payload.get("debug")
     if isinstance(debug, dict):
         debug_error = debug.get("error")
-        if isinstance(debug_error, str) and debug_error:
+        if _present_and_non_empty(debug_error):
             return "debug_error"
 
         debug_fatal = debug.get("fatal_error")
-        if isinstance(debug_fatal, str) and debug_fatal:
+        if _present_and_non_empty(debug_fatal):
             return "debug_fatal_error"
 
     return None

@@ -44,6 +44,16 @@ def test_tool_use_id_uses_event_index_passed_in() -> None:
     assert frames[0]["id"] == "ns-evt-42"
 
 
+def test_accepts_positional_session_id_and_event_index() -> None:
+    frames, is_terminal = ns_event_to_frames(
+        {"event": "agent_started", "payload": {"agent": "graph"}},
+        SESSION_ID,
+        13,
+    )
+    assert is_terminal is False
+    assert frames[0]["id"] == "ns-evt-13"
+
+
 def test_query_complete_success_emits_assistant_message_and_session_ended() -> None:
     frames, is_terminal = ns_event_to_frames(
         {
@@ -171,6 +181,46 @@ def test_query_complete_check_5_debug_fatal_error_signals_failure() -> None:
             "type": "error",
             "reason": "ns_query_complete_with_error",
             "detail": "debug_fatal_error",
+        },
+        {"type": "session_ended", "session_id": SESSION_ID},
+    ]
+    for frame in frames:
+        assert "AWS_BEARER_TOKEN_BEDROCK" not in str(frame)
+        assert "top-secret" not in str(frame)
+
+
+@pytest.mark.parametrize(
+    ("payload_extra", "expected_detail"),
+    [
+        ({"error_type": {"kind": "GCPRateLimit"}}, "unknown"),
+        ({"error": ["credential=blah"]}, "unknown"),
+        ({"debug": {"error": {"message": "AWS_BEARER_TOKEN_BEDROCK=secret"}}}, "debug_error"),
+        (
+            {"debug": {"fatal_error": ["AWS_BEARER_TOKEN_BEDROCK=secret"]}},
+            "debug_fatal_error",
+        ),
+    ],
+)
+def test_query_complete_non_string_failure_signals_drop_reply(
+    payload_extra: dict[str, object],
+    expected_detail: str,
+) -> None:
+    payload = {
+        "reply": "AWS_BEARER_TOKEN_BEDROCK=top-secret should not leak",
+        "bundle_id": None,
+        **payload_extra,
+    }
+    frames, is_terminal = ns_event_to_frames(
+        {"event": "query_complete", "payload": payload},
+        session_id=SESSION_ID,
+        event_index=6,
+    )
+    assert is_terminal is True
+    assert frames == [
+        {
+            "type": "error",
+            "reason": "ns_query_complete_with_error",
+            "detail": expected_detail,
         },
         {"type": "session_ended", "session_id": SESSION_ID},
     ]
