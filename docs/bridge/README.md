@@ -126,13 +126,15 @@ Bridge-side env vars added by the router:
 | `DMAC_ROUTER_ENABLED` | When truthy, enables the per-turn router. Default: unset (router off, byte-identical legacy behavior). |
 | `GCP_API_KEY` | Required when `DMAC_ROUTER_ENABLED=1`. Consumed by the BAML `GCPReasoner` client that drives the route-decision call. Also forwarded to the container when set (both routes) so in-container plugins can reach GCP. Redacted in `ContainerSpec.__repr__` / `model_dump`. |
 
-Per-exec env vars the bridge sets on `docker exec` when the router is enabled (these replace the entrypoint-derived environment, which is not invoked for per-turn exec):
+Per-exec env vars the bridge passes on `docker exec` when the router is enabled. `docker exec` does **not** run the entrypoint shim, so the bridge re-derives the env that the entrypoint would have set; the list below highlights what is new or different on a per-turn exec relative to a long-lived `docker run` of the same image. Any bridge-host env var that `_build_environment` forwards (e.g. `GCP_API_KEY`, `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`) is included automatically when set on the bridge, because the per-exec env builder calls `_build_environment` first.
 
-- Always: `API_USER`, `API_PASS`, `NEXTSEEK_BASE_URL`, `AWS_REGION`, `AWS_BEARER_TOKEN_BEDROCK`.
-- When `route="nextseek_query"`: `NEXTSEEK_MODE=gcp` (selects Gemini Flash-Lite for chat_nextseek's own classifier calls) and `NEO4J_DATABASE`.
+- Always set on every exec: `API_USER`, `API_PASS`, `NEXTSEEK_BASE_URL`, `AWS_REGION`, `AWS_BEARER_TOKEN_BEDROCK`.
+- When `route="nextseek_query"`: `NEXTSEEK_MODE=gcp` (selects Gemini Flash-Lite for chat_nextseek's own classifier calls), `NEO4J_DATABASE`, `OUTPUTS_DIR`, `CHAT_NEXTSEEK_SESSION_DB`.
 - When `route="container_cc"`: `CLAUDE_CODE_USE_BEDROCK=1` plus the model-class-specific Bedrock model ID (resolved via `build_context/router_model_class_map.json`).
 
 When the router decides a route but the BAML call fails (network error, rate limit, schema mismatch), the bridge falls back to `route=container_cc, model_class=sonnet` and logs the failure with `extra={"router_fallback": True, "exc_type": <type>}`.
+
+Per-turn router telemetry (success path) is emitted as a Python `logging` record named `router_decision` on the `dmac_assistant.router.agent` logger, with `extra={"route": <alias>, "model_class": <alias or None>, "decision_latency_ms": <float>, "reasoning_len": <int>}`. **Visibility**: the record is at INFO level; uvicorn's `--log-level error` (used by `tools/e2e/run_router_e2e.py`) silences it. To observe router telemetry in production, run the bridge with `--log-level info`, or wire a `logging.config.dictConfig` that captures `dmac_assistant.router.agent` at INFO or below. The reasoning text and user query are NEVER logged (R-03 redaction); only `reasoning_len` is loggable.
 
 For full design rationale (10 locked design decisions, 16 task specs across 6 waves), see [`../superpowers/specs/2026-05-13-llm-router-design.md`](../superpowers/specs/2026-05-13-llm-router-design.md).
 

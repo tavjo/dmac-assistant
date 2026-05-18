@@ -31,6 +31,11 @@ class _RedactedEnv(dict[str, str]):
 pytestmark = [
     pytest.mark.skipif(not docker_available(), reason="docker daemon not available"),
     pytest.mark.integration,
+    # `live` is required (not just `live_bridge`) so the conftest session
+    # guard at tests/conftest.py:158 counts this test toward the
+    # "selected-but-none-ran" red-fail check. `live_bridge` is the narrower
+    # marker for deselection via `-m "not live_bridge"`.
+    pytest.mark.live,
     pytest.mark.live_bridge,
     pytest.mark.slow,
 ]

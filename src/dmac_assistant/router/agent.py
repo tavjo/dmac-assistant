@@ -75,6 +75,11 @@ class RouterAgent:
 
         # R-03: never log reasoning text or user_query — only structural
         # facts (route alias, model class alias, latency, reasoning length).
+        #
+        # Visibility: this record is emitted at INFO level. The bridge runtime
+        # must be configured at INFO or below for `dmac_assistant.router.agent`
+        # (root logger or this module specifically). uvicorn's `--log-level
+        # error` silences this; see docs/bridge/README.md routing section.
         log.info(
             "router_decision",
             extra={
