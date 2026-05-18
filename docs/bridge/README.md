@@ -136,6 +136,21 @@ When the router decides a route but the BAML call fails (network error, rate lim
 
 Per-turn router telemetry (success path) is emitted as a Python `logging` record named `router_decision` on the `dmac_assistant.router.agent` logger, with `extra={"route": <alias>, "model_class": <alias or None>, "decision_latency_ms": <float>, "reasoning_len": <int>}`. **Visibility**: the record is at INFO level; uvicorn's `--log-level error` (used by `tools/e2e/run_router_e2e.py`) silences it. To observe router telemetry in production, run the bridge with `--log-level info`, or wire a `logging.config.dictConfig` that captures `dmac_assistant.router.agent` at INFO or below. The reasoning text and user query are NEVER logged (R-03 redaction); only `reasoning_len` is loggable.
 
+### NS-route stderr capture (diagnostic)
+
+The in-container chat_nextseek runner (`container/runner_ns.py`) performs an fd-shuffle at startup so its `print()` debug output — including `[DEBUG][PARSER] Exception or parse error: <repr>` when the parser_agent fails structured-output validation — lands on docker exec **stderr**, while the JSONL events go to stdout. The bridge's `BridgeAttachSocket.read_event_line` reads both streams; stderr frames are not relayed to the chat UI (they may contain sensitive runtime debug data), and prior to 2026-05-18 they were truncated to 80 bytes and logged at DEBUG, which uvicorn's `--log-level error` discards entirely.
+
+As of 2026-05-18 (Phase 7 residual #1 visibility):
+
+- **INFO-level log per stderr frame**, truncated to 512 bytes — captured by `--log-level info` (or any user-configured handler at INFO+).
+- **Opt-in file capture via `DMAC_BRIDGE_NS_STDERR_DIR`** — when this env var is set on the bridge process, every NS-route docker exec writes its docker-exec stderr verbatim (untruncated, binary append mode) to `<DMAC_BRIDGE_NS_STDERR_DIR>/<ns_session_id>.stderr.log`. The `ns_session_id` is the bridge-synthesized `^ns-[0-9a-f]{12}$` value emitted as the `session_id` in the `session_started` WS frame. When the env var is unset (production default), no file is created and behavior is byte-identical to the pre-2026-05-18 path.
+
+| Variable | Purpose |
+|---|---|
+| `DMAC_BRIDGE_NS_STDERR_DIR` | When set, the bridge writes per-NS-session stderr to `<dir>/<ns_session_id>.stderr.log`. Designed for E2E harness and ad-hoc post-mortems; leave unset in production. The bridge auto-creates the directory; capture failure (disk full, bad path, malformed session id) is logged at WARNING and never blocks a turn. |
+
+The CC route does not currently feed `BridgeAttachSocket.read_event_line`'s stderr branch — Claude Code prints to its own stderr but the bridge consumes that stream via the per-turn `exec_cc_turn` socket separately, and CC-route stderr capture is not implemented yet.
+
 For full design rationale (10 locked design decisions, 16 task specs across 6 waves), see [`../superpowers/specs/2026-05-13-llm-router-design.md`](../superpowers/specs/2026-05-13-llm-router-design.md).
 
 ## Mount contract

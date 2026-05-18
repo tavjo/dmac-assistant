@@ -1079,3 +1079,124 @@ def test_router_on_path_preserves_post_turn_copy_hook() -> None:
     assert "async def fire_post_turn_copy()" in router_on_src
     assert "dispatch_post_turn_copy" in router_on_src
     assert "post_turn_callback=fire_post_turn_copy" in router_on_src
+
+
+# Phase 7 residual #1 visibility (2026-05-18): NS-route stderr capture.
+
+
+def test_open_ns_stderr_capture_returns_none_when_env_var_unset(monkeypatch) -> None:
+    """Default-OFF: no env var, no file handle, no side effects."""
+    from dmac_assistant.ws import _open_ns_stderr_capture
+
+    monkeypatch.delenv("DMAC_BRIDGE_NS_STDERR_DIR", raising=False)
+    assert _open_ns_stderr_capture("ns-abcdef012345") is None
+
+
+def test_open_ns_stderr_capture_creates_dir_and_returns_appendable_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Env var set: directory auto-created, file opened in binary append mode,
+    file path uses ns_session_id basename."""
+    capture_dir = tmp_path / "ns-stderr"
+    # Deliberately do not pre-create capture_dir; the helper must mkdir it.
+    monkeypatch.setenv("DMAC_BRIDGE_NS_STDERR_DIR", str(capture_dir))
+
+    from dmac_assistant.ws import _open_ns_stderr_capture
+
+    fh = _open_ns_stderr_capture("ns-abcdef012345")
+    try:
+        assert fh is not None
+        assert fh.mode == "ab"
+        # Write + reopen: append mode must preserve prior content (per-turn
+        # files are append-only so re-execs against the same session id
+        # accumulate). With `wb` you would clobber.
+        fh.write(b"line1\n")
+        fh.flush()
+        fh.close()
+        fh2 = _open_ns_stderr_capture("ns-abcdef012345")
+        try:
+            assert fh2 is not None
+            fh2.write(b"line2\n")
+        finally:
+            fh2.close()
+        expected_path = capture_dir / "ns-abcdef012345.stderr.log"
+        assert expected_path.exists()
+        assert expected_path.read_bytes() == b"line1\nline2\n"
+    finally:
+        if not fh.closed:  # type: ignore[union-attr]
+            fh.close()  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(
+    "bad_session_id",
+    [
+        "../etc/passwd",  # path traversal
+        "ns-XYZ",  # uppercase, wrong length
+        "session-1",  # no `ns-` prefix
+        "ns-abcdef01234",  # 11 chars, not 12
+        "ns-abcdef0123456",  # 13 chars, not 12
+        "ns-g0e0e0e0e0e0",  # contains non-hex digit
+    ],
+)
+def test_open_ns_stderr_capture_rejects_malformed_session_id(
+    bad_session_id: str, tmp_path: Path, monkeypatch
+) -> None:
+    """Path-traversal defense: only ^ns-[0-9a-f]{12}$ is allowed (T3.2 spec
+    L424). A malformed id makes the helper return None and the directory
+    untouched (no file leaked)."""
+    monkeypatch.setenv("DMAC_BRIDGE_NS_STDERR_DIR", str(tmp_path))
+
+    from dmac_assistant.ws import _open_ns_stderr_capture
+
+    assert _open_ns_stderr_capture(bad_session_id) is None
+    # Directory must remain empty (no stray files written via the bad id).
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_dispatch_ns_turn_wires_sock_stderr_sink_when_capture_env_set(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """End-to-end wiring: when DMAC_BRIDGE_NS_STDERR_DIR is set, the dispatch
+    helper opens the per-session file and attaches it as sock.stderr_sink so
+    subsequent BridgeAttachSocket.read_event_line writes flow into it."""
+    from dmac_assistant.containers import BridgeAttachSocket
+    from dmac_assistant.ws import _dispatch_ns_turn
+
+    capture_dir = tmp_path / "ns-stderr"
+    monkeypatch.setenv("DMAC_BRIDGE_NS_STDERR_DIR", str(capture_dir))
+
+    ws = _StubWebSocket()
+    # Stream: one stderr frame carrying the kind of debug text we want to
+    # capture, followed by an empty stdout (no events) so dispatch finishes.
+    stderr_payload = b"[DEBUG][PARSER] Exception or parse error: StructuredOutputError(...)\n"
+    raw = _RawSocketFake(_make_stderr_then_eof(stderr_payload))
+    fake_sock = BridgeAttachSocket(raw)
+    monkeypatch.setattr("dmac_assistant.ws.exec_ns_turn", lambda *a, **kw: fake_sock)
+
+    await _dispatch_ns_turn(
+        websocket=ws,
+        container=object(),
+        query="hi",
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env(),
+        ns_session_key="user-key-1",
+    )
+
+    # Exactly one capture file should exist, named after the synthesized
+    # ns_session_id, and should contain the verbatim stderr payload.
+    capture_files = list(capture_dir.iterdir())
+    assert len(capture_files) == 1
+    assert capture_files[0].name.endswith(".stderr.log")
+    name_root = capture_files[0].name[: -len(".stderr.log")]
+    assert NS_SESSION_RE.fullmatch(name_root), (
+        f"capture file name root {name_root!r} did not match ns- format"
+    )
+    assert capture_files[0].read_bytes() == stderr_payload
+
+
+def _make_stderr_then_eof(payload: bytes) -> bytes:
+    """Helper: one stderr frame followed by socket EOF (no stdout)."""
+    header = bytes([2, 0, 0, 0]) + struct.pack(">I", len(payload))
+    return header + payload

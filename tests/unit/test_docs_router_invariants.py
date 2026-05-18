@@ -115,6 +115,24 @@ def test_bridge_readme_has_routing_section(doc_sources: dict[Path, str]) -> None
     )
 
 
+def test_bridge_readme_documents_ns_stderr_capture(
+    doc_sources: dict[Path, str],
+) -> None:
+    """docs/bridge/README.md must document the NS-route stderr capture
+    contract: the opt-in env var name + the file-name format. Both are
+    load-bearing (Phase 7 residual #1 visibility, 2026-05-18) — operators
+    need to know how to turn it on and where to look for the output."""
+    src = doc_sources[BRIDGE_README]
+    assert "DMAC_BRIDGE_NS_STDERR_DIR" in src, (
+        "docs/bridge/README.md must name the `DMAC_BRIDGE_NS_STDERR_DIR` env "
+        "var (the opt-in flag for NS-route stderr capture)."
+    )
+    assert "ns_session_id" in src and ".stderr.log" in src, (
+        "docs/bridge/README.md must describe the per-session file naming "
+        "convention `<ns_session_id>.stderr.log`."
+    )
+
+
 def test_ws_protocol_has_route_decided(doc_sources: dict[Path, str]) -> None:
     """docs/bridge/ws-protocol.md must document route_decided invariants."""
     src = doc_sources[WS_PROTOCOL]

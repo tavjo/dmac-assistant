@@ -30,7 +30,7 @@ import re as _re
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from fastapi import APIRouter, Depends, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
@@ -778,10 +778,55 @@ async def _relay_client_to_container(
 # ---------------------------------------------- T3.2: per-turn router dispatch
 
 
+_NS_SESSION_ID_RE = _re.compile(r"^ns-[0-9a-f]{12}$")
+
+
 def _router_enabled() -> bool:
     """True when DMAC_ROUTER_ENABLED is truthy for this WS connection."""
     raw = os.environ.get("DMAC_ROUTER_ENABLED", "")
     return raw.strip().lower() in _ROUTER_TRUTHY
+
+
+def _open_ns_stderr_capture(ns_session_id: str) -> BinaryIO | None:
+    """Open the per-session NS-route stderr capture file (opt-in).
+
+    Phase 7 residual #1 visibility (2026-05-18): the in-container chat_nextseek
+    runner emits parser_agent exceptions to docker exec stderr (post-fd-shuffle
+    in container/runner_ns.py). The bridge consumes those frames via
+    ``BridgeAttachSocket.read_event_line``; without this capture they were
+    truncated to 80 bytes and DEBUG-logged only, which uvicorn at
+    ``--log-level error`` silences entirely.
+
+    When ``DMAC_BRIDGE_NS_STDERR_DIR`` is set, the bridge writes every stderr
+    frame verbatim (append-mode binary) to
+    ``<DMAC_BRIDGE_NS_STDERR_DIR>/<ns_session_id>.stderr.log`` so the
+    underlying parser exception text is durable on disk and greppable
+    post-mortem. Defaults to None (production-safe; no behavior change).
+
+    Returns None when the env var is unset, the directory can't be created,
+    or ``ns_session_id`` fails the canonical format guard (path-traversal
+    defense; T3.2 spec L424 NS session id format is ``^ns-[0-9a-f]{12}$``).
+    Diagnostic capture must never block a turn.
+    """
+    raw = os.environ.get("DMAC_BRIDGE_NS_STDERR_DIR", "").strip()
+    if not raw:
+        return None
+    if not _NS_SESSION_ID_RE.fullmatch(ns_session_id):
+        log.warning(
+            "ns stderr capture refused: ns_session_id failed format guard"
+        )
+        return None
+    try:
+        dir_path = Path(raw).expanduser()
+        dir_path.mkdir(parents=True, exist_ok=True)
+        return (dir_path / f"{ns_session_id}.stderr.log").open("ab")
+    except OSError as exc:
+        log.warning(
+            "ns stderr capture disabled (cannot open %r): %s",
+            raw,
+            type(exc).__name__,
+        )
+        return None
 
 
 def _get_router_agent() -> RouterAgent:  # pragma: no cover
@@ -1119,6 +1164,7 @@ async def _dispatch_ns_turn(
     ns_session_id = f"ns-{uuid.uuid4().hex[:12]}"
     terminal_emitted = False
     sock: Any = None
+    stderr_capture_fh = _open_ns_stderr_capture(ns_session_id)
     try:
         try:
             sock = await asyncio.to_thread(
@@ -1140,6 +1186,8 @@ async def _dispatch_ns_turn(
                 {"type": "session_ended", "session_id": ns_session_id},
             )
             return
+        if stderr_capture_fh is not None:
+            sock.stderr_sink = stderr_capture_fh
 
         await _send_json_safe(
             websocket, {"type": "session_started", "session_id": ns_session_id}
@@ -1198,3 +1246,6 @@ async def _dispatch_ns_turn(
         if sock is not None:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(sock.close)
+        if stderr_capture_fh is not None:
+            with contextlib.suppress(Exception):
+                stderr_capture_fh.close()

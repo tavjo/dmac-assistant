@@ -19,7 +19,7 @@ import json
 import logging
 import re
 import struct
-from typing import Any, Mapping
+from typing import Any, BinaryIO, Mapping
 
 import docker
 from docker.errors import APIError, NotFound
@@ -129,10 +129,18 @@ class BridgeAttachSocket:
         raw_socket: Any,
         *,
         stdout_stream: Any | None = None,
+        stderr_sink: BinaryIO | None = None,
     ) -> None:
         self._raw = raw_socket
         self._stdout_stream = stdout_stream
         self._line_buffer: bytearray = bytearray()
+        # Phase 7 residual #1 visibility (2026-05-18): when set, every stderr
+        # frame's payload is written verbatim (untruncated) to this sink so the
+        # in-container runner's debug output — including chat_nextseek's
+        # `[DEBUG][PARSER] Exception or parse error: <repr>` — survives even
+        # when uvicorn is at --log-level error. Sink is opt-in; default None
+        # preserves prior behavior (DEBUG-log only).
+        self.stderr_sink: BinaryIO | None = stderr_sink
 
     # ------------------------------------------------------------------ read
     def read_frame(self) -> tuple[str, bytes] | None:
@@ -242,9 +250,25 @@ class BridgeAttachSocket:
 
             stream_name, payload = frame
             if stream_name == "stderr":
-                log.debug(
-                    "bridge stderr frame (truncated): %r",
-                    bytes(payload[:80]),
+                # Phase 7 residual #1 visibility (2026-05-18):
+                # 1) Untruncated copy to optional file sink for post-mortem.
+                # 2) INFO-level log (was DEBUG; --log-level error silenced it).
+                # 3) Truncate log to 512 bytes; the file sink keeps the full
+                #    payload so operators can grep for the real exception text.
+                if self.stderr_sink is not None:
+                    try:
+                        self.stderr_sink.write(bytes(payload))
+                        self.stderr_sink.flush()
+                    except (OSError, ValueError):
+                        # ValueError covers writes to a closed file; OSError
+                        # covers disk-full / permission. Diagnostic-only sink
+                        # must never break the bridge — drop and continue.
+                        log.warning(
+                            "bridge stderr sink write failed; dropping payload"
+                        )
+                log.info(
+                    "bridge stderr frame (truncated to 512B): %r",
+                    bytes(payload[:512]),
                 )
                 continue
 
