@@ -47,6 +47,7 @@ testpaths = ["tests"]
 norecursedirs = ["tests/image", ".git", "__pycache__", "*.egg-info", "tools"]
 pythonpath = ["src", "."]
 markers = [
+    "integration: marks integration tests that exercise the bridge against a real Docker daemon and built image",
     "live: marks live end-to-end tests requiring ~/.env (deselect with '-m \"not live\"')",
     "live_bridge: marks live FastAPI bridge end-to-end tests requiring Docker + ~/.env (deselect with '-m \"not live_bridge\"')",
     "live_docker: marks opt-in Docker-backed tests that do not require live service credentials",
