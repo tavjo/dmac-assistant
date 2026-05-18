@@ -136,6 +136,15 @@ When the router decides a route but the BAML call fails (network error, rate lim
 
 Per-turn router telemetry (success path) is emitted as a Python `logging` record named `router_decision` on the `dmac_assistant.router.agent` logger, with `extra={"route": <alias>, "model_class": <alias or None>, "decision_latency_ms": <float>, "reasoning_len": <int>}`. **Visibility**: the record is at INFO level; uvicorn's `--log-level error` (used by `tools/e2e/run_router_e2e.py`) silences it. To observe router telemetry in production, run the bridge with `--log-level info`, or wire a `logging.config.dictConfig` that captures `dmac_assistant.router.agent` at INFO or below. The reasoning text and user query are NEVER logged (R-03 redaction); only `reasoning_len` is loggable.
 
+### NS and CC session state independence
+
+When `DMAC_ROUTER_ENABLED=1`, the bridge maintains two independent session scopes inside the same long-lived container:
+
+- **Container-CC turns** advance a Claude session whose id appears in the `session_started` / `session_ended` frames. A subsequent CC turn in the same WebSocket connection resumes via `--resume <session_id>` so the agent has conversation continuity within a CC-only sequence.
+- **NextSEEK-query turns** run inside the same container but do NOT share session state with Container-CC. `chat_nextseek` carries its own internal session, surfaced in NS-side `session_started` frames as a bridge-synthesized `ns-*` id; this id is intentionally not threaded into the CC `--resume` path. From the bridge's perspective, NS turns are stateless with respect to CC continuity.
+
+Practical implication: on a mixed-route WebSocket connection (e.g. NS turn followed by CC turn), the CC turn launches without `--resume` unless a *prior* CC turn had already produced a session id. This is by design — NS and CC are independent runtimes that happen to share one container — but operators inspecting cross-turn state should be aware of it. Conversation continuity is preserved within each route, not across routes.
+
 ### NS-route stderr capture (diagnostic)
 
 The in-container chat_nextseek runner (`container/runner_ns.py`) performs an fd-shuffle at startup so its `print()` debug output — including `[DEBUG][PARSER] Exception or parse error: <repr>` when the parser_agent fails structured-output validation — lands on docker exec **stderr**, while the JSONL events go to stdout. The bridge's `BridgeAttachSocket.read_event_line` reads both streams; stderr frames are not relayed to the chat UI (they may contain sensitive runtime debug data), and prior to 2026-05-18 they were truncated to 80 bytes and logged at DEBUG, which uvicorn's `--log-level error` discards entirely.
@@ -175,3 +184,4 @@ This is still a POC bridge. It does not add generated API docs, token refresh, c
 - `resume_failed`: the bridge requested the newest known session id, but Claude initialized a different one. Clients should continue using the `session_id` from the following `session_started` frame.
 - Missing Docker image: the bridge expects the Claude container image to exist locally as `dmac-assistant:poc`. Startup failures surface as `{"type":"error","reason":"container_start_failed"}` and the socket closes with `1011`.
 - No prior session to resume: if there is no matching `.jsonl` file under the encoded `/home/user` session directory, the bridge starts a new Claude session instead.
+- `router_decision` log records not appearing: per the [Routing and model selection](#routing-and-model-selection) section, this record is emitted at INFO level on the `dmac_assistant.router.agent` logger. uvicorn's default `--log-level error` (and the E2E harness at `tools/e2e/run_router_e2e.py`) silences it. Restart the bridge with `--log-level info`, or configure a Python logging handler (`logging.config.dictConfig`) that captures `dmac_assistant.router.agent` at INFO or below. Note: when the router falls back, a separate `router_fallback` record is emitted at WARNING level and is always visible.
