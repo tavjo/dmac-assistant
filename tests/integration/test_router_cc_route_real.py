@@ -212,6 +212,27 @@ async def test_cc_route_real_turn_against_image(
         f"frame_types={frame_types!r}"
     )
 
+    # iter-02 Phase 7 residual #1 — tightened lifecycle assertion. The loose
+    # "any terminal frame" check above accepts a no-op error frame without
+    # proving the real CC turn actually traversed the bridge<->container<->
+    # Bedrock<->stream-json pipeline. On the success path (session_ended),
+    # session_started must precede session_ended; that pair-with-ordering is
+    # what proves Claude actually started a session, not just that something
+    # terminal arrived. Error-only outcomes (Bedrock throttle, network blip)
+    # are still acceptable — the bridge correctly surfaces them — but the
+    # success path is now pinned.
+    if "session_ended" in frame_types:
+        assert "session_started" in frame_types, (
+            f"happy-path CC turn reached session_ended without session_started; "
+            f"frame_types={frame_types!r}"
+        )
+        ss_idx = frame_types.index("session_started")
+        se_idx = frame_types.index("session_ended")
+        assert ss_idx < se_idx, (
+            f"session_started must precede session_ended on the happy path; "
+            f"frame_types={frame_types!r}"
+        )
+
     # Container cleanup: leaving idle containers running across tests would
     # leak resources. The post-turn cleanup hook is part of the locked design.
     await asyncio.sleep(2.0)

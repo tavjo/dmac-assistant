@@ -288,3 +288,74 @@ def test_gcp_api_key_docs_do_not_claim_not_forwarded(
                 f"`/ultraplan amend` to change the forwarding behavior. "
                 f"Matched: {match.group(0)!r}"
             )
+
+
+def test_ns_cc_session_independence_documented(doc_sources: dict[Path, str]) -> None:
+    """docs/bridge/README.md must document NS-vs-CC session-state independence.
+
+    Pins iter-02 Phase 7 residual debt item 2: `_dispatch_ns_turn` in
+    `src/dmac_assistant/ws.py` does not propagate any session-id into the
+    connection-scoped state that `_dispatch_cc_turn` reads for `--resume`.
+    An NS turn followed by a CC turn launches CC without `--resume` unless a
+    *prior* CC turn already produced a session id. This is by design (NS and
+    CC are independent runtimes that happen to share one container), but the
+    behavior was undocumented before this test was added.
+    """
+    src = doc_sources[BRIDGE_README]
+    assert re.search(
+        r"^###\s+NS and CC session state independence\b",
+        src,
+        re.MULTILINE,
+    ), (
+        "docs/bridge/README.md is missing the `### NS and CC session state "
+        "independence` subsection. iter-02 Phase 7 residual #2 requires this "
+        "subsection to document that NS turns do not propagate session-id "
+        "into CC --resume state."
+    )
+    # The load-bearing claim — NS turns do not share session state with CC.
+    # Accept either "NS" or "NextSEEK-query" shorthand for the NS route name.
+    assert re.search(
+        r"(?:NS|NextSEEK[-\s]query)\s+turns?[^\n.]{0,200}do\s+NOT\s+share\s+session\s+state",
+        src,
+        re.IGNORECASE,
+    ), (
+        "docs/bridge/README.md must explicitly state that NS turns (a.k.a. "
+        "NextSEEK-query turns) do NOT share session state with Container-CC. "
+        "This is the invariant a future refactor could regress; the docs "
+        "must pin it."
+    )
+    # The bridge-synthesized NS session id format.
+    assert "`ns-*`" in src, (
+        "docs/bridge/README.md must reference the `ns-*` bridge-synthesized "
+        "NS session id naming convention so operators can recognise NS-side "
+        "session_started frames in logs."
+    )
+
+
+def test_router_decision_visibility_in_troubleshooting(doc_sources: dict[Path, str]) -> None:
+    """docs/bridge/README.md Troubleshooting must include a router_decision visibility bullet.
+
+    Pins iter-02 Phase 7 residual debt item 3: the `router_decision` log
+    record is at INFO level on `dmac_assistant.router.agent`, and uvicorn's
+    default `--log-level error` (used by the E2E harness) silences it. The
+    Routing section already documents this; the Troubleshooting section
+    surfaces it where operators look when telemetry seems absent.
+    """
+    src = doc_sources[BRIDGE_README]
+    parts = src.split("## Troubleshooting", 1)
+    assert len(parts) == 2, "docs/bridge/README.md is missing the `## Troubleshooting` section."
+    troubleshooting = parts[1]
+    assert re.search(
+        r"router_decision[^\n.]{0,200}not\s+appearing",
+        troubleshooting,
+        re.IGNORECASE,
+    ), (
+        "docs/bridge/README.md Troubleshooting must contain a "
+        "`router_decision`-not-appearing remediation bullet. Iter-02 Phase 7 "
+        "residual #3 flagged that operators looking for routing telemetry "
+        "have no Troubleshooting-section pointer to the log-level fix."
+    )
+    assert "--log-level info" in troubleshooting, (
+        "docs/bridge/README.md Troubleshooting bullet for router_decision "
+        "visibility must reference the `--log-level info` remediation."
+    )

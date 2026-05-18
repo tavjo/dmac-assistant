@@ -93,7 +93,20 @@ def _ns_password() -> str:
     return os.environ["NEXTSEEK_PASSWORD"]
 
 
-SYNTHETIC_PROJECT = "proj-a"
+_DEFAULT_E2E_PROJECT = "proj-a"
+
+
+def _synthetic_project() -> str:
+    """Project label written into the synthetic user record + dropbox state.
+
+    Override via ``DMAC_E2E_PROJECT`` env var when ``proj-a`` is not in the
+    bridge project allowlist (multi-user deployments). Empty string is
+    treated as unset so operator typos like ``DMAC_E2E_PROJECT=`` fall back
+    to the default rather than silently propagating into the user record
+    and the dropbox mkdir.
+    """
+    value = os.environ.get("DMAC_E2E_PROJECT", "")
+    return value or _DEFAULT_E2E_PROJECT
 
 
 @dataclass
@@ -195,7 +208,7 @@ def _build_child_env(
         {
             _ns_user_id(): {
                 "password": _ns_password(),
-                "projects": [SYNTHETIC_PROJECT],
+                "projects": [_synthetic_project()],
             }
         }
     )
@@ -337,7 +350,7 @@ async def _async_main(*, corpus_path: pathlib.Path, run_dir: pathlib.Path) -> in
     scratch_root.mkdir(parents=True, exist_ok=True)
     output_root.mkdir(parents=True, exist_ok=True)
     dropbox_root.mkdir(parents=True, exist_ok=True)
-    (dropbox_root / SYNTHETIC_PROJECT).mkdir(parents=True, exist_ok=True)
+    (dropbox_root / _synthetic_project()).mkdir(parents=True, exist_ok=True)
 
     # Use the real chat_nextseek agent-model catalog so the NS-route parser runs
     # against the same model (gemini-3.1-pro-preview + thinking_budget=16000) as
