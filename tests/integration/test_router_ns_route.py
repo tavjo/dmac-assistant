@@ -142,7 +142,7 @@ async def test_ns_route_real_container_empty_query(
             "/ws/chat",
             headers={"Authorization": f"Bearer {token}"},
         ) as ws:
-            ws.send_json({"type": "user_message", "content": "   "})
+            ws.send_json({"type": "user_message", "content": ""})
             for _ in range(30):
                 try:
                     frame = ws.receive_json()
