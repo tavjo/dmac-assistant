@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is loosely b
 
 ## [Unreleased]
 
+### Fixed — 2026-05-18 — LLM router iter-02 Phase 7 residual debt
+
+iter-02 independent Phase 7 reviewer flagged 5 low-severity residual items against branch `ultraplan/llm-router-2026-05-14` at `c1f4f5b`. Item 5 (unpushed commits) was resolved by the `main`-merge push. The remaining four were addressed on `fix/llm-router-residual-debt` and merged to `main` as `dd34d6e` (fix commit `0dff3df`). Reviewer report: [`.codex/reports/llm-router-independent-final-evaluation-2026-05-18-iter02.md`](.codex/reports/llm-router-independent-final-evaluation-2026-05-18-iter02.md).
+
+Changes shipped:
+
+- **CC route happy-path lifecycle now pinned**: `tests/integration/test_router_cc_route_real.py` previously accepted any terminal frame (`session_ended` OR `error`) as sufficient evidence that the real CC turn completed. Tightened to require `session_started` precede `session_ended` on the happy path. Error-only outcomes are still accepted (transient Bedrock failures), but the success path now proves the bridge<->container<->Bedrock<->stream-json pipeline actually traversed the full session lifecycle. Verified live against `dmac-assistant:poc` + Bedrock in 13.3s.
+- **NS / CC session state independence documented**: `docs/bridge/README.md` gains a new `### NS and CC session state independence` subsection under `## Routing and model selection`. NextSEEK-query turns and Container-CC turns share one container but have independent session scopes; an NS turn followed by a CC turn does NOT thread an NS session id into CC's `--resume`. By-design, but previously undocumented. Pinned by `test_ns_cc_session_independence_documented` in `tests/unit/test_docs_router_invariants.py`.
+- **`router_decision` log-record visibility surfaced in Troubleshooting**: `docs/bridge/README.md` Troubleshooting section gains a bullet for operators searching for routing telemetry. The `router_decision` record is at INFO level on `dmac_assistant.router.agent`; uvicorn's default `--log-level error` (and the E2E harness) silences it. The bullet points to the `--log-level info` remediation. Pinned by `test_router_decision_visibility_in_troubleshooting`.
+
+### Added — 2026-05-18 — `DMAC_E2E_PROJECT` env override
+
+`tools/e2e/run_router_e2e.py` no longer hardcodes the synthetic-user project label `"proj-a"`. The new `_synthetic_project()` helper reads `DMAC_E2E_PROJECT` from the environment with `"proj-a"` as the default, so multi-user deployments where `proj-a` is not in the bridge project allowlist can override without editing the script. Empty-string env values fall back to the default (operator-typo defense). Pinned by 3 unit tests in `tests/unit/test_e2e_project_override.py`. Part of the iter-02 residual-debt closeout (see Fixed entry above).
+
 ### Added — 2026-05-16 — LLM router subsystem
 
 Per-turn LLM router inserted into the WebSocket bridge. For each user message, the router picks one of two execution routes: `nextseek_query` (deterministic `chat_nextseek` pipeline running inside the long-lived `dmac-assistant:poc` container via `docker exec`) or `container_cc` (in-container Claude Code with a router-chosen model class — `"opus"`, `"sonnet"`, or `"haiku"`). The router is flag-gated by `DMAC_ROUTER_ENABLED`; with the flag unset or falsy, bridge behavior is byte-identical to the pre-router build. Plan: `llm-router-2026-05-14` (16 tasks, Wave 0–6, Phase 4 round-4 reviewer UA across all specs).
