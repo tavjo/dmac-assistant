@@ -37,7 +37,7 @@ def get_checks(checks: typing.Dict[CheckName, Check]) -> typing.List[Check]:
 def all_succeeded(checks: typing.Dict[CheckName, Check]) -> bool:
     return all(check.status == "succeeded" for check in get_checks(checks))
 # #########################################################################
-# Generated enums (2)
+# Generated enums (3)
 # #########################################################################
 
 class ModelClass(str, Enum):
@@ -49,8 +49,13 @@ class Route(str, Enum):
     NextseekQuery = "NextseekQuery"
     ContainerCC = "ContainerCC"
 
+class RouterJudgeVerdict(str, Enum):
+    Pass = "Pass"
+    Fail = "Fail"
+    Inconclusive = "Inconclusive"
+
 # #########################################################################
-# Generated classes (4)
+# Generated classes (6)
 # #########################################################################
 
 class RouteCapability(BaseModel):
@@ -69,6 +74,18 @@ class RouterDecision(BaseModel):
 class RouterInput(BaseModel):
     user_query: str
     routes: typing.List["RouteCapability"]
+
+class RouterJudgeInput(BaseModel):
+    query_id: str
+    query_text: str
+    expected_route: str
+    actual_route: str
+    reply_text: str
+    frames_summary: str
+
+class RouterJudgeOutput(BaseModel):
+    verdict: RouterJudgeVerdict
+    reasoning: str
 
 class TaskFamily(BaseModel):
     name: str

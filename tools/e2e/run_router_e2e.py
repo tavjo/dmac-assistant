@@ -21,6 +21,26 @@ from websockets.asyncio.client import connect as ws_connect
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+
+# When invoked as a direct script (`python tools/e2e/run_router_e2e.py`), the
+# repo root is NOT on sys.path, so `from tools.e2e.router_judge import ...`
+# fails with ModuleNotFoundError — and the helper also imports
+# `dmac_assistant.router.baml_client`, which lives under `src/`. Prepend both
+# so direct-script execution works. The pyproject.toml::pythonpath setting
+# only helps pytest. Must run BEFORE the `tools.e2e.router_judge` import.
+for _path in (REPO_ROOT, REPO_ROOT / "src"):
+    _path_str = str(_path)
+    if _path_str not in sys.path:
+        sys.path.insert(0, _path_str)
+
+from tools.e2e.router_judge import (  # noqa: E402 — sys.path must be set first
+    JudgeResult,
+    VERDICT_INCONCLUSIVE,
+    VERDICT_PASS,
+    extract_reply_text,
+    judge_reply,
+    summarise_frames,
+)
 DEFAULT_CORPUS = REPO_ROOT / "evidence" / "full-corpus-2026-05-07" / "corpus.json"
 OUTPUT_BASE = REPO_ROOT / "evidence" / "router-e2e"
 
@@ -76,6 +96,14 @@ class QueryRecord:
     completed_at: str = ""
     session_ended_reached: bool = False
     error: str | None = None
+    # Phase 7 Residual #5 — semantic judge fields. Default `INCONCLUSIVE` so
+    # records that never reach the judge (timeout, websocket crash) do not
+    # accidentally satisfy the exit-code gate. `reply_text` is the full agent
+    # reply persisted only to the per-query record file (NOT stdout/stderr).
+    reply_text: str = ""
+    semantic_verdict: str = VERDICT_INCONCLUSIVE
+    semantic_reasoning: str = ""
+    judge_latency_seconds: float = 0.0
 
 
 @dataclass
@@ -340,15 +368,39 @@ async def _async_main(*, corpus_path: pathlib.Path, run_dir: pathlib.Path) -> in
                 query_text=query_text,
                 expected_route=expected,
             )
+            # Phase 7 Residual #5 — semantic judging. Reply text is extracted
+            # from the captured frames (last assistant_message before
+            # session_ended; falls back to a stub describing any terminal
+            # error frame). Judge is invoked unconditionally so even
+            # route-mismatched or errored queries get a verdict on disk;
+            # the exit-code gate later requires PASS, so this is safe.
+            record.reply_text = extract_reply_text(record.frames)
+            frames_summary = summarise_frames(record.frames)
+            judge_result: JudgeResult = await judge_reply(
+                query_id=record.query_id,
+                query_text=record.query_text,
+                expected_route=record.expected_route,
+                actual_route=record.actual_route,
+                reply_text=record.reply_text,
+                frames_summary=frames_summary,
+            )
+            record.semantic_verdict = judge_result.verdict
+            record.semantic_reasoning = judge_result.reasoning
+            record.judge_latency_seconds = judge_result.latency_seconds
             records.append(record)
             (run_dir / f"{query_id}.record.json").write_text(
                 json.dumps(asdict(record), indent=2),
                 encoding="utf-8",
             )
+            # Logging contract: NEVER write the raw reply text to stderr
+            # where it could be captured by CI. Only structural facts.
             print(
                 f"[run_router_e2e]   actual_route={record.actual_route!r} "
                 f"match={record.route_match} latency={record.latency_seconds}s "
-                f"error={record.error!r}",
+                f"error={record.error!r} "
+                f"reply_len={len(record.reply_text)} "
+                f"semantic_verdict={record.semantic_verdict!r} "
+                f"judge_latency={record.judge_latency_seconds}s",
                 file=sys.stderr,
             )
     finally:
@@ -365,9 +417,23 @@ async def _async_main(*, corpus_path: pathlib.Path, run_dir: pathlib.Path) -> in
             and record.error is None
         ),
         "errored": sum(1 for record in records if record.error is not None),
+        # Phase 7 Residual #5 — semantic-verdict tallies. The exit-code gate
+        # requires BOTH route_match AND semantic_verdict == "PASS" for every
+        # query, so these counts let operators triage failures quickly.
+        "semantically_passed": sum(
+            1 for record in records if record.semantic_verdict == VERDICT_PASS
+        ),
+        "semantically_failed": sum(
+            1 for record in records if record.semantic_verdict == "FAIL"
+        ),
+        "semantically_inconclusive": sum(
+            1
+            for record in records
+            if record.semantic_verdict == VERDICT_INCONCLUSIVE
+        ),
     }
     manifest = Manifest(
-        schema_version=1,
+        schema_version=2,
         run_id=run_id,
         started_at=started_at,
         completed_at=_utc_now(),
@@ -386,6 +452,14 @@ async def _async_main(*, corpus_path: pathlib.Path, run_dir: pathlib.Path) -> in
                 "latency_seconds": record.latency_seconds,
                 "session_ended_reached": record.session_ended_reached,
                 "error": record.error,
+                # Phase 7 Residual #5 — per-query semantic verdict surface.
+                # `reply_text` is NOT included in the manifest — only in the
+                # per-query record file — to keep manifest.json compact and
+                # auditable. Use `frame_path` to fetch the full reply.
+                "reply_length": len(record.reply_text),
+                "semantic_verdict": record.semantic_verdict,
+                "semantic_reasoning": record.semantic_reasoning,
+                "judge_latency_seconds": record.judge_latency_seconds,
             }
             for record in records
         ],
@@ -397,10 +471,22 @@ async def _async_main(*, corpus_path: pathlib.Path, run_dir: pathlib.Path) -> in
     print(
         f"[run_router_e2e] summary: total={summary['total']} "
         f"matched={summary['matched']} mismatched={summary['mismatched']} "
-        f"errored={summary['errored']}",
+        f"errored={summary['errored']} "
+        f"semantically_passed={summary['semantically_passed']} "
+        f"semantically_failed={summary['semantically_failed']} "
+        f"semantically_inconclusive={summary['semantically_inconclusive']}",
         file=sys.stderr,
     )
-    return 0 if summary["matched"] == summary["total"] else 1
+    # Phase 7 Residual #5 — exit-code gate. Previously: 0 iff every query's
+    # actual_route matched its expected_route. Now: 0 iff every query also
+    # has semantic_verdict == "PASS". A FAIL or INCONCLUSIVE verdict (or a
+    # route mismatch, or a transport error) all flip the run to exit 1.
+    fully_passed = sum(
+        1
+        for record in records
+        if record.route_match and record.semantic_verdict == VERDICT_PASS
+    )
+    return 0 if fully_passed == summary["total"] else 1
 
 
 def main(argv: list[str] | None = None) -> int:

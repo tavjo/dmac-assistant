@@ -20,13 +20,13 @@ from .globals import DO_NOT_USE_DIRECTLY_UNLESS_YOU_KNOW_WHAT_YOURE_DOING_RUNTIM
 class TypeBuilder(type_builder.TypeBuilder):
     def __init__(self):
         super().__init__(classes=set(
-          ["RouteCapability","RouterDecision","RouterInput","TaskFamily",]
+          ["RouteCapability","RouterDecision","RouterInput","RouterJudgeInput","RouterJudgeOutput","TaskFamily",]
         ), enums=set(
-          ["ModelClass","Route",]
+          ["ModelClass","Route","RouterJudgeVerdict",]
         ), runtime=DO_NOT_USE_DIRECTLY_UNLESS_YOU_KNOW_WHAT_YOURE_DOING_RUNTIME)
 
     # #########################################################################
-    # Generated enums 2
+    # Generated enums 3
     # #########################################################################
 
     @property
@@ -37,9 +37,13 @@ class TypeBuilder(type_builder.TypeBuilder):
     def Route(self) -> "RouteViewer":
         return RouteViewer(self)
 
+    @property
+    def RouterJudgeVerdict(self) -> "RouterJudgeVerdictViewer":
+        return RouterJudgeVerdictViewer(self)
+
 
     # #########################################################################
-    # Generated classes 4
+    # Generated classes 6
     # #########################################################################
 
     @property
@@ -55,13 +59,21 @@ class TypeBuilder(type_builder.TypeBuilder):
         return RouterInputViewer(self)
 
     @property
+    def RouterJudgeInput(self) -> "RouterJudgeInputViewer":
+        return RouterJudgeInputViewer(self)
+
+    @property
+    def RouterJudgeOutput(self) -> "RouterJudgeOutputViewer":
+        return RouterJudgeOutputViewer(self)
+
+    @property
     def TaskFamily(self) -> "TaskFamilyViewer":
         return TaskFamilyViewer(self)
 
 
 
 # #########################################################################
-# Generated enums 2
+# Generated enums 3
 # #########################################################################
 
 class ModelClassAst:
@@ -152,9 +164,55 @@ class RouteValues:
     
 
 
+class RouterJudgeVerdictAst:
+    def __init__(self, tb: type_builder.TypeBuilder):
+        _tb = tb._tb # type: ignore (we know how to use this private attribute)
+        self._bldr = _tb.enum("RouterJudgeVerdict")
+        self._values: typing.Set[str] = set([  "Pass",  "Fail",  "Inconclusive",  ])
+        self._vals = RouterJudgeVerdictValues(self._bldr, self._values)
+
+    def type(self) -> baml_py.FieldType:
+        return self._bldr.field()
+
+    @property
+    def values(self) -> "RouterJudgeVerdictValues":
+        return self._vals
+
+
+class RouterJudgeVerdictViewer(RouterJudgeVerdictAst):
+    def __init__(self, tb: type_builder.TypeBuilder):
+        super().__init__(tb)
+
+    
+    def list_values(self) -> typing.List[typing.Tuple[str, type_builder.EnumValueViewer]]:
+        return [(name, type_builder.EnumValueViewer(self._bldr.value(name))) for name in self._values]
+    
+
+class RouterJudgeVerdictValues:
+    def __init__(self, enum_bldr: baml_py.EnumBuilder, values: typing.Set[str]):
+        self.__bldr = enum_bldr
+        self.__values = values # type: ignore (we know how to use this private attribute) # noqa: F821
+
+    
+    
+    @property
+    def Pass(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("Pass"))
+    
+    @property
+    def Fail(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("Fail"))
+    
+    @property
+    def Inconclusive(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("Inconclusive"))
+    
+    
+
+
 
 # #########################################################################
-# Generated classes 4
+# Generated classes 6
 # #########################################################################
 
 class RouteCapabilityAst:
@@ -302,6 +360,108 @@ class RouterInputProperties:
     @property
     def routes(self) -> type_builder.ClassPropertyViewer:
         return type_builder.ClassPropertyViewer(self.__bldr.property("routes"))
+    
+    
+
+
+class RouterJudgeInputAst:
+    def __init__(self, tb: type_builder.TypeBuilder):
+        _tb = tb._tb # type: ignore (we know how to use this private attribute)
+        self._bldr = _tb.class_("RouterJudgeInput")
+        self._properties: typing.Set[str] = set([  "query_id",  "query_text",  "expected_route",  "actual_route",  "reply_text",  "frames_summary",  ])
+        self._props = RouterJudgeInputProperties(self._bldr, self._properties)
+
+    def type(self) -> baml_py.FieldType:
+        return self._bldr.field()
+
+    @property
+    def props(self) -> "RouterJudgeInputProperties":
+        return self._props
+
+
+class RouterJudgeInputViewer(RouterJudgeInputAst):
+    def __init__(self, tb: type_builder.TypeBuilder):
+        super().__init__(tb)
+
+    
+    def list_properties(self) -> typing.List[typing.Tuple[str, type_builder.ClassPropertyViewer]]:
+        return [(name, type_builder.ClassPropertyViewer(self._bldr.property(name))) for name in self._properties]
+    
+
+
+class RouterJudgeInputProperties:
+    def __init__(self, bldr: baml_py.ClassBuilder, properties: typing.Set[str]):
+        self.__bldr = bldr
+        self.__properties = properties # type: ignore (we know how to use this private attribute) # noqa: F821
+
+    
+    
+    @property
+    def query_id(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("query_id"))
+    
+    @property
+    def query_text(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("query_text"))
+    
+    @property
+    def expected_route(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("expected_route"))
+    
+    @property
+    def actual_route(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("actual_route"))
+    
+    @property
+    def reply_text(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("reply_text"))
+    
+    @property
+    def frames_summary(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("frames_summary"))
+    
+    
+
+
+class RouterJudgeOutputAst:
+    def __init__(self, tb: type_builder.TypeBuilder):
+        _tb = tb._tb # type: ignore (we know how to use this private attribute)
+        self._bldr = _tb.class_("RouterJudgeOutput")
+        self._properties: typing.Set[str] = set([  "verdict",  "reasoning",  ])
+        self._props = RouterJudgeOutputProperties(self._bldr, self._properties)
+
+    def type(self) -> baml_py.FieldType:
+        return self._bldr.field()
+
+    @property
+    def props(self) -> "RouterJudgeOutputProperties":
+        return self._props
+
+
+class RouterJudgeOutputViewer(RouterJudgeOutputAst):
+    def __init__(self, tb: type_builder.TypeBuilder):
+        super().__init__(tb)
+
+    
+    def list_properties(self) -> typing.List[typing.Tuple[str, type_builder.ClassPropertyViewer]]:
+        return [(name, type_builder.ClassPropertyViewer(self._bldr.property(name))) for name in self._properties]
+    
+
+
+class RouterJudgeOutputProperties:
+    def __init__(self, bldr: baml_py.ClassBuilder, properties: typing.Set[str]):
+        self.__bldr = bldr
+        self.__properties = properties # type: ignore (we know how to use this private attribute) # noqa: F821
+
+    
+    
+    @property
+    def verdict(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("verdict"))
+    
+    @property
+    def reasoning(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("reasoning"))
     
     
 

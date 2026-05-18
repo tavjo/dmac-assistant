@@ -116,7 +116,11 @@ def test_run_router_e2e_full(
     assert manifest_path.exists(), f"manifest missing: {manifest_path}"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-    assert manifest["schema_version"] == 1
+    # Phase 7 Residual #5 — manifest schema bumped 1 -> 2 when per-query
+    # semantic-verdict fields were added. The run is also gated on
+    # semantic PASS now, so the exit-code assertion above (== 0) implicitly
+    # also asserts every query passed the BAML judge.
+    assert manifest["schema_version"] == 2
     assert manifest["run_id"] == run_dir.name
     assert isinstance(manifest["bridge_port"], int) and manifest["bridge_port"] > 0
     assert isinstance(manifest["bridge_pid"], int) and manifest["bridge_pid"] > 0
@@ -128,6 +132,17 @@ def test_run_router_e2e_full(
     assert summary["total"] == 5
     matched_recount = sum(1 for query in queries if query["route_match"])
     assert summary["matched"] == matched_recount
+    # New v2 summary fields are present and counts cohere with per-query data.
+    semantic_pass_recount = sum(
+        1 for query in queries if query["semantic_verdict"] == "PASS"
+    )
+    assert summary["semantically_passed"] == semantic_pass_recount
+    assert summary["semantically_failed"] == sum(
+        1 for query in queries if query["semantic_verdict"] == "FAIL"
+    )
+    assert summary["semantically_inconclusive"] == sum(
+        1 for query in queries if query["semantic_verdict"] == "INCONCLUSIVE"
+    )
 
     for query in queries:
         query_id = query["query_id"]
@@ -140,6 +155,14 @@ def test_run_router_e2e_full(
             assert query["session_ended_reached"] is True, (
                 f"{query_id}: error is None but session_ended_reached=False"
             )
+        # Phase 7 Residual #5 — per-query manifest entries carry semantic
+        # verdict surface (reply_length, verdict, reasoning, latency).
+        assert query["semantic_verdict"] in {"PASS", "FAIL", "INCONCLUSIVE"}, (
+            f"{query_id}: invalid semantic_verdict {query['semantic_verdict']!r}"
+        )
+        assert isinstance(query["reply_length"], int) and query["reply_length"] >= 0
+        assert isinstance(query["semantic_reasoning"], str)
+        assert isinstance(query["judge_latency_seconds"], (int, float))
 
         frame_path = run_dir / query["frame_path"]
         assert frame_path.exists(), f"per-query record missing: {frame_path}"
@@ -152,10 +175,24 @@ def test_run_router_e2e_full(
         assert frame_types[0] == "route_decided", (
             f"{query_id}: route_decided was not first; saw {frame_types[0]!r}"
         )
+        # Per-query record carries the full reply_text (manifest does not).
+        assert "reply_text" in record, (
+            f"{query_id}: record missing reply_text (Phase 7 Residual #5)"
+        )
 
     assert summary["matched"] == 5, (
         f"route mismatches: matched={summary['matched']}; "
         f"mismatched={summary['mismatched']}; errored={summary['errored']}\n"
         f"records: "
         f"{[(q['query_id'], q['expected_route'], q['actual_route']) for q in queries]!r}"
+    )
+    # Exit code 0 already implies semantic PASS for every query, but assert
+    # explicitly so the failure message is interpretable.
+    assert summary["semantically_passed"] == 5, (
+        f"semantic-judge failures: "
+        f"passed={summary['semantically_passed']}; "
+        f"failed={summary['semantically_failed']}; "
+        f"inconclusive={summary['semantically_inconclusive']}\n"
+        f"records: "
+        f"{[(q['query_id'], q['semantic_verdict'], q['semantic_reasoning']) for q in queries]!r}"
     )

@@ -23,6 +23,12 @@ class LlmResponseParser:
     def __init__(self, options: DoNotUseDirectlyCallManager):
         self.__options = options
 
+    def JudgeRouterAnswer(
+        self, llm_response: str, baml_options: BamlCallOptions = {},
+    ) -> types.RouterJudgeOutput:
+        __result__ = self.__options.merge_options(baml_options).parse_response(function_name="JudgeRouterAnswer", llm_response=llm_response, mode="request")
+        return typing.cast(types.RouterJudgeOutput, __result__)
+
     def RouteQuery(
         self, llm_response: str, baml_options: BamlCallOptions = {},
     ) -> types.RouterDecision:
@@ -36,6 +42,12 @@ class LlmStreamParser:
 
     def __init__(self, options: DoNotUseDirectlyCallManager):
         self.__options = options
+
+    def JudgeRouterAnswer(
+        self, llm_response: str, baml_options: BamlCallOptions = {},
+    ) -> stream_types.RouterJudgeOutput:
+        __result__ = self.__options.merge_options(baml_options).parse_response(function_name="JudgeRouterAnswer", llm_response=llm_response, mode="stream")
+        return typing.cast(stream_types.RouterJudgeOutput, __result__)
 
     def RouteQuery(
         self, llm_response: str, baml_options: BamlCallOptions = {},
