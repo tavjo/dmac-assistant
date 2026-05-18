@@ -223,3 +223,50 @@ def test_no_gemini_api_key_anywhere(doc_sources: dict[Path, str]) -> None:
             f"`GCP_API_KEY` per locked design spec L157 + "
             f"`tools/e2e/baml_src/clients.baml:20`."
         )
+
+
+def test_gcp_api_key_docs_do_not_claim_not_forwarded(
+    doc_sources: dict[Path, str],
+) -> None:
+    """Docs must not claim `GCP_API_KEY` is unforwarded — impl forwards it.
+
+    `src/dmac_assistant/containers.py::_build_environment` unconditionally
+    forwards `GCP_API_KEY` to the container env when present in `bridge_env`
+    (containers.py:313-333), and the locked design spec lists it under
+    "Both routes" exec env (`docs/superpowers/specs/2026-05-13-llm-router-design.md`
+    lines 125 and 665: "forwarded so in-container plugins can call GCP too").
+
+    Phase 7 independent reviewer caught the docs/impl contradiction
+    (`.codex/reports/llm-router-independent-final-evaluation-2026-05-18.md`
+    residual debt #3). This pinning test prevents the contradiction from
+    reappearing.
+    """
+    forbidden_patterns = (
+        # Catches "does not forward GCP_API_KEY" and "do not forward GCP_API_KEY"
+        re.compile(
+            r"do(?:es)?\s+not\s+forward\s+[^\n.]{0,120}GCP_API_KEY",
+            re.IGNORECASE,
+        ),
+        # Catches "GCP_API_KEY ... not forwarded" / "is not forwarded to the container"
+        re.compile(
+            r"GCP_API_KEY[^\n.]{0,120}not\s+forwarded",
+            re.IGNORECASE,
+        ),
+        # Catches "Not forwarded to the container" in the GCP_API_KEY row of a table
+        re.compile(
+            r"GCP_API_KEY[^\n]{0,400}Not\s+forwarded\s+to\s+the\s+container",
+            re.IGNORECASE,
+        ),
+    )
+    for path, src in doc_sources.items():
+        for pat in forbidden_patterns:
+            match = pat.search(src)
+            assert match is None, (
+                f"{path.name} states `GCP_API_KEY` is not forwarded to the "
+                f"container, but `_build_environment` in "
+                f"`src/dmac_assistant/containers.py:313-333` forwards it when "
+                f"set, and the locked design spec lists it under 'Both routes' "
+                f"exec env. Either update the docs to match impl/spec, or open "
+                f"`/ultraplan amend` to change the forwarding behavior. "
+                f"Matched: {match.group(0)!r}"
+            )

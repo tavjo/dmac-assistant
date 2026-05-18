@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from dmac_assistant.router.baml_client import b
 from dmac_assistant.router.baml_client.types import (
@@ -18,6 +19,21 @@ from dmac_assistant.router.capabilities import load_capabilities
 log = logging.getLogger(__name__)
 
 _FALLBACK_REASONING = "<router_unavailable>"
+
+# `Route.NextseekQuery.name.lower()` -> "nextseekquery", not the BAML
+# @alias "nextseek_query"; the WS-facing alias requires an explicit map.
+# Duplicated narrowly here (also lives in ws.py) to keep telemetry independent
+# of import direction (ws.py imports RouterAgent, not the reverse).
+_ROUTE_ALIAS: dict[Route, str] = {
+    Route.NextseekQuery: "nextseek_query",
+    Route.ContainerCC: "container_cc",
+}
+
+
+def _model_class_alias(mc: ModelClass | None) -> str | None:
+    if mc is None:
+        return None
+    return mc.name.lower()
 
 
 def _fallback_decision() -> RouterDecision:
@@ -42,8 +58,9 @@ class RouterAgent:
             user_query=user_query,
             routes=self._capabilities,
         )
+        start = time.monotonic()
         try:
-            return await b.RouteQuery(input=request)
+            decision = await b.RouteQuery(input=request)
         except asyncio.CancelledError:
             raise
         except BaseException as exc:  # noqa: BLE001 - broad catch required by router spec
@@ -55,3 +72,16 @@ class RouterAgent:
                 },
             )
             return _fallback_decision()
+
+        # R-03: never log reasoning text or user_query — only structural
+        # facts (route alias, model class alias, latency, reasoning length).
+        log.info(
+            "router_decision",
+            extra={
+                "route": _ROUTE_ALIAS.get(decision.route, decision.route.name),
+                "model_class": _model_class_alias(decision.model_class),
+                "decision_latency_ms": (time.monotonic() - start) * 1000.0,
+                "reasoning_len": len(decision.reasoning) if decision.reasoning else 0,
+            },
+        )
+        return decision

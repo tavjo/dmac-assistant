@@ -198,6 +198,145 @@ async def test_fallback_log_carries_structured_fields(monkeypatch, caplog):
     assert len(matches) == 1
 
 
+@pytest.mark.asyncio
+async def test_success_path_emits_router_decision_telemetry(monkeypatch, caplog):
+    """Phase 7 residual debt #4: locked design called for per-turn structured
+    telemetry (route, model_class, decision_latency_ms, reasoning_len) on the
+    success path. Currently only the fallback path logs structured fields.
+
+    Pins:
+    - INFO-level log record with `router_decision` keyword in message or extra
+    - `route` field carries the lowercase alias (`"nextseek_query"` /
+      `"container_cc"`), NOT the BAML enum member name
+    - `model_class` field carries the lowercase alias or None
+    - `decision_latency_ms` is a non-negative number
+    - `reasoning_len` is a non-negative int matching `len(decision.reasoning)`
+    - R-03: `caplog.text` MUST NOT contain the reasoning text itself or the
+      user query text
+    """
+    secret_reasoning = "user said NEXTSEEK_PASSWORD which should never log"
+    expected = RouterDecision(
+        route=Route.NextseekQuery,
+        model_class=None,
+        reasoning=secret_reasoning,
+    )
+
+    async def fake_route_query(input):  # noqa: A002
+        return expected
+
+    monkeypatch.setattr("dmac_assistant.router.agent.b.RouteQuery", fake_route_query)
+    agent = RouterAgent(capabilities=_minimal_caps())
+
+    with caplog.at_level(logging.INFO, logger="dmac_assistant.router.agent"):
+        await agent.route("user_query_with_NEXTSEEK_PASSWORD_in_text")
+
+    telemetry_records = [
+        r for r in caplog.records
+        if getattr(r, "route", None) is not None
+        and getattr(r, "reasoning_len", None) is not None
+    ]
+    assert len(telemetry_records) == 1, (
+        f"expected exactly one router-decision telemetry record; "
+        f"got {len(telemetry_records)} (all records: {caplog.records})"
+    )
+    rec = telemetry_records[0]
+
+    assert rec.route == "nextseek_query", (
+        f"telemetry `route` field must use the lowercase alias "
+        f"(`nextseek_query`/`container_cc`), not the BAML enum name. "
+        f"Got: {rec.route!r}"
+    )
+    assert getattr(rec, "model_class", "MISSING") is None, (
+        f"telemetry `model_class` must be None when the router returns "
+        f"model_class=None (NS-route case). Got: {getattr(rec, 'model_class', 'MISSING')!r}"
+    )
+    latency = getattr(rec, "decision_latency_ms", None)
+    assert isinstance(latency, (int, float)) and latency >= 0, (
+        f"telemetry `decision_latency_ms` must be non-negative numeric; "
+        f"got {latency!r}"
+    )
+    assert rec.reasoning_len == len(secret_reasoning), (
+        f"telemetry `reasoning_len` must equal len(decision.reasoning); "
+        f"got {rec.reasoning_len}, expected {len(secret_reasoning)}"
+    )
+
+    assert "NEXTSEEK_PASSWORD" not in caplog.text, (
+        "R-03: reasoning text contains 'NEXTSEEK_PASSWORD' (a credential "
+        "env-key) and must NEVER appear in caplog. Telemetry must log only "
+        "reasoning_len, not the reasoning string itself."
+    )
+    assert secret_reasoning not in caplog.text, (
+        "reasoning text must NEVER appear in caplog (R-03). "
+        "Only reasoning_len is loggable."
+    )
+    assert "user_query_with" not in caplog.text, (
+        "user query text must NEVER appear in caplog — it can include "
+        "credentials or PII."
+    )
+
+
+@pytest.mark.asyncio
+async def test_success_path_telemetry_includes_model_class_alias_for_cc(
+    monkeypatch, caplog
+):
+    """When the router returns container_cc with a ModelClass, the
+    `model_class` telemetry field carries the lowercase alias.
+    """
+    expected = RouterDecision(
+        route=Route.ContainerCC,
+        model_class=ModelClass.Opus,
+        reasoning="hard reasoning needed",
+    )
+
+    async def fake_route_query(input):  # noqa: A002
+        return expected
+
+    monkeypatch.setattr("dmac_assistant.router.agent.b.RouteQuery", fake_route_query)
+    agent = RouterAgent(capabilities=_minimal_caps())
+
+    with caplog.at_level(logging.INFO, logger="dmac_assistant.router.agent"):
+        await agent.route("complex refactoring task")
+
+    telemetry_records = [
+        r for r in caplog.records if getattr(r, "route", None) is not None
+    ]
+    assert len(telemetry_records) == 1
+    rec = telemetry_records[0]
+    assert rec.route == "container_cc"
+    assert rec.model_class == "opus", (
+        f"telemetry `model_class` must use the lowercase alias `opus` "
+        f"(NOT the BAML enum name `Opus`). Got: {rec.model_class!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fallback_path_does_not_emit_success_telemetry(monkeypatch, caplog):
+    """Negative guard: when BAML raises, only the fallback log fires —
+    not the success-path router_decision telemetry. Both records share the
+    `router_fallback` distinguishing field; this test pins that distinction.
+    """
+    async def raising_route_query(input):  # noqa: A002
+        raise RuntimeError("simulated GCP transport failure")
+
+    monkeypatch.setattr(
+        "dmac_assistant.router.agent.b.RouteQuery", raising_route_query
+    )
+    agent = RouterAgent(capabilities=_minimal_caps())
+
+    with caplog.at_level(logging.DEBUG, logger="dmac_assistant.router.agent"):
+        await agent.route("anything")
+
+    success_records = [
+        r for r in caplog.records
+        if getattr(r, "route", None) is not None
+        and not getattr(r, "router_fallback", False)
+    ]
+    assert success_records == [], (
+        f"fallback path must NOT emit the success-path router_decision "
+        f"telemetry record; got {len(success_records)}: {success_records}"
+    )
+
+
 def test_default_constructor_loads_capabilities(monkeypatch):
     call_count = {"n": 0}
 

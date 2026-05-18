@@ -521,6 +521,205 @@ def test_runner_uncaught_exception_emits_ns_runner_error_type_name_only(
     assert b"inner failure" not in stdout  # no str(exc) leak
 
 
+# ------------------------------- synthetic terminal fallback (locked spec L107)
+
+
+def test_main_emits_synthetic_query_complete_when_run_query_emits_no_terminal(
+    fd_capture: FdCapture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Locked spec line 107: if chat_nextseek's run_query returns without
+    emitting query_complete OR query_error, the runner MUST emit a synthetic
+    query_complete line. Defensive against future internal chat_nextseek
+    changes that might silently change the terminal-event contract.
+
+    Phase 7 independent reviewer flagged this as residual debt #2:
+    `.codex/reports/llm-router-independent-final-evaluation-2026-05-18.md`.
+    """
+    with fd_capture.active():
+        events_fd = _perform_event_channel_remap()
+        monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
+        try:
+            def fake_build(session_id: str) -> tuple[object, object]:
+                return object(), object()
+
+            monkeypatch.setattr(
+                runner_ns,
+                "_build_chat_nextseek_session_and_config",
+                fake_build,
+                raising=True,
+            )
+
+            def fake_run_query_silent(
+                session: object,
+                config: object,
+                user_text: str,
+                *,
+                send_event: Any = None,
+                credentials: dict[str, str] | None = None,
+            ) -> dict[str, None]:
+                send_event("agent_started", {"agent": "entity"})
+                return {"bundle_id": None}
+
+            monkeypatch.setattr(
+                runner_ns,
+                "_run_chat_nextseek_run_query",
+                fake_run_query_silent,
+                raising=True,
+            )
+            monkeypatch.setattr(sys, "stdin", _FakeStdin("find me PBMCs\n"))
+            exit_code = runner_ns.main(["--session", "test-sess"])
+            assert exit_code == 0, (
+                "synthetic terminal is informational, not a runner failure"
+            )
+        finally:
+            os.close(events_fd)
+            monkeypatch.setattr(runner_ns, "_EVENTS_FD", 1, raising=True)
+
+    stdout = fd_capture.stdout_bytes()
+    lines = [ln for ln in stdout.strip().split(b"\n") if ln]
+    parsed = [json.loads(ln) for ln in lines]
+    event_names = [e["event"] for e in parsed]
+
+    assert event_names == ["agent_started", "query_complete"], (
+        f"expected agent_started then synthetic query_complete; got {event_names}"
+    )
+
+    synthetic = parsed[1]
+    payload = synthetic["payload"]
+    assert payload.get("error_type") == "RunnerSyntheticTerminal", (
+        f"synthetic query_complete payload must carry "
+        f"error_type='RunnerSyntheticTerminal' so the bridge can route it "
+        f"through ns_query_complete_with_error; got payload={payload}"
+    )
+    assert payload.get("status") in {"error", "partial", "failure"}, (
+        f"synthetic query_complete must carry a failure status so the "
+        f"existing _has_failure_signal path treats it as failure-shaped; "
+        f"got status={payload.get('status')!r}"
+    )
+
+
+def test_main_does_not_emit_synthetic_when_run_query_emitted_query_complete(
+    fd_capture: FdCapture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Negative guard: if run_query emits query_complete via send_event, the
+    runner must NOT also emit a synthetic one — duplicate terminals would
+    confuse the bridge's `terminal_emitted` short-circuit (locked spec L419).
+    """
+    with fd_capture.active():
+        events_fd = _perform_event_channel_remap()
+        monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
+        try:
+            def fake_build(session_id: str) -> tuple[object, object]:
+                return object(), object()
+
+            monkeypatch.setattr(
+                runner_ns,
+                "_build_chat_nextseek_session_and_config",
+                fake_build,
+                raising=True,
+            )
+
+            def fake_run_query_normal(
+                session: object,
+                config: object,
+                user_text: str,
+                *,
+                send_event: Any = None,
+                credentials: dict[str, str] | None = None,
+            ) -> dict[str, None]:
+                send_event(
+                    "query_complete",
+                    {"reply": "done", "debug": {"agent": "reporter"}, "bundle_id": None},
+                )
+                return {"bundle_id": None}
+
+            monkeypatch.setattr(
+                runner_ns,
+                "_run_chat_nextseek_run_query",
+                fake_run_query_normal,
+                raising=True,
+            )
+            monkeypatch.setattr(sys, "stdin", _FakeStdin("normal turn\n"))
+            runner_ns.main(["--session", "test-sess"])
+        finally:
+            os.close(events_fd)
+            monkeypatch.setattr(runner_ns, "_EVENTS_FD", 1, raising=True)
+
+    stdout = fd_capture.stdout_bytes()
+    lines = [ln for ln in stdout.strip().split(b"\n") if ln]
+    parsed = [json.loads(ln) for ln in lines]
+    terminals = [e for e in parsed if e["event"] in ("query_complete", "query_error")]
+    assert len(terminals) == 1, (
+        f"expected exactly ONE terminal event; got {len(terminals)}: {terminals}"
+    )
+    assert terminals[0]["payload"].get("error_type") != "RunnerSyntheticTerminal", (
+        "synthetic terminal must NOT fire when run_query already emitted query_complete"
+    )
+
+
+def test_main_does_not_emit_synthetic_when_run_query_emitted_query_error(
+    fd_capture: FdCapture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Negative guard: if run_query emits query_error (LLMFatalError path), the
+    runner must NOT also emit a synthetic query_complete.
+    """
+    with fd_capture.active():
+        events_fd = _perform_event_channel_remap()
+        monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
+        try:
+            def fake_build(session_id: str) -> tuple[object, object]:
+                return object(), object()
+
+            monkeypatch.setattr(
+                runner_ns,
+                "_build_chat_nextseek_session_and_config",
+                fake_build,
+                raising=True,
+            )
+
+            def fake_run_query_error(
+                session: object,
+                config: object,
+                user_text: str,
+                *,
+                send_event: Any = None,
+                credentials: dict[str, str] | None = None,
+            ) -> dict[str, None]:
+                send_event(
+                    "query_error",
+                    {"error": "LLMFatalError text", "agent": "graph"},
+                )
+                return {"bundle_id": None}
+
+            monkeypatch.setattr(
+                runner_ns,
+                "_run_chat_nextseek_run_query",
+                fake_run_query_error,
+                raising=True,
+            )
+            monkeypatch.setattr(sys, "stdin", _FakeStdin("error turn\n"))
+            runner_ns.main(["--session", "test-sess"])
+        finally:
+            os.close(events_fd)
+            monkeypatch.setattr(runner_ns, "_EVENTS_FD", 1, raising=True)
+
+    stdout = fd_capture.stdout_bytes()
+    lines = [ln for ln in stdout.strip().split(b"\n") if ln]
+    parsed = [json.loads(ln) for ln in lines]
+    synthetic = [
+        e for e in parsed
+        if e["event"] == "query_complete"
+        and e["payload"].get("error_type") == "RunnerSyntheticTerminal"
+    ]
+    assert synthetic == [], (
+        f"synthetic terminal must NOT fire when run_query emitted query_error; "
+        f"got: {synthetic}"
+    )
+
+
 # ---------------------------------------------------------- _FakeStdin helper
 
 

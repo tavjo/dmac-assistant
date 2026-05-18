@@ -108,7 +108,7 @@ Only the following bridge-configurable variables are assigned in [`.env.example`
 
 At runtime the bridge also injects `NEXTSEEK_USERNAME` and `NEXTSEEK_PASSWORD` into the container. Those values are derived from the authenticated login, not configured separately for `/ws/chat`.
 
-When the LLM router is enabled (see below), `GCP_API_KEY` must also be set on the bridge host - the router calls Gemini Pro (currently `gemini-3.1-pro-preview`) via BAML to classify each turn into a route. The bridge does not forward `GCP_API_KEY` to the container.
+When the LLM router is enabled (see below), `GCP_API_KEY` must also be set on the bridge host - the router calls Gemini Pro (currently `gemini-3.1-pro-preview`) via BAML to classify each turn into a route. The bridge also forwards `GCP_API_KEY` to the container when set, so in-container plugins that need GCP access can read it from their process environment.
 
 ## Routing and model selection
 
@@ -124,7 +124,7 @@ Bridge-side env vars added by the router:
 | Variable | Purpose |
 |---|---|
 | `DMAC_ROUTER_ENABLED` | When truthy, enables the per-turn router. Default: unset (router off, byte-identical legacy behavior). |
-| `GCP_API_KEY` | Required when `DMAC_ROUTER_ENABLED=1`. Consumed by the BAML `GCPReasoner` client that drives the route-decision call. Not forwarded to the container. |
+| `GCP_API_KEY` | Required when `DMAC_ROUTER_ENABLED=1`. Consumed by the BAML `GCPReasoner` client that drives the route-decision call. Also forwarded to the container when set (both routes) so in-container plugins can reach GCP. Redacted in `ContainerSpec.__repr__` / `model_dump`. |
 
 Per-exec env vars the bridge sets on `docker exec` when the router is enabled (these replace the entrypoint-derived environment, which is not invoked for per-turn exec):
 

@@ -202,13 +202,41 @@ def main(argv: list[str] | None = None) -> int:
         _emit_jsonl("ns_runner_error", {"error_type": "EmptyQuery"})
         sys.exit(2)
 
-    send_event = _make_redacting_send_event()
+    redacting_send_event = _make_redacting_send_event()
+    terminal_emitted = False
+
+    def tracking_send_event(event_name: str, payload: dict[str, Any]) -> None:
+        # Locked design spec L107: track whether chat_nextseek emitted a
+        # terminal event so the runner can synthesize one after run_query
+        # returns if it did not.
+        nonlocal terminal_emitted
+        if event_name in ("query_complete", "query_error"):
+            terminal_emitted = True
+        redacting_send_event(event_name, payload)
 
     try:
         session, config = _build_chat_nextseek_session_and_config(args.session or "default")
         _run_chat_nextseek_run_query(
-            session, config, user_text, send_event=send_event, credentials=None
+            session, config, user_text, send_event=tracking_send_event, credentials=None
         )
+        if not terminal_emitted:
+            # Defense in depth against future chat_nextseek changes that might
+            # silently drop the terminal-event contract. status=error +
+            # error_type=RunnerSyntheticTerminal routes through the existing
+            # _has_failure_signal path on the bridge side so the truncation
+            # surfaces as ns_query_complete_with_error rather than masquerading
+            # as success.
+            _emit_jsonl(
+                "query_complete",
+                {
+                    "reply": (
+                        "<runner synthetic terminal: chat_nextseek run_query "
+                        "returned without query_complete or query_error>"
+                    ),
+                    "status": "error",
+                    "error_type": "RunnerSyntheticTerminal",
+                },
+            )
         return 0
     except BaseException as exc:  # noqa: BLE001 — R-03 demands BaseException catch
         # R-03: NEVER str(exc), NEVER repr(exc), NEVER exc.args.
