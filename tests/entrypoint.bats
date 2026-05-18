@@ -310,3 +310,72 @@ EOF
   [[ "$output" == *"SEEK_USER=alice"* ]]
   [[ "$output" == *"SEEK_PASSWORD=pw"* ]]
 }
+
+@test "dmac_runtime_mode_idle_skips_exec_and_keeps_running: DD-04 idle branch does not run \$@" {
+  # DMAC_RUNTIME_MODE=idle → entrypoint must NOT exec "$@". The child command
+  # below would create MARKER; if MARKER is created, the idle branch failed.
+  # We use `timeout 2` because `exec sleep infinity` blocks forever — the
+  # 124 exit status from timeout proves the entrypoint was still running.
+  rm -f "$SETTINGS"
+  rm -f "$MARKER"
+
+  DMAC_RUNTIME_MODE="idle" run timeout 2 "$ENTRYPOINT" sh -c 'touch "$MARKER"'
+  # 124 = timeout killed it (process was alive — good).
+  # On macOS coreutils-from-homebrew `gtimeout` also returns 124; if `timeout`
+  # is missing this test environment is broken — that's a setup error, not a
+  # test failure, but we still assert here to catch the missing-binary case.
+  [ "$status" -eq 124 ]
+  # The child command MUST NOT have run.
+  [ ! -e "$MARKER" ]
+}
+
+@test "dmac_runtime_mode_idle_completes_pre_flight: scrub still runs before idle sleep (Risk #2 gate)" {
+  # The HIGH-severity risk in the plan: idle mode must NOT bypass settings
+  # scrubbing. This test verifies that even when the entrypoint goes idle,
+  # the settings.local.json env block was scrubbed during pre-flight.
+  cat >"$SETTINGS" <<'EOF'
+{"env":{"SECRET":"CANARY-idle"},"model":"m"}
+EOF
+  rm -f "$MARKER"
+
+  DMAC_RUNTIME_MODE="idle" run timeout 2 "$ENTRYPOINT" sh -c 'touch "$MARKER"'
+  [ "$status" -eq 124 ]
+  [ ! -e "$MARKER" ]
+  # SETTINGS scrub must have already happened before the idle sleep.
+  run jq 'has("env")' "$SETTINGS"
+  [ "$status" -eq 0 ]
+  [ "$output" = "false" ]
+}
+
+@test "dmac_runtime_mode_unset_runs_exec_normally: default path unchanged (flag-OFF parity)" {
+  # When DMAC_RUNTIME_MODE is unset, behavior is byte-identical to today's
+  # entrypoint: exec "$@" runs the declared command.
+  rm -f "$SETTINGS"
+  unset DMAC_RUNTIME_MODE 2>/dev/null || true
+
+  run "$ENTRYPOINT" sh -c 'echo normal-path'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"normal-path"* ]]
+}
+
+@test "dmac_runtime_mode_non_idle_value_runs_exec: only literal 'idle' triggers idle mode" {
+  # DMAC_RUNTIME_MODE=anything-else MUST behave like DMAC_RUNTIME_MODE unset.
+  # This protects against typos (DMAC_RUNTIME_MODE=IDLE / =Idle / =yes / =1)
+  # silently going idle.
+  rm -f "$SETTINGS"
+
+  # Empty value behaves as unset.
+  DMAC_RUNTIME_MODE="" run "$ENTRYPOINT" sh -c 'echo empty-val'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"empty-val"* ]]
+
+  # Capitalization variations are NOT idle.
+  DMAC_RUNTIME_MODE="IDLE" run "$ENTRYPOINT" sh -c 'echo upper-IDLE'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"upper-IDLE"* ]]
+
+  # Arbitrary value is NOT idle.
+  DMAC_RUNTIME_MODE="container_cc" run "$ENTRYPOINT" sh -c 'echo cc-val'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"cc-val"* ]]
+}

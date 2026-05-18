@@ -296,6 +296,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "websockets" },
 ]
 
 [package.dev-dependencies]
@@ -315,13 +316,14 @@ tools = [
 
 [package.metadata]
 requires-dist = [
-    { name = "baml-py", specifier = ">=0.222.0" },
+    { name = "baml-py", specifier = "~=0.222.0" },
     { name = "docker", specifier = ">=7.1.0" },
     { name = "fastapi", specifier = ">=0.116" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "pydantic", specifier = ">=2.13.0" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35" },
+    { name = "websockets", specifier = "~=16.0" },
 ]
 
 [package.metadata.requires-dev]

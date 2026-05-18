@@ -89,4 +89,13 @@ if [ -d "$PLUGIN_SRC_ROOT" ]; then
   done
 fi
 
+# DD-04 (LLM router): idle-mode keeps the container alive after pre-flight so
+# ws.py can issue per-turn `docker exec` for either route. The branch runs
+# AFTER all pre-flight (scrub, symlinks) — Risk #2 forbids the inverse order.
+# Only the literal value "idle" triggers idle mode; any other value (including
+# unset / empty / capitalization variants) preserves the original exec "$@".
+if [ "${DMAC_RUNTIME_MODE:-}" = "idle" ]; then
+  exec sleep infinity
+fi
+
 exec "$@"

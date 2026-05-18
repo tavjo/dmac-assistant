@@ -27,9 +27,10 @@ import json
 import logging
 import os
 import re as _re
+import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from fastapi import APIRouter, Depends, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
@@ -45,8 +46,19 @@ from dmac_assistant.containers import (
     async_attach,
     async_start_container,
     async_stop_and_remove,
+    exec_cc_turn,
+    exec_ns_turn,
+    kill_exec_pid,
 )
 from dmac_assistant.copier import copy_files
+from dmac_assistant.ns_adapter import ns_event_to_frames
+from dmac_assistant.router import models as router_models
+from dmac_assistant.router.agent import RouterAgent
+from dmac_assistant.router.baml_client.types import (
+    ModelClass,
+    Route,
+    RouterDecision,
+)
 from dmac_assistant.run_tracker import diff_files, snapshot_scratch_files
 from dmac_assistant.sessions import most_recent_session
 from dmac_assistant.streamjson import StreamEvent, StreamJsonParser
@@ -56,6 +68,22 @@ log = logging.getLogger(__name__)
 
 DEFAULT_IMAGE = "dmac-assistant:poc"
 CWD = "/home/user"
+_ROUTER_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+# BAML 0.222.0 .value returns capitalized identifiers, not @alias strings.
+_ROUTE_ALIAS: dict[Route, str] = {
+    Route.NextseekQuery: "nextseek_query",
+    Route.ContainerCC: "container_cc",
+}
+_MODEL_CLASS_ALIAS: dict[ModelClass, str] = {
+    ModelClass.Sonnet: "sonnet",
+    ModelClass.Haiku: "haiku",
+    ModelClass.Opus: "opus",
+}
+
+_NS_TURN_TIMEOUT_SECONDS = 600.0
+_CC_TURN_TIMEOUT_SECONDS = 300.0
+_router_agent: RouterAgent | None = None
 
 # Subprotocol name used by browser clients that cannot set an Authorization
 # header on the WS upgrade. Client passes ["dmac.bearer", "<token>"] as the
@@ -271,9 +299,15 @@ def _build_bridge_env(
 
     Legacy keys (``AWS_REGION``, ``AWS_BEARER_TOKEN_BEDROCK``,
     ``NEXTSEEK_URL``) are always emitted, even as empty strings, to
-    preserve the pre-T9 passthrough contract. New keys
-    (``GCP_API_KEY``, ``NEO4J_URI``, ``NEO4J_USER``, ``NEO4J_PASSWORD``)
-    are skip-if-empty.
+    preserve the pre-T9 passthrough contract. New skip-if-empty keys are
+    ``GCP_API_KEY``, ``NEO4J_URI``, ``NEO4J_USER``, ``NEO4J_PASSWORD``,
+    ``NEO4J_DATABASE``.
+
+    ``NEXTSEEK_BASE_URL`` is DERIVED from ``NEXTSEEK_URL`` when the host
+    env lacks an explicit override (LLM router plan T0.3 / F-T0.3-2 hardener,
+    2026-05-14). Mirrors ``container/entrypoint.sh:14`` because per-turn
+    ``docker exec`` bypasses the entrypoint per DD-04. Always emitted; empty
+    string only when BOTH ``NEXTSEEK_BASE_URL`` and ``NEXTSEEK_URL`` are unset.
 
     When both ``config`` and ``identity`` are supplied, also emits a
     ``DMAC_PATH_MAPPINGS`` JSON env var that maps container paths (the
@@ -283,12 +317,33 @@ def _build_bridge_env(
     """
     env: dict[str, str] = {}
     # Legacy keys: ALWAYS emitted (W3-C2 — preserves pre-T9 contract).
-    # DO NOT change to skip-if-empty — pre-existing chat_ws tests assert
-    # these keys are present in bridge_env even when unset.
+    # DO NOT change to skip-if-empty — `tests/unit/test_ws_bridge_env.py::
+    # test_unset_keys_omitted` asserts these keys are present in bridge_env
+    # even when unset.
     for key in ("AWS_REGION", "AWS_BEARER_TOKEN_BEDROCK", "NEXTSEEK_URL"):
         env[key] = os.environ.get(key, "")
+    # NEXTSEEK_BASE_URL: derived from NEXTSEEK_URL when unset (T0.3 F-T0.3-2
+    # hardener, LLM router plan 2026-05-14). Mirrors `container/entrypoint.sh:14`
+    # `: ${NEXTSEEK_BASE_URL:=${NEXTSEEK_URL:-}}` because per-turn `docker exec`
+    # bypasses the entrypoint per DD-04. Always emitted (legacy contract);
+    # empty string only when BOTH host vars are unset. `chat_nextseek.config.
+    # ChatConfig:273` reads NEXTSEEK_BASE_URL directly with no NEXTSEEK_URL
+    # fallback, so this derivation is load-bearing.
+    env["NEXTSEEK_BASE_URL"] = (
+        os.environ.get("NEXTSEEK_BASE_URL")
+        or os.environ.get("NEXTSEEK_URL", "")
+    )
     # New keys: skip-if-empty.
-    for key in ("GCP_API_KEY", "NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD"):
+    # NEO4J_DATABASE joined in T0.3 (LLM router plan 2026-05-14): chat_nextseek
+    # reads this exact name for entity-graph queries; sibling of the other
+    # NEO4J_* skip-if-empty keys.
+    for key in (
+        "GCP_API_KEY",
+        "NEO4J_URI",
+        "NEO4J_USER",
+        "NEO4J_PASSWORD",
+        "NEO4J_DATABASE",
+    ):
         value = os.environ.get(key)
         if value is not None and value.strip():
             env[key] = value
@@ -382,6 +437,18 @@ async def chat_ws(
         # fails with `invalid mount config: bind source path does not exist`.
         ensure_user_output_dir(config.output_root, identity.user_id)
         (config.scratch_root / identity.user_id).mkdir(parents=True, exist_ok=True)
+        # T3.2: branch only after the H3 host-side directory creation block,
+        # so router-on idle startup inherits the bind mount source dirs too.
+        if _router_enabled():
+            return await _chat_ws_router_on(
+                websocket=websocket,
+                identity=identity,
+                config=config,
+                first_content=first_content,
+                requested_session_id=requested_session_id,
+                bridge_env=bridge_env,
+                new_session=new_session,
+            )
         pre_turn_files = snapshot_scratch_files(
             config.scratch_root, identity.user_id
         )
@@ -706,3 +773,479 @@ async def _relay_client_to_container(
             awaiting_end[0] = True
     except (WebSocketDisconnect, asyncio.CancelledError, RuntimeError, ValueError):
         return
+
+
+# ---------------------------------------------- T3.2: per-turn router dispatch
+
+
+_NS_SESSION_ID_RE = _re.compile(r"^ns-[0-9a-f]{12}$")
+
+
+def _router_enabled() -> bool:
+    """True when DMAC_ROUTER_ENABLED is truthy for this WS connection."""
+    raw = os.environ.get("DMAC_ROUTER_ENABLED", "")
+    return raw.strip().lower() in _ROUTER_TRUTHY
+
+
+def _open_ns_stderr_capture(ns_session_id: str) -> BinaryIO | None:
+    """Open the per-session NS-route stderr capture file (opt-in).
+
+    Phase 7 residual #1 visibility (2026-05-18): the in-container chat_nextseek
+    runner emits parser_agent exceptions to docker exec stderr (post-fd-shuffle
+    in container/runner_ns.py). The bridge consumes those frames via
+    ``BridgeAttachSocket.read_event_line``; without this capture they were
+    truncated to 80 bytes and DEBUG-logged only, which uvicorn at
+    ``--log-level error`` silences entirely.
+
+    When ``DMAC_BRIDGE_NS_STDERR_DIR`` is set, the bridge writes every stderr
+    frame verbatim (append-mode binary) to
+    ``<DMAC_BRIDGE_NS_STDERR_DIR>/<ns_session_id>.stderr.log`` so the
+    underlying parser exception text is durable on disk and greppable
+    post-mortem. Defaults to None (production-safe; no behavior change).
+
+    Returns None when the env var is unset, the directory can't be created,
+    or ``ns_session_id`` fails the canonical format guard (path-traversal
+    defense; T3.2 spec L424 NS session id format is ``^ns-[0-9a-f]{12}$``).
+    Diagnostic capture must never block a turn.
+    """
+    raw = os.environ.get("DMAC_BRIDGE_NS_STDERR_DIR", "").strip()
+    if not raw:
+        return None
+    if not _NS_SESSION_ID_RE.fullmatch(ns_session_id):
+        log.warning(
+            "ns stderr capture refused: ns_session_id failed format guard"
+        )
+        return None
+    try:
+        dir_path = Path(raw).expanduser()
+        dir_path.mkdir(parents=True, exist_ok=True)
+        return (dir_path / f"{ns_session_id}.stderr.log").open("ab")
+    except OSError as exc:
+        log.warning(
+            "ns stderr capture disabled (cannot open %r): %s",
+            raw,
+            type(exc).__name__,
+        )
+        return None
+
+
+def _get_router_agent() -> RouterAgent:  # pragma: no cover
+    """Return the bridge-process RouterAgent singleton.
+
+    Per F-T3.2-2-3, unit tests monkeypatch this host orchestration surface;
+    the real lazy initialization path is covered by T4.2 image integration.
+    """
+    global _router_agent
+    if _router_agent is None:
+        _router_agent = RouterAgent()
+    return _router_agent
+
+
+async def _chat_ws_router_on(  # pragma: no cover
+    *,
+    websocket: WebSocket,
+    identity: AuthenticatedIdentity,
+    config: BridgeConfig,
+    first_content: str,
+    requested_session_id: str | None,
+    bridge_env: dict[str, str],
+    new_session: bool,
+) -> None:
+    """Router-on WS orchestration, covered end-to-end by T4.2 image tests."""
+    del new_session
+    container: Any = None
+    current_session_id: str | None = requested_session_id
+    session_started_emitted = False
+    session_ended_emitted = False
+    ns_session_key = (
+        f"{identity.user_id}-ws-{int(asyncio.get_running_loop().time())}"
+    )
+    pre_turn_files = snapshot_scratch_files(config.scratch_root, identity.user_id)
+
+    async def fire_post_turn_copy() -> None:
+        after = snapshot_scratch_files(config.scratch_root, identity.user_id)
+        new = diff_files(pre_turn_files, after)
+        if not new:
+            return
+        await asyncio.to_thread(
+            dispatch_post_turn_copy,
+            scratch_root=config.scratch_root,
+            output_root=config.output_root,
+            user_id=identity.user_id,
+            new_files=new,
+        )
+        pre_turn_files.clear()
+        pre_turn_files.update(after)
+
+    try:
+        container = await async_start_container(
+            identity,
+            image=DEFAULT_IMAGE,
+            session_id=None,
+            bridge_env=bridge_env,
+            config=config,
+            runtime_mode="idle",
+            command_override=[],
+        )
+        (
+            session_started_emitted,
+            session_ended_emitted,
+            current_session_id,
+        ) = await _dispatch_one_turn(
+            websocket=websocket,
+            container=container,
+            query=first_content,
+            identity=identity,
+            config=config,
+            bridge_env=bridge_env,
+            current_session_id=current_session_id,
+            session_started_emitted=session_started_emitted,
+            session_ended_emitted=session_ended_emitted,
+            requested_session_id=requested_session_id,
+            ns_session_key=ns_session_key,
+            post_turn_callback=fire_post_turn_copy,
+        )
+
+        while True:
+            try:
+                frame = await websocket.receive_json()
+            except (WebSocketDisconnect, ValueError):
+                break
+            if not isinstance(frame, dict) or frame.get("type") != "user_message":
+                continue
+            content = frame.get("content")
+            if not isinstance(content, str):
+                continue
+            (
+                session_started_emitted,
+                session_ended_emitted,
+                current_session_id,
+            ) = await _dispatch_one_turn(
+                websocket=websocket,
+                container=container,
+                query=content,
+                identity=identity,
+                config=config,
+                bridge_env=bridge_env,
+                current_session_id=current_session_id,
+                session_started_emitted=session_started_emitted,
+                session_ended_emitted=session_ended_emitted,
+                requested_session_id=current_session_id,
+                ns_session_key=ns_session_key,
+                post_turn_callback=fire_post_turn_copy,
+            )
+    finally:
+        if container is not None:
+            with contextlib.suppress(Exception):
+                await async_stop_and_remove(container)
+
+
+async def _dispatch_one_turn(
+    *,
+    websocket: WebSocket,
+    container: Any,
+    query: str,
+    identity: AuthenticatedIdentity,
+    config: BridgeConfig,
+    bridge_env: dict[str, str],
+    current_session_id: str | None,
+    session_started_emitted: bool,
+    session_ended_emitted: bool,
+    requested_session_id: str | None = None,
+    ns_session_key: str | None = None,
+    post_turn_callback: Callable[[], Awaitable[None]] | None = None,
+) -> tuple[bool, bool, str | None]:
+    """Route one user_message, emit route_decided, then dispatch the turn."""
+    agent = _get_router_agent()
+    decision: RouterDecision = await agent.route(query)
+
+    model_class: ModelClass | None = decision.model_class
+    if decision.route == Route.ContainerCC and model_class is None:
+        model_class = ModelClass.Sonnet
+        log.warning(
+            "router fallback: container_cc/model_class=null -> sonnet substituted"
+        )
+
+    await _send_json_safe(
+        websocket,
+        {
+            "type": "route_decided",
+            "route": _ROUTE_ALIAS[decision.route],
+            "model_class": (
+                _MODEL_CLASS_ALIAS[model_class]
+                if model_class is not None
+                else None
+            ),
+        },
+    )
+
+    if decision.route == Route.ContainerCC:
+        model_id = router_models.resolve(model_class)
+        return await _dispatch_cc_turn(
+            websocket=websocket,
+            container=container,
+            query=query,
+            model_id=model_id,
+            session_id=current_session_id,
+            identity=identity,
+            config=config,
+            bridge_env=bridge_env,
+            current_session_id=current_session_id,
+            session_started_emitted=session_started_emitted,
+            session_ended_emitted=session_ended_emitted,
+            requested_session_id=requested_session_id,
+            post_turn_callback=post_turn_callback,
+        )
+
+    await _dispatch_ns_turn(
+        websocket=websocket,
+        container=container,
+        query=query,
+        identity=identity,
+        config=config,
+        bridge_env=bridge_env,
+        ns_session_key=ns_session_key,
+    )
+    if post_turn_callback is not None:
+        await post_turn_callback()
+    return session_started_emitted, session_ended_emitted, current_session_id
+
+
+async def _dispatch_cc_turn(
+    *,
+    websocket: WebSocket,
+    container: Any,
+    query: str,
+    model_id: str,
+    session_id: str | None,
+    identity: AuthenticatedIdentity,
+    config: BridgeConfig,
+    bridge_env: dict[str, str],
+    current_session_id: str | None,
+    session_started_emitted: bool,
+    session_ended_emitted: bool,
+    requested_session_id: str | None,
+    post_turn_callback: Callable[[], Awaitable[None]] | None = None,
+) -> tuple[bool, bool, str | None]:
+    """Run one Claude Code turn via T3.1 exec primitives."""
+    sock: Any = None
+    parser = StreamJsonParser()
+    awaiting_end = [True]
+    try:
+        try:
+            sock = await asyncio.to_thread(
+                exec_cc_turn,
+                container,
+                query=query,
+                model_id=model_id,
+                session_id=session_id,
+                identity=identity,
+                config=config,
+                bridge_env=bridge_env,
+            )
+        except Exception as cc_exc:  # noqa: BLE001
+            log.warning("cc exec failed: %s", type(cc_exc).__name__)
+            await _send_json_safe(
+                websocket, {"type": "error", "reason": "cc_exec_failed"}
+            )
+            await _send_json_safe(
+                websocket,
+                {"type": "session_ended", "session_id": current_session_id},
+            )
+            return session_started_emitted, True, current_session_id
+
+        state: dict[str, Any] = {
+            "session_started_emitted": session_started_emitted,
+            "session_ended_emitted": session_ended_emitted,
+            "current_session_id": current_session_id,
+        }
+
+        async def _read_and_dispatch() -> None:
+            while True:
+                frame = await asyncio.to_thread(sock.read_frame)
+                if frame is None:
+                    break
+                stream_name, payload = frame
+                if stream_name != "stdout":
+                    continue
+                for event in parser.feed(payload):
+                    (
+                        state["session_started_emitted"],
+                        state["session_ended_emitted"],
+                        state["current_session_id"],
+                    ) = await _dispatch_event(
+                        websocket,
+                        event,
+                        session_started_emitted=state[
+                            "session_started_emitted"
+                        ],
+                        session_ended_emitted=state["session_ended_emitted"],
+                        current_session_id=state["current_session_id"],
+                        requested_session_id=requested_session_id,
+                        parser=parser,
+                        awaiting_end=awaiting_end,
+                        post_turn_callback=post_turn_callback,
+                    )
+            for event in parser.flush():
+                (
+                    state["session_started_emitted"],
+                    state["session_ended_emitted"],
+                    state["current_session_id"],
+                ) = await _dispatch_event(
+                    websocket,
+                    event,
+                    session_started_emitted=state["session_started_emitted"],
+                    session_ended_emitted=state["session_ended_emitted"],
+                    current_session_id=state["current_session_id"],
+                    requested_session_id=requested_session_id,
+                    parser=parser,
+                    awaiting_end=awaiting_end,
+                    post_turn_callback=post_turn_callback,
+                )
+            if state["session_started_emitted"] and awaiting_end[0]:
+                await _send_json_safe(
+                    websocket,
+                    {
+                        "type": "session_ended",
+                        "session_id": state["current_session_id"],
+                    },
+                )
+                state["session_ended_emitted"] = True
+                awaiting_end[0] = False
+                if post_turn_callback is not None:
+                    await post_turn_callback()
+
+        try:
+            await asyncio.wait_for(
+                _read_and_dispatch(), timeout=_CC_TURN_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            exec_id = getattr(sock, "_exec_id", None) if sock is not None else None
+            if exec_id:
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(kill_exec_pid, container, exec_id)
+            await _send_json_safe(
+                websocket, {"type": "error", "reason": "exec_timeout"}
+            )
+            await _send_json_safe(
+                websocket,
+                {
+                    "type": "session_ended",
+                    "session_id": state["current_session_id"],
+                },
+            )
+            return (
+                state["session_started_emitted"],
+                True,
+                state["current_session_id"],
+            )
+        return (
+            state["session_started_emitted"],
+            state["session_ended_emitted"],
+            state["current_session_id"],
+        )
+    finally:
+        if sock is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(sock.close)
+
+
+async def _dispatch_ns_turn(
+    *,
+    websocket: WebSocket,
+    container: Any,
+    query: str,
+    identity: AuthenticatedIdentity,
+    config: BridgeConfig,
+    bridge_env: dict[str, str],
+    ns_session_key: str | None = None,
+) -> None:
+    """Run one NExtSEEK turn via T3.1 exec primitives."""
+    ns_session_id = f"ns-{uuid.uuid4().hex[:12]}"
+    terminal_emitted = False
+    sock: Any = None
+    stderr_capture_fh = _open_ns_stderr_capture(ns_session_id)
+    try:
+        try:
+            sock = await asyncio.to_thread(
+                exec_ns_turn,
+                container,
+                query=query,
+                session_id=ns_session_key,
+                identity=identity,
+                config=config,
+                bridge_env=bridge_env,
+            )
+        except Exception as ns_exc:  # noqa: BLE001
+            log.warning("ns exec failed: %s", type(ns_exc).__name__)
+            await _send_json_safe(
+                websocket, {"type": "error", "reason": "ns_exec_failed"}
+            )
+            await _send_json_safe(
+                websocket,
+                {"type": "session_ended", "session_id": ns_session_id},
+            )
+            return
+        if stderr_capture_fh is not None:
+            sock.stderr_sink = stderr_capture_fh
+
+        await _send_json_safe(
+            websocket, {"type": "session_started", "session_id": ns_session_id}
+        )
+
+        async def _read_and_dispatch() -> None:
+            nonlocal terminal_emitted
+            event_index = 0
+            while True:
+                line = await asyncio.to_thread(sock.read_event_line)
+                if line is None:
+                    break
+                if terminal_emitted:
+                    log.debug("ns event dropped post-terminal: %s", line[:80])
+                    continue
+                try:
+                    event = json.loads(line)
+                except (TypeError, ValueError):
+                    log.debug("ns invalid jsonl line dropped")
+                    continue
+                frames, is_terminal = ns_event_to_frames(
+                    event, session_id=ns_session_id, event_index=event_index
+                )
+                for frame in frames:
+                    await _send_json_safe(websocket, frame)
+                if is_terminal:
+                    terminal_emitted = True
+                event_index += 1
+
+            if not terminal_emitted:
+                await _send_json_safe(
+                    websocket, {"type": "error", "reason": "ns_exec_truncated"}
+                )
+                await _send_json_safe(
+                    websocket,
+                    {"type": "session_ended", "session_id": ns_session_id},
+                )
+
+        try:
+            await asyncio.wait_for(
+                _read_and_dispatch(), timeout=_NS_TURN_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            exec_id = getattr(sock, "_exec_id", None) if sock is not None else None
+            if exec_id:
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(kill_exec_pid, container, exec_id)
+            await _send_json_safe(
+                websocket, {"type": "error", "reason": "exec_timeout"}
+            )
+            await _send_json_safe(
+                websocket,
+                {"type": "session_ended", "session_id": ns_session_id},
+            )
+    finally:
+        if sock is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(sock.close)
+        if stderr_capture_fh is not None:
+            with contextlib.suppress(Exception):
+                stderr_capture_fh.close()

@@ -15,10 +15,11 @@ R-03: ContainerSpec.__repr__ redacts sensitive env keys by name.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import struct
-from typing import Any, Mapping
+from typing import Any, BinaryIO, Mapping
 
 import docker
 from docker.errors import APIError, NotFound
@@ -44,6 +45,7 @@ _REDACTED_ENV_KEYS = frozenset({
     "DMAC_PATH_MAPPINGS",
     "MYSQL_DEV_PASSWORD",
     "SESSION_DB_PASSWORD",
+    "API_PASS",
 })
 
 _BASE_COMMAND: tuple[str, ...] = (
@@ -111,8 +113,6 @@ class ContainerSpec(BaseModel):
 
     def model_dump_json(self, *args: Any, **kwargs: Any) -> str:
         """JSON dump with sensitive env keys redacted (see model_dump)."""
-        import json
-
         return json.dumps(self.model_dump())
 
 
@@ -129,9 +129,18 @@ class BridgeAttachSocket:
         raw_socket: Any,
         *,
         stdout_stream: Any | None = None,
+        stderr_sink: BinaryIO | None = None,
     ) -> None:
         self._raw = raw_socket
         self._stdout_stream = stdout_stream
+        self._line_buffer: bytearray = bytearray()
+        # Phase 7 residual #1 visibility (2026-05-18): when set, every stderr
+        # frame's payload is written verbatim (untruncated) to this sink so the
+        # in-container runner's debug output — including chat_nextseek's
+        # `[DEBUG][PARSER] Exception or parse error: <repr>` — survives even
+        # when uvicorn is at --log-level error. Sink is opt-in; default None
+        # preserves prior behavior (DEBUG-log only).
+        self.stderr_sink: BinaryIO | None = stderr_sink
 
     # ------------------------------------------------------------------ read
     def read_frame(self) -> tuple[str, bytes] | None:
@@ -205,6 +214,69 @@ class BridgeAttachSocket:
         """
         return getattr(self._raw, "_sock", self._raw)
 
+    def read_event_line(self) -> str | None:
+        """Read one UTF-8 line of stdout output, demuxing frames internally.
+
+        Consumes :meth:`read_frame` in a loop until either a full newline-terminated
+        line is available in the internal buffer, or EOF arrives. Handles five
+        edge cases per the locked LLM-router design spec:
+
+        - Multi-line stdout payload: one frame yields several lines.
+        - Line continuation: a line spans multiple frames.
+        - Interleaved stderr: ``stderr`` frames are DEBUG-logged but NOT routed
+          as lines.
+        - EOF with residual: if EOF arrives mid-line, the partial line is
+          returned on the final call. The next call returns ``None``.
+        - Zero-length stdout frame mid-stream: Docker emits ``("stdout", b"")``
+          as a keep-alive / heartbeat. Treated as a no-op continue.
+
+        Returns ``None`` only when ``read_frame`` returns ``None`` (EOF) AND
+        the internal buffer is empty.
+        """
+        while True:
+            newline_idx = self._line_buffer.find(b"\n")
+            if newline_idx >= 0:
+                line_bytes = bytes(self._line_buffer[:newline_idx])
+                del self._line_buffer[: newline_idx + 1]
+                return line_bytes.decode("utf-8", errors="replace")
+
+            frame = self.read_frame()
+            if frame is None:
+                if self._line_buffer:
+                    residual = bytes(self._line_buffer)
+                    self._line_buffer.clear()
+                    return residual.decode("utf-8", errors="replace")
+                return None
+
+            stream_name, payload = frame
+            if stream_name == "stderr":
+                # Phase 7 residual #1 visibility (2026-05-18):
+                # 1) Untruncated copy to optional file sink for post-mortem.
+                # 2) INFO-level log (was DEBUG; --log-level error silenced it).
+                # 3) Truncate log to 512 bytes; the file sink keeps the full
+                #    payload so operators can grep for the real exception text.
+                if self.stderr_sink is not None:
+                    try:
+                        self.stderr_sink.write(bytes(payload))
+                        self.stderr_sink.flush()
+                    except (OSError, ValueError):
+                        # ValueError covers writes to a closed file; OSError
+                        # covers disk-full / permission. Diagnostic-only sink
+                        # must never break the bridge — drop and continue.
+                        log.warning(
+                            "bridge stderr sink write failed; dropping payload"
+                        )
+                log.info(
+                    "bridge stderr frame (truncated to 512B): %r",
+                    bytes(payload[:512]),
+                )
+                continue
+
+            if not payload:
+                continue
+
+            self._line_buffer.extend(payload)
+
 
 # -------------------------------------------------------------------- helpers
 
@@ -246,7 +318,10 @@ def _build_volumes(
 
 
 def _build_environment(
-    identity: AuthenticatedIdentity, bridge_env: Mapping[str, str]
+    identity: AuthenticatedIdentity,
+    bridge_env: Mapping[str, str],
+    *,
+    runtime_mode: str | None = None,
 ) -> dict[str, str]:
     env: dict[str, str] = {
         "CLAUDE_CODE_USE_BEDROCK": "1",
@@ -282,6 +357,8 @@ def _build_environment(
             env[forwarded_key] = bridge_env[forwarded_key]
     # B17c: catalog file is always mounted; CATALOG_FILE points at the bind.
     env["CATALOG_FILE"] = _CONTAINER_CATALOG_FILE
+    if runtime_mode is not None:
+        env["DMAC_RUNTIME_MODE"] = runtime_mode
     return env
 
 
@@ -308,13 +385,16 @@ def build_container_spec(
     image: str,
     session_id: str | None,
     bridge_env: Mapping[str, str],
+    runtime_mode: str | None = None,
 ) -> ContainerSpec:
     """Assemble the frozen ContainerSpec that `start_container` will launch."""
     _validate_user_id(identity.user_id)
     return ContainerSpec(
         image=image,
         command=_build_command(session_id),
-        environment=_build_environment(identity, bridge_env),
+        environment=_build_environment(
+            identity, bridge_env, runtime_mode=runtime_mode
+        ),
         volumes=_build_volumes(identity, config),
         working_dir=_CONTAINER_WORKING_DIR,
         labels={
@@ -332,6 +412,8 @@ def start_container(
     bridge_env: Mapping[str, str],
     config: BridgeConfig,
     client: Any | None = None,
+    runtime_mode: str | None = None,
+    command_override: list[str] | None = None,
 ) -> Container:
     """Build a spec and launch the container detached."""
     spec = build_container_spec(
@@ -340,11 +422,12 @@ def start_container(
         image=image,
         session_id=session_id,
         bridge_env=bridge_env,
+        runtime_mode=runtime_mode,
     )
     client = client or docker.from_env()
     run_kwargs: dict[str, Any] = {
         "image": spec.image,
-        "command": spec.command,
+        "command": command_override if command_override is not None else spec.command,
         "environment": spec.environment,
         "volumes": spec.volumes,
         "working_dir": spec.working_dir,
@@ -413,6 +496,8 @@ async def async_start_container(
     bridge_env: Mapping[str, str],
     config: BridgeConfig,
     client: Any | None = None,
+    runtime_mode: str | None = None,
+    command_override: list[str] | None = None,
 ) -> Container:
     return await asyncio.to_thread(
         start_container,
@@ -422,6 +507,8 @@ async def async_start_container(
         bridge_env=bridge_env,
         config=config,
         client=client,
+        runtime_mode=runtime_mode,
+        command_override=command_override,
     )
 
 
@@ -431,3 +518,155 @@ async def async_attach(container: Container) -> BridgeAttachSocket:
 
 async def async_stop_and_remove(container: Container, *, timeout: int = 5) -> None:
     await asyncio.to_thread(stop_and_remove, container, timeout=timeout)
+
+
+# ---------------------------------------------- T3.1: per-turn exec primitives
+
+
+def _build_exec_environment(
+    identity: AuthenticatedIdentity,
+    bridge_env: Mapping[str, str],
+    *,
+    route: str,
+    ns_session_id: str | None = None,
+) -> dict[str, str]:
+    """Assemble the per-exec environment per locked spec L124-126."""
+    env = _build_environment(identity, bridge_env)
+    env["API_USER"] = identity.user_id
+    env["API_PASS"] = identity.password.get_secret_value()
+    env["NEXTSEEK_BASE_URL"] = bridge_env.get("NEXTSEEK_BASE_URL", "")
+    if route == "ns":
+        if ns_session_id is None:
+            # Defensive guard for direct helper misuse. Public exec_ns_turn()
+            # requires session_id: str, so this branch is unreachable there.
+            raise ValueError(  # pragma: no cover
+                "ns_session_id required for route='ns'",
+            )
+        env["OUTPUTS_DIR"] = (
+            f"/data/scratch/{identity.user_id}/chat_nextseek/{ns_session_id}/"
+        )
+        env["CHAT_NEXTSEEK_SESSION_DB"] = (
+            "/home/user/.claude/chat_nextseek/sessions.sqlite"
+        )
+        env["NEXTSEEK_MODE"] = "gcp"
+    return env
+
+
+def exec_cc_turn(
+    container: Container,
+    *,
+    query: str,
+    model_id: str,
+    session_id: str | None,
+    identity: AuthenticatedIdentity,
+    config: BridgeConfig,
+    bridge_env: Mapping[str, str],
+    client: Any | None = None,
+) -> BridgeAttachSocket:
+    """Run one Claude Code turn against the idle container via docker exec."""
+    api_client = client or container.client
+    cmd: list[str] = [
+        "claude",
+        "--print",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--dangerously-skip-permissions",
+        "--model",
+        model_id,
+    ]
+    if session_id:
+        cmd.extend(["--resume", session_id])
+    environment = _build_exec_environment(identity, bridge_env, route="cc")
+    del config
+    exec_info = api_client.api.exec_create(
+        container.id,
+        cmd=cmd,
+        stdin=True,
+        stdout=True,
+        stderr=True,
+        tty=False,
+        environment=environment,
+    )
+    exec_id = exec_info["Id"] if isinstance(exec_info, dict) else exec_info
+    raw_socket = api_client.api.exec_start(exec_id, socket=True)
+    sock = BridgeAttachSocket(raw_socket)
+    sock._exec_id = exec_id  # type: ignore[attr-defined]
+    envelope = json.dumps(
+        {"type": "user", "message": {"role": "user", "content": query}},
+        separators=(",", ":"),
+    )
+    sock.send_stdin((envelope + "\n").encode("utf-8"))
+    sock.close_stdin()
+    return sock
+
+
+def exec_ns_turn(
+    container: Container,
+    *,
+    query: str,
+    session_id: str,
+    identity: AuthenticatedIdentity,
+    config: BridgeConfig,
+    bridge_env: Mapping[str, str],
+    client: Any | None = None,
+) -> BridgeAttachSocket:
+    """Run one NExtSEEK turn against the idle container via docker exec."""
+    api_client = client or container.client
+    cmd: list[str] = ["python", "/opt/dmac/runner_ns.py", "--session", session_id]
+    environment = _build_exec_environment(
+        identity,
+        bridge_env,
+        route="ns",
+        ns_session_id=session_id,
+    )
+    del config
+    exec_info = api_client.api.exec_create(
+        container.id,
+        cmd=cmd,
+        stdin=True,
+        stdout=True,
+        stderr=True,
+        tty=False,
+        environment=environment,
+    )
+    exec_id = exec_info["Id"] if isinstance(exec_info, dict) else exec_info
+    raw_socket = api_client.api.exec_start(exec_id, socket=True)
+    sock = BridgeAttachSocket(raw_socket)
+    sock._exec_id = exec_id  # type: ignore[attr-defined]
+    sock.send_stdin((query + "\n").encode("utf-8"))
+    sock.close_stdin()
+    return sock
+
+
+def kill_exec_pid(
+    container: Container,
+    exec_id: str,
+    *,
+    client: Any | None = None,
+) -> None:
+    """SIGKILL a running docker exec process while leaving the container alive."""
+    api_client = client or container.client
+    try:
+        info = api_client.api.exec_inspect(exec_id)
+    except APIError as exc:
+        log.warning("kill_exec_pid: exec_inspect failed: %s", type(exc).__name__)
+        return
+    pid = info.get("Pid", 0) if isinstance(info, dict) else 0
+    if not pid:
+        return
+    try:
+        kill_info = api_client.api.exec_create(
+            container.id,
+            cmd=["kill", "-9", str(pid)],
+            stdin=False,
+            stdout=False,
+            stderr=False,
+            tty=False,
+        )
+        kill_id = kill_info["Id"] if isinstance(kill_info, dict) else kill_info
+        api_client.api.exec_start(kill_id, detach=True)
+    except APIError as exc:
+        log.warning("kill_exec_pid: kill exec failed: %s", type(exc).__name__)

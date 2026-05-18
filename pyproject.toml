@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "baml-py>=0.222.0",
+    "baml-py~=0.222.0",
     "docker>=7.1.0",
     "fastapi>=0.116",
     "httpx>=0.28.1",
@@ -16,6 +16,7 @@ dependencies = [
     "pydantic>=2.13.0",
     "python-dotenv>=1.2.2",
     "uvicorn[standard]>=0.35",
+    "websockets~=16.0",
 ]
 
 [dependency-groups]
@@ -47,6 +48,7 @@ testpaths = ["tests"]
 norecursedirs = ["tests/image", ".git", "__pycache__", "*.egg-info", "tools"]
 pythonpath = ["src", "."]
 markers = [
+    "integration: marks integration tests that exercise the bridge against a real Docker daemon and built image",
     "live: marks live end-to-end tests requiring ~/.env (deselect with '-m \"not live\"')",
     "live_bridge: marks live FastAPI bridge end-to-end tests requiring Docker + ~/.env (deselect with '-m \"not live_bridge\"')",
     "live_docker: marks opt-in Docker-backed tests that do not require live service credentials",
@@ -63,8 +65,11 @@ markers = [
 # and §6.3 gates (from task-07 spec) are what enforce 95%+ on these modules.
 # Omitting them from host coverage measurement is the DD-13-compliant fix.
 # (Phase 7 H-2 reopened, 2026-05-13.)
+# T1.1: BAML-generated client (Pydantic models) — not human-authored; coverage
+# of generated code is non-load-bearing and noisy. Spec V.O. #5 mandates this entry.
 omit = [
     "src/dmac_assistant/eval/*",
+    "src/dmac_assistant/router/baml_client/*",
 ]
 
 [tool.coverage.report]
@@ -72,5 +77,8 @@ exclude_lines = [
     "pragma: no cover",
     "if __name__ == .__main__.:",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"src/dmac_assistant/router/baml_client/*" = ["F401"]
 
 # T7 path-decision: PATH_B image-only — chat_nextseek install deferred to T8 (R4-NEW-5)

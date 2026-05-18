@@ -4,6 +4,55 @@ All notable changes to this project are documented here. The format is loosely b
 
 ## [Unreleased]
 
+### Added — 2026-05-16 — LLM router subsystem
+
+Per-turn LLM router inserted into the WebSocket bridge. For each user message, the router picks one of two execution routes: `nextseek_query` (deterministic `chat_nextseek` pipeline running inside the long-lived `dmac-assistant:poc` container via `docker exec`) or `container_cc` (in-container Claude Code with a router-chosen model class — `"opus"`, `"sonnet"`, or `"haiku"`). The router is flag-gated by `DMAC_ROUTER_ENABLED`; with the flag unset or falsy, bridge behavior is byte-identical to the pre-router build. Plan: `llm-router-2026-05-14` (16 tasks, Wave 0–6, Phase 4 round-4 reviewer UA across all specs).
+
+User-observable contract changes:
+
+- **New optional WS frame `route_decided`** — emitted to the client BEFORE `session_started` whenever the router decides a route. Schema: `{type: "route_decided", route: "nextseek_query" | "container_cc", model_class: "opus" | "sonnet" | "haiku" | null}`. The frame carries NO `session_id` field (locked DD-09). `model_class` is `null` for the `nextseek_query` route. Clients that do not recognize the frame type render it harmlessly via the existing `default:` case in the frontend frame switch (T0.1 pinning test confirms this).
+- **New `tool_use` namespace `ns:*`** — when the router picks `nextseek_query`, the chat_nextseek orchestrator's per-step events are surfaced as `{"type":"tool_use","tool":"ns:<agent>","input":...}` frames. Existing clients render the `tool` value verbatim with no allowlist.
+- **New bridge-side env var `GCP_API_KEY`** — required when `DMAC_ROUTER_ENABLED=1`. Consumed by the BAML `GCPReasoner` client that drives the router's route-decision call (the Google `gemini-3.1-pro-preview` model).
+- **New per-exec env contract for in-container runs** — the bridge now explicitly sets `API_USER`, `API_PASS`, `NEXTSEEK_BASE_URL` (and `NEXTSEEK_MODE=gcp` + `NEO4J_DATABASE` for the NS route only) when invoking `docker exec` for each turn. The entrypoint env-translation path is bypassed because per-turn exec does not run the entrypoint.
+- **New container startup mode `DMAC_RUNTIME_MODE`** — supports `idle` (long-lived container, no Claude process running until a `docker exec` arrives) in addition to the legacy default (`agent`, container starts Claude immediately). The router uses idle mode by default since per-turn exec is the dispatch model.
+
+New files:
+
+- `src/dmac_assistant/router/` — bridge-side router package (BAML scaffold, `RouterAgent`, capability registry loader, model-class map).
+- `src/dmac_assistant/router/baml_client/` — generated BAML Python client (Pydantic models + `RouteQuery` call site). Coverage-excluded per plan `## Coverage Exceptions` (generated code).
+- `src/dmac_assistant/ns_adapter.py` — pure function `ns_event_to_frames(event, *, session_id, event_index)` that translates chat_nextseek JSONL events to WS frames.
+- `container/runner_ns.py` — in-image Python sidecar that runs `chat_nextseek.orchestrator.run_query(...)` per NS turn and emits JSONL events on stdout.
+- `build_context/route_capabilities.json` — per-route capability/task-family registry (loaded by `RouterAgent`).
+- `build_context/router_model_class_map.json` — Bedrock model-ID resolution for the three Anthropic model classes (BAML enum aliases `"opus"`/`"sonnet"`/`"haiku"`).
+- `tools/e2e/run_router_e2e.py` — operator-facing WS-client headless harness; runs a 5-query routing-discriminator suite (pure-NS, pure-CC, ambiguous) and emits a per-run manifest at `evidence/router-e2e/<run_id>/`.
+- `tests/unit/router/`, `tests/unit/test_docs_router_invariants.py`, `tests/integration/test_router_*.py` — full test suite + this docs pinning suite.
+
+Modified files:
+
+- `pyproject.toml` — `baml-py` specifier changed from `>=0.222.0` to `~=0.222.0` (atomic `uv add` per plan DD-13).
+- `src/dmac_assistant/ws.py` — `chat_ws` now performs per-turn dispatch when `DMAC_ROUTER_ENABLED=1`; emits the optional `route_decided` frame; dispatches to `_dispatch_cc_turn` or `_dispatch_ns_turn` depending on the route. Flag-off path is unchanged.
+- `src/dmac_assistant/containers.py` — `BridgeAttachSocket` extended with `read_event_line()` for the per-turn exec stream.
+- `container/entrypoint.sh` — adds the `DMAC_RUNTIME_MODE=idle` branch (legacy default unchanged).
+
+BAML enum:
+
+The router's route decision uses two BAML enums. The runtime contract on the wire is the lowercase `@alias` strings (`"nextseek_query"` / `"container_cc"` for `Route`; `"opus"` / `"sonnet"` / `"haiku"` for `ModelClass`); the BAML-generated Python enum identifiers (`NextseekQuery`, `ContainerCC`, `Opus`, `Sonnet`, `Haiku`) are internal to the router package.
+
+CLI:
+```sh
+# Operator-facing E2E harness (5 routing-discriminator queries):
+uv run python tools/e2e/run_router_e2e.py \
+    --output-base evidence/router-e2e \
+    --bridge-port 8001 \
+    --queries tools/e2e/router_discriminators.json
+```
+
+Coverage:
+
+- Host pytest gate: full unit + integration suite passes with `--cov-fail-under=95` on the `src/dmac_assistant/` subtree (router package included).
+- Generated BAML client at `src/dmac_assistant/router/baml_client/` is excluded under plan `## Coverage Exceptions`.
+- `tools/e2e/run_router_e2e.py` runs in a subprocess and is exercised by a wrapper test under `tests/integration/`; coverage on the tool itself is informational only (no `--cov-fail-under` threshold per T5.1 round-2 finding F-T5.1-2-1, which documented that pytest-cov 7.1.0 dropped auto-`.pth` subprocess instrumentation).
+
 ### Added — 2026-05-13 — HiBayes runtime-reliability analysis pipeline
 
 Offline analysis tool that consumes the HiBayes-ready CSV emitted by `tools/hibayes/exporter.py` and produces per-task-family Bayesian posterior estimates of agent success probability. Output: self-contained HTML report plus CSV/JSON artifacts under `out/hibayes_runtime_reliability/`. Plan: `hibayes-runtime-reliability-2026-05-09` (8 tasks, Wave 1–5, Phase 7 round-4 reviewer PASS).

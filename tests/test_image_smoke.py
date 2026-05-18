@@ -507,3 +507,131 @@ def test_usr_bin_python_resolves_for_stripped_path_dispatch():
         f"+ dataclass slots + match-case). Update the image's /usr/bin/python "
         f"symlink to point at the 3.14 install."
     )
+
+
+# ============================================================================
+# T4.1 — Image-rebuild verification tests
+# ============================================================================
+
+
+def test_runner_ns_present_in_image() -> None:
+    """The rebuilt image contains the T1.3 NExtSEEK runner script."""
+    with make_container(
+        image=IMAGE_TAG,
+        mounts={},
+        env={},
+        command=["-c", "ls -la /opt/dmac/runner_ns.py"],
+        entrypoint_override=["sh"],
+    ) as container:
+        exit_code = container.wait()["StatusCode"]
+        logs = container.logs(stdout=True, stderr=True).decode(
+            "utf-8", errors="replace"
+        )
+
+    assert exit_code == 0, (
+        "runner_ns.py missing from /opt/dmac in rebuilt image; "
+        f"logs={logs!r}"
+    )
+    assert "runner_ns.py" in logs
+
+
+def test_runner_ns_mode_world_executable() -> None:
+    """The runner is mode 0755 so uid 1001 can execute the root-owned file."""
+    with make_container(
+        image=IMAGE_TAG,
+        mounts={},
+        env={},
+        command=["-c", "stat -c '%a %u %g' /opt/dmac/runner_ns.py"],
+        entrypoint_override=["sh"],
+    ) as container:
+        exit_code = container.wait()["StatusCode"]
+        logs = container.logs(stdout=True, stderr=True).decode(
+            "utf-8", errors="replace"
+        )
+
+    assert exit_code == 0, f"stat runner_ns.py failed; logs={logs!r}"
+    stat_lines = [
+        line.strip()
+        for line in logs.splitlines()
+        if line.strip() and line.strip()[0].isdigit()
+    ]
+    assert stat_lines, f"stat output missing mode/uid/gid line; logs={logs!r}"
+    mode, uid, gid = stat_lines[-1].split()
+    assert mode == "755", (
+        f"runner_ns.py mode should be 755, got mode={mode!r} "
+        f"uid={uid!r} gid={gid!r}; logs={logs!r}"
+    )
+
+
+def test_chat_nextseek_orchestrator_importable_in_image() -> None:
+    """The rebuilt image can import chat_nextseek.orchestrator.run_query."""
+    with make_container(
+        image=IMAGE_TAG,
+        mounts={},
+        env={},
+        command=[
+            "-c",
+            "python -c 'from chat_nextseek.orchestrator import run_query; "
+            "print(run_query.__name__)'",
+        ],
+        entrypoint_override=["sh"],
+    ) as container:
+        exit_code = container.wait()["StatusCode"]
+        logs = container.logs(stdout=True, stderr=True).decode(
+            "utf-8", errors="replace"
+        )
+
+    assert exit_code == 0, (
+        "chat_nextseek.orchestrator.run_query import failed inside rebuilt "
+        f"image; logs={logs!r}"
+    )
+    assert "run_query" in logs
+
+
+def test_entrypoint_dmac_runtime_mode_idle_keeps_container_alive(
+    dummy_env: dict[str, str],
+) -> None:
+    """DMAC_RUNTIME_MODE=idle runs the entrypoint sleep loop."""
+    import time
+
+    idle_env = dict(dummy_env)
+    idle_env["DMAC_RUNTIME_MODE"] = "idle"
+    with make_container(
+        image=IMAGE_TAG,
+        mounts={},
+        env=idle_env,
+        command=["sh", "-c", "exit 7"],
+    ) as container:
+        time.sleep(2)
+        container.reload()
+        status = container.status
+        logs = container.logs(stdout=True, stderr=True).decode(
+            "utf-8", errors="replace"
+        )
+        container.stop(timeout=5)
+
+    assert status == "running", (
+        "idle-mode container exited instead of staying alive; "
+        f"status={status!r} logs={logs!r}"
+    )
+
+
+def test_entrypoint_dmac_runtime_mode_default_runs_command(
+    dummy_env: dict[str, str],
+) -> None:
+    """Without DMAC_RUNTIME_MODE, the entrypoint still execs the command."""
+    with make_container(
+        image=IMAGE_TAG,
+        mounts={},
+        env=dummy_env,
+        command=["sh", "-c", "printf DEFAULT_PATH_OK"],
+    ) as container:
+        result = container.wait()
+        logs = container.logs(stdout=True, stderr=True).decode(
+            "utf-8", errors="replace"
+        )
+
+    assert result["StatusCode"] == 0, (
+        f"default entrypoint path failed; result={result!r} logs={logs!r}"
+    )
+    assert "DEFAULT_PATH_OK" in logs

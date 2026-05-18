@@ -423,6 +423,84 @@ def test_bridge_attach_socket_can_read_from_log_stream():
     assert sock.read_frame() is None
 
 
+# Phase 7 residual #1 visibility (2026-05-18): stderr sink contract.
+
+
+def test_read_event_line_writes_stderr_payload_to_sink_when_set():
+    """Phase 7 #1: when stderr_sink is provided, every stderr frame's payload
+    is written verbatim and the file is flushed so the bytes survive even if
+    the runner crashes mid-stream."""
+    import io
+
+    big_payload = b"[DEBUG][PARSER] Exception or parse error: " + b"X" * 1024
+    raw = _FakeSocket(_make_frame(2, big_payload) + _make_frame(1, b"hello\n"))
+    sink = io.BytesIO()
+    sock = BridgeAttachSocket(raw, stderr_sink=sink)
+
+    line = sock.read_event_line()
+
+    assert line == "hello"
+    assert sink.getvalue() == big_payload, (
+        "stderr sink must persist the full payload untruncated; needed for "
+        "parser exception text > 80B"
+    )
+
+
+def test_read_event_line_no_sink_drops_stderr_without_error():
+    """Default-None stderr_sink: no write target, no side effect, no crash."""
+    raw = _FakeSocket(
+        _make_frame(2, b"discarded stderr text") + _make_frame(1, b"ok\n")
+    )
+    sock = BridgeAttachSocket(raw)
+    assert sock.stderr_sink is None  # public attribute contract
+    assert sock.read_event_line() == "ok"
+
+
+def test_read_event_line_logs_stderr_at_info_level_truncated_to_512b(caplog):
+    """Phase 7 #1: log.info (was log.debug) so default uvicorn --log-level
+    info captures it; payload truncated to 512 bytes in the log line so an
+    8 KB stderr frame doesn't flood the log even though the sink keeps full
+    bytes."""
+    import io
+    import logging
+
+    payload = b"A" * 2048
+    raw = _FakeSocket(_make_frame(2, payload) + _make_frame(1, b"y\n"))
+    sink = io.BytesIO()
+    sock = BridgeAttachSocket(raw, stderr_sink=sink)
+
+    with caplog.at_level(logging.INFO, logger="dmac_assistant.containers"):
+        sock.read_event_line()
+
+    msgs = [r.message for r in caplog.records if "stderr frame" in r.message]
+    assert msgs, "expected an INFO-level stderr frame log entry"
+    # The log was truncated to 512 bytes; the sink kept the full 2048.
+    assert "512B" in msgs[0]
+    assert len(sink.getvalue()) == 2048
+
+
+def test_read_event_line_sink_write_failure_warns_and_continues(caplog):
+    """Sink failure (e.g. disk full, closed file) must not break the bridge.
+    We expect a WARNING log and the stdout line still flowing."""
+    import logging
+
+    class _BrokenSink:
+        def write(self, _data: bytes) -> int:
+            raise OSError("disk full")
+
+        def flush(self) -> None:
+            return None
+
+    raw = _FakeSocket(_make_frame(2, b"oops") + _make_frame(1, b"still-here\n"))
+    sock = BridgeAttachSocket(raw, stderr_sink=_BrokenSink())
+
+    with caplog.at_level(logging.WARNING, logger="dmac_assistant.containers"):
+        assert sock.read_event_line() == "still-here"
+
+    warn = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("stderr sink" in r.message for r in warn)
+
+
 def test_stop_and_remove_is_idempotent_on_not_found():
     container = MagicMock()
     container.stop.side_effect = NotFound("gone")

@@ -237,6 +237,31 @@ See [`docs/bridge/`](docs/bridge/) for protocol-level documentation of the WebSo
 
 ---
 
+## LLM router
+
+A per-turn LLM router is inserted between the WebSocket bridge and Claude. For each user message, the router picks one of two execution routes:
+
+- `nextseek_query` - runs the deterministic `chat_nextseek` orchestrator pipeline as a sidecar process inside the long-lived `dmac-assistant:poc` container. Used for catalog/sample/study/lineage queries against NExtSEEK. Selected when the router classifies the message as a structured query.
+- `container_cc` - runs Claude Code inside the same container with a router-chosen model class (`"opus"`, `"sonnet"`, or `"haiku"`). Used for everything else.
+
+The router is flag-gated by **`DMAC_ROUTER_ENABLED`**. With the flag unset or falsy, the bridge dispatch path is byte-identical to the pre-router build (no router agent invocation, no `route_decided` frame, no per-turn exec - turns go to the long-lived Claude attach socket as before).
+
+When the flag is on, the bridge emits one new optional WebSocket frame to the client BEFORE any `session_started` frame:
+
+```json
+{"type":"route_decided","route":"nextseek_query","model_class":null}
+```
+
+`model_class` is `null` when `route` is `"nextseek_query"`; for `"container_cc"` it is one of `"opus"`, `"sonnet"`, or `"haiku"`. The frame is OPTIONAL - it is emitted only when the router decides a route. The frame deliberately carries no `session_id` field (the routing decision is taken before any Claude session is started). See [`docs/bridge/ws-protocol.md`](docs/bridge/ws-protocol.md) for the full frame schema.
+
+The router itself is a BAML Gemini Pro call (currently `gemini-3.1-pro-preview`) via `b.RouteQuery(...)` and needs a `GCP_API_KEY` environment value on the bridge host. When the router is disabled or the call fails, the bridge falls back to `route=container_cc, model_class=sonnet`.
+
+An operator-facing E2E harness at [`tools/e2e/run_router_e2e.py`](tools/e2e/run_router_e2e.py) runs a 5-query routing-discriminator suite (pure-NS, pure-CC, ambiguous) against a locally-running bridge and emits a per-run manifest under `evidence/router-e2e/<run_id>/`.
+
+For full design rationale and the locked architecture (10 design decisions, 16 task specs across 6 waves), see the LLM router specification at [`docs/superpowers/specs/2026-05-13-llm-router-design.md`](docs/superpowers/specs/2026-05-13-llm-router-design.md).
+
+---
+
 ## Reliability analysis pipeline
 
 An offline analysis tool, completely separate from the bridge runtime. It answers one question: **for each task family the headless agent ran, what is the posterior probability of runtime success, and how confident are we in that estimate?**
