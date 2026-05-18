@@ -76,8 +76,23 @@ KNOWN_FRAME_TYPES = frozenset(
     }
 )
 
-SYNTHETIC_USER_ID = "alice"
-SYNTHETIC_PASSWORD = "s3cret-alice"
+# Bridge auth + container NS-credential propagation
+# -------------------------------------------------
+# The bridge passes the WS login user_id/password straight through to the
+# container as NEXTSEEK_USERNAME / NEXTSEEK_PASSWORD (see
+# src/dmac_assistant/containers.py::_build_environment). To make live NS API
+# calls land with real credentials, the harness logs in with the same
+# NEXTSEEK_* values it ultimately wants forwarded into the container.
+# `_check_credentials()` validates both env vars are present before
+# `_build_child_env` / `_login` are called.
+def _ns_user_id() -> str:
+    return os.environ["NEXTSEEK_USERNAME"]
+
+
+def _ns_password() -> str:
+    return os.environ["NEXTSEEK_PASSWORD"]
+
+
 SYNTHETIC_PROJECT = "proj-a"
 
 
@@ -178,8 +193,8 @@ def _build_child_env(
     child_env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
     child_env["DMAC_USERS"] = json.dumps(
         {
-            SYNTHETIC_USER_ID: {
-                "password": SYNTHETIC_PASSWORD,
+            _ns_user_id(): {
+                "password": _ns_password(),
                 "projects": [SYNTHETIC_PROJECT],
             }
         }
@@ -245,7 +260,7 @@ def _terminate_bridge(proc: subprocess.Popen[bytes]) -> None:
 
 def _login(*, port: int) -> str:
     url = f"http://127.0.0.1:{port}/auth/login"
-    payload = {"user_id": SYNTHETIC_USER_ID, "password": SYNTHETIC_PASSWORD}
+    payload = {"user_id": _ns_user_id(), "password": _ns_password()}
     with httpx.Client(timeout=10.0) as client:
         response = client.post(url, json=payload)
         response.raise_for_status()
