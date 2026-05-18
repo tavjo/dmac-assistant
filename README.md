@@ -121,7 +121,7 @@ The `.env.example` file is the canonical schema. Required for the bridge to star
 - `NEXTSEEK_USERNAME`, `NEXTSEEK_PASSWORD`, `NEXTSEEK_URL` — fallback creds (production reuses chat-UI login)
 - `DMAC_DEV_MODE=1` — selects macOS-friendly default path roots (`~/dmac-dev/...`)
 
-Optional: `GCP_API_KEY`, `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` are forwarded to the container if set.
+Optional (forwarded to the container if set): `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`. **`GCP_API_KEY` is conditionally required**: optional when the LLM router is off (the default), but required when `DMAC_ROUTER_ENABLED=1` because the router uses Gemini Pro via BAML for route decisions. See [LLM router](#llm-router).
 
 ---
 
@@ -134,11 +134,18 @@ dmac-assistant/
 │   ├── auth.py                # Token store + identity model
 │   ├── config.py              # Env-driven BridgeConfig
 │   ├── containers.py          # docker-py wrapper, mount contract, env injection
-│   ├── ws.py                  # /ws/chat WebSocket route + relay loop
+│   ├── ws.py                  # /ws/chat WebSocket route + relay loop (+ router dispatch)
 │   ├── run_tracker.py         # Per-turn scratch file-set snapshot
 │   ├── copier.py              # scratch → output publish (M2-safe)
 │   ├── streamjson.py          # claude stream-json parser
 │   ├── sessions.py            # Most-recent-session lookup for --resume
+│   ├── ns_adapter.py          # chat_nextseek JSONL → WS frame translator
+│   ├── router/                # LLM router subsystem (flag: DMAC_ROUTER_ENABLED)
+│   │   ├── agent.py           # RouterAgent (BAML wrapper, fallback policy)
+│   │   ├── capabilities.py    # build_context/route_capabilities.json loader
+│   │   ├── models.py          # model_class → Bedrock model-ID resolver
+│   │   ├── baml_src/          # BAML source: clients.baml, router.baml, judge.baml
+│   │   └── baml_client/       # Generated BAML Python client (coverage-excluded)
 │   └── static/                # Vanilla HTML chat UI
 ├── tests/
 │   ├── unit/                  # Hermetic unit tests
@@ -197,7 +204,7 @@ uv run pytest tests/integration -q           # integration (FastAPI TestClient)
 uv run pytest --cov-fail-under=95 -q         # gated run (CI behavior)
 ```
 
-Bridge coverage at the latest tag is **98.89%** (Plan A T12 closure). Two acknowledged low-priority gaps remain in `run_tracker.py` (an `OSError` race-condition guard for files that vanish between `os.walk` and `stat()`) and `copier.py` (an empty-string lexical guard in `_is_safe_relpath` that's unreachable from snapshot output). Both are unreachable in normal flow and tracked for follow-up.
+Bridge coverage runs consistently above the 95% gate. At Plan A T12 closure (2026-05-01) the bridge subtree was at **98.89%**; subsequent additions (HiBayes runtime-reliability pipeline, LLM router subsystem, iter-02 residual-debt fixes) hold that bar via per-task `--cov-fail-under` checks at merge time. Two acknowledged low-priority gaps remain in `run_tracker.py` (an `OSError` race-condition guard for files that vanish between `os.walk` and `stat()`) and `copier.py` (an empty-string lexical guard in `_is_safe_relpath` that's unreachable from snapshot output). Both are unreachable in normal flow and tracked for follow-up. A few load-bearing router-subsystem surfaces (`ws.py::_chat_ws_router_on`, `ws.py::_get_router_agent`) carry explicit `# pragma: no cover` exceptions justified by their integration-test-only nature; see plan `## Coverage Exceptions` for the formal list.
 
 The `build_tools/` sibling project has its own `pyproject.toml` and is run separately:
 
@@ -223,7 +230,7 @@ If you change `run_tracker.py`, `copier.py`, or `ws.py`'s `dispatch_post_turn_co
 
 ## Image build
 
-The image is named `dmac-assistant:poc` (currently `sha256:933d13b572...` at ~1.27 GB). It is `linux/amd64` and contains Python 3.14, `uv`, Claude Code (Node-based with native-binary wrapper), the `nextseek-api` plugin, and the vendored `chat_nextseek` Python source.
+The image is named `dmac-assistant:poc` (~1.27 GB; specific SHA rotates with each build — run `docker image inspect dmac-assistant:poc --format '{{.Id}}'` for the current digest). It is `linux/amd64` and contains Python 3.14, `uv`, Claude Code (Node-based with native-binary wrapper), the `nextseek-api` plugin, the vendored `chat_nextseek` Python source, and the BAML-generated router client.
 
 ```sh
 make sync-vendor-deps    # clone chat_nextseek pinned source into vendor/ (HTTPS, uses GH Keychain auth)
@@ -302,6 +309,7 @@ The pipeline is opt-in. Bridge users do not need it; reliability-evaluation oper
 |------|--------|-------|
 | **Plan A** — POC bridge + container + plugin shims | ✅ **Complete** (2026-05-01) | All 12 tasks merged + T11 manual smoke 13/13 ✅ |
 | **HiBayes runtime-reliability pipeline** — offline posterior reliability analysis | ✅ **Complete** (2026-05-13) | All 8 tasks merged; Phase 7 round-4 reviewer PASS; split-coverage model formalized as Amendment 7 |
+| **LLM router** — per-turn route selection between `chat_nextseek` and Container-CC | ✅ **Complete** (2026-05-18) | All 16 tasks merged (Wave 0–6); iter-02 independent Phase 7 reviewer PASS; flag-gated by `DMAC_ROUTER_ENABLED` (default off = byte-identical legacy bridge); iter-02 residual debt closed in `fix/llm-router-residual-debt` (`dd34d6e`) |
 | **Plan B** — production hardening, plugin swap-in, multi-user pooling | ⏳ Not started | Unblocked by Plan A closure |
 
 ### What Plan A delivered
