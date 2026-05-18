@@ -42,6 +42,19 @@ This guidance is non-deterministic protection: the architectural defense is the 
 - Prefer inferring defaults from environment variables and project context over asking. See the nextseek skill's **Environment resolution** section for the canonical example.
 - **Exception: write-safety gate.** The nextseek skill replaces the old `AskUserQuestion` write-safety gate with a plain-text `"confirm"` prompt — that's the only write-safety mechanism now.
 
+## Router-aware behavior
+
+When the bridge runs you with `DMAC_ROUTER_ENABLED=1`, your turn arrived via the `container_cc` route - the bridge already decided that this turn is general agent work (not a structured NExtSEEK query). The other route, `nextseek_query`, is handled by `chat_nextseek` running as a sidecar process inside this same container; you will not see those turns at all.
+
+What this means for you:
+
+- **You handle one turn at a time, via a fresh `docker exec`.** With `DMAC_ROUTER_ENABLED=1` the container starts in idle mode (`DMAC_RUNTIME_MODE=idle`) and the bridge `docker exec`'s Claude per turn. There is no long-lived Claude process to share state with across turns; per-turn state lives in `/home/user/.claude/` exactly as before.
+- **You may see `NEXTSEEK_MODE` set in your env.** When set to `gcp` (the router's default for NS-route work), it selects Gemini Flash-Lite for chat_nextseek's internal classifier calls. For `container_cc` turns you can ignore the value - it doesn't affect Claude Code behavior - but it WILL show up in `env` output, so apply the credential-masking rule above (never bare `env`).
+- **The model class you're running as comes from the router.** `model_class` (one of `"opus"`, `"sonnet"`, `"haiku"`) is resolved into a Bedrock model ID by the bridge and passed via the existing Bedrock auth path. You do not need to do anything with this - Claude Code consumes it transparently.
+- **Do not assume your environment is the same as previous turns.** Per-turn exec means env vars and credentials are re-injected per turn. Treat each turn as a fresh process; do not cache env values across `Bash` invocations within a turn unless you have a specific reason to.
+
+When `DMAC_ROUTER_ENABLED` is unset or falsy (legacy mode), you run as the long-lived attached Claude process and none of the per-turn-exec considerations apply; behavior is unchanged from pre-router builds.
+
 ## Stop-after-2 rule (load-bearing)
 
 When a tool call fails or returns an unsupported / unknown / clearly-wrong result, you MAY retry **once** with a corrected invocation. **Do NOT retry a third time.** If the second attempt also fails, STOP. Do not:

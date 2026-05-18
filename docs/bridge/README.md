@@ -108,6 +108,34 @@ Only the following bridge-configurable variables are assigned in [`.env.example`
 
 At runtime the bridge also injects `NEXTSEEK_USERNAME` and `NEXTSEEK_PASSWORD` into the container. Those values are derived from the authenticated login, not configured separately for `/ws/chat`.
 
+When the LLM router is enabled (see below), `GCP_API_KEY` must also be set on the bridge host - the router calls Gemini Pro (currently `gemini-3.1-pro-preview`) via BAML to classify each turn into a route. The bridge does not forward `GCP_API_KEY` to the container.
+
+## Routing and model selection
+
+The bridge supports an optional LLM router (flag-gated by `DMAC_ROUTER_ENABLED`). When the flag is unset or falsy, the bridge dispatches every turn through the legacy long-lived Claude attach socket exactly as before; when set, the bridge classifies each user turn into one of two routes:
+
+- `nextseek_query` - runs the deterministic `chat_nextseek` orchestrator pipeline inside the long-lived container (per-turn `docker exec`). Used for NExtSEEK-shaped queries (catalog lookups, sample lineage, study metadata).
+- `container_cc` - runs Claude Code inside the container with a router-chosen model class (`"opus"`, `"sonnet"`, or `"haiku"`). Used for everything else.
+
+The route decision and (for `container_cc`) the model class are emitted to the client as an optional `route_decided` WebSocket frame BEFORE `session_started`. See [`ws-protocol.md`](./ws-protocol.md) for the full frame schema.
+
+Bridge-side env vars added by the router:
+
+| Variable | Purpose |
+|---|---|
+| `DMAC_ROUTER_ENABLED` | When truthy, enables the per-turn router. Default: unset (router off, byte-identical legacy behavior). |
+| `GCP_API_KEY` | Required when `DMAC_ROUTER_ENABLED=1`. Consumed by the BAML `GCPReasoner` client that drives the route-decision call. Not forwarded to the container. |
+
+Per-exec env vars the bridge sets on `docker exec` when the router is enabled (these replace the entrypoint-derived environment, which is not invoked for per-turn exec):
+
+- Always: `API_USER`, `API_PASS`, `NEXTSEEK_BASE_URL`, `AWS_REGION`, `AWS_BEARER_TOKEN_BEDROCK`.
+- When `route="nextseek_query"`: `NEXTSEEK_MODE=gcp` (selects Gemini Flash-Lite for chat_nextseek's own classifier calls) and `NEO4J_DATABASE`.
+- When `route="container_cc"`: `CLAUDE_CODE_USE_BEDROCK=1` plus the model-class-specific Bedrock model ID (resolved via `build_context/router_model_class_map.json`).
+
+When the router decides a route but the BAML call fails (network error, rate limit, schema mismatch), the bridge falls back to `route=container_cc, model_class=sonnet` and logs the failure with `extra={"router_fallback": True, "exc_type": <type>}`.
+
+For full design rationale (10 locked design decisions, 16 task specs across 6 waves), see [`../superpowers/specs/2026-05-13-llm-router-design.md`](../superpowers/specs/2026-05-13-llm-router-design.md).
+
 ## Mount contract
 
 The bridge and container follow the mount contract documented in [`../../.claude/CLAUDE.md`](../../.claude/CLAUDE.md):
