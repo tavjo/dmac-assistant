@@ -14,15 +14,6 @@ from tests.harness.containers import docker_available, ensure_image
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
-REQUIRED_CREDS = (
-    "AWS_BEARER_TOKEN_BEDROCK",
-    "AWS_REGION",
-    "NEXTSEEK_USERNAME",
-    "NEXTSEEK_PASSWORD",
-    "NEXTSEEK_URL",
-    "GCP_API_KEY",
-)
-
 EXPECTED_QUERY_IDS = {
     "Search-Basic-1",
     "Graph-Lineage-1",
@@ -32,19 +23,22 @@ EXPECTED_QUERY_IDS = {
 }
 
 
-def _missing_creds() -> list[str]:
-    return [name for name in REQUIRED_CREDS if not os.environ.get(name)]
+class _RedactedEnv(dict[str, str]):
+    def __repr__(self) -> str:
+        return "<redacted live env>"
 
 
 pytestmark = [
     pytest.mark.skipif(not docker_available(), reason="docker daemon not available"),
-    pytest.mark.skipif(
-        bool(_missing_creds()),
-        reason=f"missing creds: {_missing_creds()!r}",
-    ),
     pytest.mark.integration,
+    pytest.mark.live_bridge,
     pytest.mark.slow,
 ]
+
+
+@pytest.fixture
+def _router_e2e_env(live_env: dict[str, str]) -> _RedactedEnv:
+    return _RedactedEnv(live_env)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -73,13 +67,20 @@ def _allow_unix_socket():
 
 
 @pytest.mark.timeout(1200)
-def test_run_router_e2e_full(_allow_unix_socket: None, tmp_path: Path) -> None:
+def test_run_router_e2e_full(
+    _allow_unix_socket: None,
+    _router_e2e_env: _RedactedEnv,
+    tmp_path: Path,
+) -> None:
     """Invoke the router E2E tool and assert on the emitted manifest."""
     output_base = tmp_path / "router-e2e"
     tool_path = REPO_ROOT / "tools" / "e2e" / "run_router_e2e.py"
     corpus_path = REPO_ROOT / "evidence" / "full-corpus-2026-05-07" / "corpus.json"
     assert tool_path.exists(), f"tool not found: {tool_path}"
     assert corpus_path.exists(), f"corpus not found: {corpus_path}"
+
+    child_env = os.environ.copy()
+    child_env.update(_router_e2e_env)
 
     result = subprocess.run(
         [
@@ -91,6 +92,7 @@ def test_run_router_e2e_full(_allow_unix_socket: None, tmp_path: Path) -> None:
             str(output_base),
         ],
         capture_output=True,
+        env=child_env,
         text=True,
         timeout=1100,
         check=False,

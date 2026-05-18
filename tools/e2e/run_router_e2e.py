@@ -144,6 +144,10 @@ def _build_child_env(
     catalog_file: pathlib.Path,
 ) -> dict[str, str]:
     child_env = os.environ.copy()
+    pythonpath_parts = [str(REPO_ROOT / "src"), str(REPO_ROOT)]
+    if child_env.get("PYTHONPATH"):
+        pythonpath_parts.append(child_env["PYTHONPATH"])
+    child_env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
     child_env["DMAC_USERS"] = json.dumps(
         {
             SYNTHETIC_USER_ID: {
