@@ -324,8 +324,20 @@ async def _async_main(*, corpus_path: pathlib.Path, run_dir: pathlib.Path) -> in
     dropbox_root.mkdir(parents=True, exist_ok=True)
     (dropbox_root / SYNTHETIC_PROJECT).mkdir(parents=True, exist_ok=True)
 
-    catalog_file = run_dir / "agent_model_catalog.json"
-    catalog_file.write_text('{"default": {}}', encoding="utf-8")
+    # Use the real chat_nextseek agent-model catalog so the NS-route parser runs
+    # against the same model (gemini-3.1-pro-preview + thinking_budget=16000) as
+    # production. A stub `{"default": {}}` catalog silently downgrades the parser
+    # to a non-thinking fallback model that emits `"uids": null` for empty lists
+    # and fails Pydantic `list_type` validation (Phase 7 residual #1 root cause,
+    # confirmed 2026-05-18 prompt-bytes diff:
+    # .claude/reviews/post-may8-bridge-audit-2026-05-18.md).
+    catalog_file = REPO_ROOT / "vendor" / "chat_nextseek" / "agent_model_catalog.json"
+    if not catalog_file.exists():
+        raise FileNotFoundError(
+            f"chat_nextseek agent-model catalog not found at {catalog_file}; "
+            "the E2E harness requires the vendored catalog to drive the parser "
+            "against the same model used in production."
+        )
 
     port = _free_port()
     child_env = _build_child_env(
