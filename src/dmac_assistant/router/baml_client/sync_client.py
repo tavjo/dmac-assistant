@@ -108,6 +108,20 @@ class BamlSyncClient:
                 "input": input,
             })
             return typing.cast(types.RouterJudgeOutput, __result__.cast_to(types, types, stream_types, False, __runtime__))
+    def JudgeUITranscript(self, input: types.SimpleEvaluatorInput,
+        baml_options: BamlCallOptions = {},
+    ) -> types.SimpleEvaluatorOutput:
+        # Check if on_tick is provided
+        if 'on_tick' in baml_options:
+            __stream__ = self.stream.JudgeUITranscript(input=input,
+                baml_options=baml_options)
+            return __stream__.get_final_response()
+        else:
+            # Original non-streaming code
+            __result__ = self.__options.merge_options(baml_options).call_function_sync(function_name="JudgeUITranscript", args={
+                "input": input,
+            })
+            return typing.cast(types.SimpleEvaluatorOutput, __result__.cast_to(types, types, stream_types, False, __runtime__))
     def RouteQuery(self, input: types.RouterInput,
         baml_options: BamlCallOptions = {},
     ) -> types.RouterDecision:
@@ -143,6 +157,18 @@ class BamlStreamClient:
           lambda x: typing.cast(types.RouterJudgeOutput, x.cast_to(types, types, stream_types, False, __runtime__)),
           __ctx__,
         )
+    def JudgeUITranscript(self, input: types.SimpleEvaluatorInput,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.BamlSyncStream[stream_types.SimpleEvaluatorOutput, types.SimpleEvaluatorOutput]:
+        __ctx__, __result__ = self.__options.merge_options(baml_options).create_sync_stream(function_name="JudgeUITranscript", args={
+            "input": input,
+        })
+        return baml_py.BamlSyncStream[stream_types.SimpleEvaluatorOutput, types.SimpleEvaluatorOutput](
+          __result__,
+          lambda x: typing.cast(stream_types.SimpleEvaluatorOutput, x.cast_to(types, types, stream_types, True, __runtime__)),
+          lambda x: typing.cast(types.SimpleEvaluatorOutput, x.cast_to(types, types, stream_types, False, __runtime__)),
+          __ctx__,
+        )
     def RouteQuery(self, input: types.RouterInput,
         baml_options: BamlCallOptions = {},
     ) -> baml_py.BamlSyncStream[stream_types.RouterDecision, types.RouterDecision]:
@@ -170,6 +196,13 @@ class BamlHttpRequestClient:
             "input": input,
         }, mode="request")
         return __result__
+    def JudgeUITranscript(self, input: types.SimpleEvaluatorInput,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.baml_py.HTTPRequest:
+        __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="JudgeUITranscript", args={
+            "input": input,
+        }, mode="request")
+        return __result__
     def RouteQuery(self, input: types.RouterInput,
         baml_options: BamlCallOptions = {},
     ) -> baml_py.baml_py.HTTPRequest:
@@ -189,6 +222,13 @@ class BamlHttpStreamRequestClient:
         baml_options: BamlCallOptions = {},
     ) -> baml_py.baml_py.HTTPRequest:
         __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="JudgeRouterAnswer", args={
+            "input": input,
+        }, mode="stream")
+        return __result__
+    def JudgeUITranscript(self, input: types.SimpleEvaluatorInput,
+        baml_options: BamlCallOptions = {},
+    ) -> baml_py.baml_py.HTTPRequest:
+        __result__ = self.__options.merge_options(baml_options).create_http_request_sync(function_name="JudgeUITranscript", args={
             "input": input,
         }, mode="stream")
         return __result__

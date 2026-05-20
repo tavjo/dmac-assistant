@@ -23,7 +23,7 @@ class StreamState(BaseModel, typing.Generic[StreamStateValueT]):
     value: StreamStateValueT
     state: typing_extensions.Literal["Pending", "Incomplete", "Complete"]
 # #########################################################################
-# Generated classes (6)
+# Generated classes (8)
 # #########################################################################
 
 class RouteCapability(BaseModel):
@@ -54,6 +54,16 @@ class RouterJudgeInput(BaseModel):
 class RouterJudgeOutput(BaseModel):
     verdict: typing.Optional[types.RouterJudgeVerdict] = None
     reasoning: typing.Optional[str] = None
+
+class SimpleEvaluatorInput(BaseModel):
+    query: typing.Optional[str] = None
+    pass_criteria: typing.Optional[str] = None
+    ui_answer: typing.Optional[str] = None
+
+class SimpleEvaluatorOutput(BaseModel):
+    verdict: typing.Optional[types.JudgeVerdict] = None
+    reasoning: typing.Optional[str] = None
+    model: typing.Optional[str] = None
 
 class TaskFamily(BaseModel):
     name: typing.Optional[str] = None

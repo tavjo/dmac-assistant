@@ -2,7 +2,7 @@
 
 This module is the bridge between `tools/e2e/run_router_e2e.py` and BAML's
 `JudgeRouterAnswer` function (defined in
-`src/dmac_assistant/router/baml_src/judge.baml`). It:
+`baml_src/judge_router.baml`). It:
 
   * Extracts the agent's user-visible reply text from the captured WS frames.
   * Builds a one-line frames summary for context.

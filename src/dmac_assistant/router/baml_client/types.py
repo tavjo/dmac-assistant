@@ -37,8 +37,16 @@ def get_checks(checks: typing.Dict[CheckName, Check]) -> typing.List[Check]:
 def all_succeeded(checks: typing.Dict[CheckName, Check]) -> bool:
     return all(check.status == "succeeded" for check in get_checks(checks))
 # #########################################################################
-# Generated enums (3)
+# Generated enums (4)
 # #########################################################################
+
+class JudgeVerdict(str, Enum):
+    Passed = "Passed"
+    Failed = "Failed"
+    Refused = "Refused"
+    Unsupported = "Unsupported"
+    Fabricated = "Fabricated"
+    Error = "Error"
 
 class ModelClass(str, Enum):
     Sonnet = "Sonnet"
@@ -55,7 +63,7 @@ class RouterJudgeVerdict(str, Enum):
     Inconclusive = "Inconclusive"
 
 # #########################################################################
-# Generated classes (6)
+# Generated classes (8)
 # #########################################################################
 
 class RouteCapability(BaseModel):
@@ -86,6 +94,16 @@ class RouterJudgeInput(BaseModel):
 class RouterJudgeOutput(BaseModel):
     verdict: RouterJudgeVerdict
     reasoning: str
+
+class SimpleEvaluatorInput(BaseModel):
+    query: str
+    pass_criteria: str
+    ui_answer: str
+
+class SimpleEvaluatorOutput(BaseModel):
+    verdict: JudgeVerdict
+    reasoning: str
+    model: str
 
 class TaskFamily(BaseModel):
     name: str

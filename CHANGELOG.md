@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is loosely b
 
 ## [Unreleased]
 
+### Changed — 2026-05-20 — Consolidated `baml_src/`
+
+Merged the two host-side BAML source trees (`src/dmac_assistant/router/baml_src/` and `tools/e2e/baml_src/`) into a single top-level [`baml_src/`](baml_src/). Both existing generated-client paths are preserved via dual `generator` blocks in `baml_src/generators.baml`:
+
+- `router_target` (async) → `src/dmac_assistant/router/baml_client/` (checked in; Python imports unchanged)
+- `e2e_target` (sync) → `tools/e2e/baml_client/` (gitignored; regenerated at image build)
+
+The duplicate `retry_policy Exponential` and the two per-tree LLM client definitions were collapsed to one `GCPReasoner` client (`gemini-3.1-pro-preview`) used by `RouteQuery`, `JudgeRouterAnswer`, and `JudgeUITranscript`. The Dockerfile now `COPY baml_src/` and runs `baml-cli generate --from /app/baml_src` (both generators; no selective-generator CLI flag exists). Vendor `chat_nextseek` `baml_src/` is untouched.
+
 ### Fixed — 2026-05-18 — LLM router iter-02 Phase 7 residual debt
 
 iter-02 independent Phase 7 reviewer flagged 5 low-severity residual items against branch `ultraplan/llm-router-2026-05-14` at `c1f4f5b`. Item 5 (unpushed commits) was resolved by the `main`-merge push. The remaining four were addressed on `fix/llm-router-residual-debt` and merged to `main` as `dd34d6e` (fix commit `0dff3df`). Reviewer report: [`.codex/reports/llm-router-independent-final-evaluation-2026-05-18-iter02.md`](.codex/reports/llm-router-independent-final-evaluation-2026-05-18-iter02.md).

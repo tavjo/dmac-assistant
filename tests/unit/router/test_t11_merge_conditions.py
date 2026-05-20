@@ -15,7 +15,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
-ROUTER_BAML = REPO_ROOT / "src/dmac_assistant/router/baml_src/router.baml"
+ROUTER_BAML = REPO_ROOT / "baml_src/router.baml"
 
 
 def test_baml_py_pinned_with_tilde_equals() -> None:
@@ -76,7 +76,7 @@ def test_router_baml_client_importable() -> None:
     assert hasattr(mod, "b"), (
         "dmac_assistant.router.baml_client does not export 'b'. The codegen may "
         "have failed silently or generated for a different default_client_mode. "
-        "Verify src/dmac_assistant/router/baml_src/generators.baml says "
+        "Verify baml_src/generators.baml router_target says "
         "`default_client_mode async`."
     )
 

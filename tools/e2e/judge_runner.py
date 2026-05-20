@@ -141,7 +141,7 @@ def main() -> int:
     payload = {
         "verdict": verdict,
         "reasoning": str(result.reasoning),
-        "model": str(getattr(result, "model", "") or "gemini-2.0-pro-exp"),
+        "model": str(getattr(result, "model", "") or "gemini-3.1-pro-preview"),
     }
     print(json.dumps(payload))
     return 0

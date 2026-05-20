@@ -46,3 +46,8 @@ tools/e2e/baml_client/
 
 # T1 — E2E evidence artifacts (per-run; not committed)
 evidence/
+
+# general
+var/
+logs/
+

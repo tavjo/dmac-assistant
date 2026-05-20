@@ -20,14 +20,18 @@ from .globals import DO_NOT_USE_DIRECTLY_UNLESS_YOU_KNOW_WHAT_YOURE_DOING_RUNTIM
 class TypeBuilder(type_builder.TypeBuilder):
     def __init__(self):
         super().__init__(classes=set(
-          ["RouteCapability","RouterDecision","RouterInput","RouterJudgeInput","RouterJudgeOutput","TaskFamily",]
+          ["RouteCapability","RouterDecision","RouterInput","RouterJudgeInput","RouterJudgeOutput","SimpleEvaluatorInput","SimpleEvaluatorOutput","TaskFamily",]
         ), enums=set(
-          ["ModelClass","Route","RouterJudgeVerdict",]
+          ["JudgeVerdict","ModelClass","Route","RouterJudgeVerdict",]
         ), runtime=DO_NOT_USE_DIRECTLY_UNLESS_YOU_KNOW_WHAT_YOURE_DOING_RUNTIME)
 
     # #########################################################################
-    # Generated enums 3
+    # Generated enums 4
     # #########################################################################
+
+    @property
+    def JudgeVerdict(self) -> "JudgeVerdictViewer":
+        return JudgeVerdictViewer(self)
 
     @property
     def ModelClass(self) -> "ModelClassViewer":
@@ -43,7 +47,7 @@ class TypeBuilder(type_builder.TypeBuilder):
 
 
     # #########################################################################
-    # Generated classes 6
+    # Generated classes 8
     # #########################################################################
 
     @property
@@ -67,14 +71,80 @@ class TypeBuilder(type_builder.TypeBuilder):
         return RouterJudgeOutputViewer(self)
 
     @property
+    def SimpleEvaluatorInput(self) -> "SimpleEvaluatorInputViewer":
+        return SimpleEvaluatorInputViewer(self)
+
+    @property
+    def SimpleEvaluatorOutput(self) -> "SimpleEvaluatorOutputViewer":
+        return SimpleEvaluatorOutputViewer(self)
+
+    @property
     def TaskFamily(self) -> "TaskFamilyViewer":
         return TaskFamilyViewer(self)
 
 
 
 # #########################################################################
-# Generated enums 3
+# Generated enums 4
 # #########################################################################
+
+class JudgeVerdictAst:
+    def __init__(self, tb: type_builder.TypeBuilder):
+        _tb = tb._tb # type: ignore (we know how to use this private attribute)
+        self._bldr = _tb.enum("JudgeVerdict")
+        self._values: typing.Set[str] = set([  "Passed",  "Failed",  "Refused",  "Unsupported",  "Fabricated",  "Error",  ])
+        self._vals = JudgeVerdictValues(self._bldr, self._values)
+
+    def type(self) -> baml_py.FieldType:
+        return self._bldr.field()
+
+    @property
+    def values(self) -> "JudgeVerdictValues":
+        return self._vals
+
+
+class JudgeVerdictViewer(JudgeVerdictAst):
+    def __init__(self, tb: type_builder.TypeBuilder):
+        super().__init__(tb)
+
+    
+    def list_values(self) -> typing.List[typing.Tuple[str, type_builder.EnumValueViewer]]:
+        return [(name, type_builder.EnumValueViewer(self._bldr.value(name))) for name in self._values]
+    
+
+class JudgeVerdictValues:
+    def __init__(self, enum_bldr: baml_py.EnumBuilder, values: typing.Set[str]):
+        self.__bldr = enum_bldr
+        self.__values = values # type: ignore (we know how to use this private attribute) # noqa: F821
+
+    
+    
+    @property
+    def Passed(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("Passed"))
+    
+    @property
+    def Failed(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("Failed"))
+    
+    @property
+    def Refused(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("Refused"))
+    
+    @property
+    def Unsupported(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("Unsupported"))
+    
+    @property
+    def Fabricated(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("Fabricated"))
+    
+    @property
+    def Error(self) -> type_builder.EnumValueViewer:
+        return type_builder.EnumValueViewer(self.__bldr.value("Error"))
+    
+    
+
 
 class ModelClassAst:
     def __init__(self, tb: type_builder.TypeBuilder):
@@ -212,7 +282,7 @@ class RouterJudgeVerdictValues:
 
 
 # #########################################################################
-# Generated classes 6
+# Generated classes 8
 # #########################################################################
 
 class RouteCapabilityAst:
@@ -462,6 +532,100 @@ class RouterJudgeOutputProperties:
     @property
     def reasoning(self) -> type_builder.ClassPropertyViewer:
         return type_builder.ClassPropertyViewer(self.__bldr.property("reasoning"))
+    
+    
+
+
+class SimpleEvaluatorInputAst:
+    def __init__(self, tb: type_builder.TypeBuilder):
+        _tb = tb._tb # type: ignore (we know how to use this private attribute)
+        self._bldr = _tb.class_("SimpleEvaluatorInput")
+        self._properties: typing.Set[str] = set([  "query",  "pass_criteria",  "ui_answer",  ])
+        self._props = SimpleEvaluatorInputProperties(self._bldr, self._properties)
+
+    def type(self) -> baml_py.FieldType:
+        return self._bldr.field()
+
+    @property
+    def props(self) -> "SimpleEvaluatorInputProperties":
+        return self._props
+
+
+class SimpleEvaluatorInputViewer(SimpleEvaluatorInputAst):
+    def __init__(self, tb: type_builder.TypeBuilder):
+        super().__init__(tb)
+
+    
+    def list_properties(self) -> typing.List[typing.Tuple[str, type_builder.ClassPropertyViewer]]:
+        return [(name, type_builder.ClassPropertyViewer(self._bldr.property(name))) for name in self._properties]
+    
+
+
+class SimpleEvaluatorInputProperties:
+    def __init__(self, bldr: baml_py.ClassBuilder, properties: typing.Set[str]):
+        self.__bldr = bldr
+        self.__properties = properties # type: ignore (we know how to use this private attribute) # noqa: F821
+
+    
+    
+    @property
+    def query(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("query"))
+    
+    @property
+    def pass_criteria(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("pass_criteria"))
+    
+    @property
+    def ui_answer(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("ui_answer"))
+    
+    
+
+
+class SimpleEvaluatorOutputAst:
+    def __init__(self, tb: type_builder.TypeBuilder):
+        _tb = tb._tb # type: ignore (we know how to use this private attribute)
+        self._bldr = _tb.class_("SimpleEvaluatorOutput")
+        self._properties: typing.Set[str] = set([  "verdict",  "reasoning",  "model",  ])
+        self._props = SimpleEvaluatorOutputProperties(self._bldr, self._properties)
+
+    def type(self) -> baml_py.FieldType:
+        return self._bldr.field()
+
+    @property
+    def props(self) -> "SimpleEvaluatorOutputProperties":
+        return self._props
+
+
+class SimpleEvaluatorOutputViewer(SimpleEvaluatorOutputAst):
+    def __init__(self, tb: type_builder.TypeBuilder):
+        super().__init__(tb)
+
+    
+    def list_properties(self) -> typing.List[typing.Tuple[str, type_builder.ClassPropertyViewer]]:
+        return [(name, type_builder.ClassPropertyViewer(self._bldr.property(name))) for name in self._properties]
+    
+
+
+class SimpleEvaluatorOutputProperties:
+    def __init__(self, bldr: baml_py.ClassBuilder, properties: typing.Set[str]):
+        self.__bldr = bldr
+        self.__properties = properties # type: ignore (we know how to use this private attribute) # noqa: F821
+
+    
+    
+    @property
+    def verdict(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("verdict"))
+    
+    @property
+    def reasoning(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("reasoning"))
+    
+    @property
+    def model(self) -> type_builder.ClassPropertyViewer:
+        return type_builder.ClassPropertyViewer(self.__bldr.property("model"))
     
     
 

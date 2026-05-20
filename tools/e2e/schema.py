@@ -7,7 +7,7 @@ Plan: dmac-assistant-e2e-ui-test-2026-05-06 (DD-04, DD-07, DD-08).
 3 judge fields default to None and are populated by T7 (BAML judge invocation).
 
 The judge_verdict literal set is the authoritative spellings — T5's BAML
-output enum (in tools/e2e/baml_src/judge.baml) must match exactly. If
+output enum (in baml_src/judge_ui.baml) must match exactly. If
 they ever drift, fix the BAML file, NOT this enum (per Amendment 3 / N3).
 """
 

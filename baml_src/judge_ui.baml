@@ -33,7 +33,7 @@ class SimpleEvaluatorOutput {
 }
 
 function JudgeUITranscript(input: SimpleEvaluatorInput) -> SimpleEvaluatorOutput {
-  client GCPGemini
+  client GCPReasoner
   prompt #"
     You are evaluating an answer produced by a chat-UI agent against a
     pass criteria. Output a single structured verdict.

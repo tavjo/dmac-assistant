@@ -239,7 +239,7 @@ def test_no_gemini_api_key_anywhere(doc_sources: dict[Path, str]) -> None:
         assert "GEMINI_API_KEY" not in src, (
             f"{path.name} contains `GEMINI_API_KEY` - the canonical env-key is "
             f"`GCP_API_KEY` per locked design spec L157 + "
-            f"`tools/e2e/baml_src/clients.baml:20`."
+            f"`baml_src/clients.baml:16`."
         )
 
 

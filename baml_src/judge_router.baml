@@ -4,7 +4,7 @@
 // each query to determine whether the agent's reply is semantically satisfactory.
 // The harness exit code is now gated on BOTH route-match AND verdict == PASS.
 //
-// Distinct from `tools/e2e/baml_src/judge.baml`, which serves a different
+// Distinct from `baml_src/judge_ui.baml`, which serves a different
 // (UI walkthrough) plan with a richer verdict enum (passed/failed/refused/
 // unsupported/fabricated/error). Here we use a coarser PASS/FAIL/INCONCLUSIVE
 // scheme appropriate for a 5-query route-discrimination harness.

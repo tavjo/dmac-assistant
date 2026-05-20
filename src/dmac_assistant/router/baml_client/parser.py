@@ -29,6 +29,12 @@ class LlmResponseParser:
         __result__ = self.__options.merge_options(baml_options).parse_response(function_name="JudgeRouterAnswer", llm_response=llm_response, mode="request")
         return typing.cast(types.RouterJudgeOutput, __result__)
 
+    def JudgeUITranscript(
+        self, llm_response: str, baml_options: BamlCallOptions = {},
+    ) -> types.SimpleEvaluatorOutput:
+        __result__ = self.__options.merge_options(baml_options).parse_response(function_name="JudgeUITranscript", llm_response=llm_response, mode="request")
+        return typing.cast(types.SimpleEvaluatorOutput, __result__)
+
     def RouteQuery(
         self, llm_response: str, baml_options: BamlCallOptions = {},
     ) -> types.RouterDecision:
@@ -48,6 +54,12 @@ class LlmStreamParser:
     ) -> stream_types.RouterJudgeOutput:
         __result__ = self.__options.merge_options(baml_options).parse_response(function_name="JudgeRouterAnswer", llm_response=llm_response, mode="stream")
         return typing.cast(stream_types.RouterJudgeOutput, __result__)
+
+    def JudgeUITranscript(
+        self, llm_response: str, baml_options: BamlCallOptions = {},
+    ) -> stream_types.SimpleEvaluatorOutput:
+        __result__ = self.__options.merge_options(baml_options).parse_response(function_name="JudgeUITranscript", llm_response=llm_response, mode="stream")
+        return typing.cast(stream_types.SimpleEvaluatorOutput, __result__)
 
     def RouteQuery(
         self, llm_response: str, baml_options: BamlCallOptions = {},

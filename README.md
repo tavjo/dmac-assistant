@@ -129,6 +129,12 @@ Optional (forwarded to the container if set): `NEO4J_URI`, `NEO4J_USER`, `NEO4J_
 
 ```
 dmac-assistant/
+├── baml_src/                  # Shared BAML source (router + e2e judges; dual codegen)
+│   ├── clients.baml           # GCPReasoner client (gemini-3.1-pro-preview)
+│   ├── generators.baml        # router_target + e2e_target codegen blocks
+│   ├── router.baml            # RouteQuery function + route enums
+│   ├── judge_router.baml      # JudgeRouterAnswer (router E2E harness)
+│   └── judge_ui.baml          # JudgeUITranscript (UI walkthrough E2E)
 ├── src/dmac_assistant/        # FastAPI bridge
 │   ├── app.py                 # Application factory + static UI mount
 │   ├── auth.py                # Token store + identity model
@@ -144,7 +150,6 @@ dmac-assistant/
 │   │   ├── agent.py           # RouterAgent (BAML wrapper, fallback policy)
 │   │   ├── capabilities.py    # build_context/route_capabilities.json loader
 │   │   ├── models.py          # model_class → Bedrock model-ID resolver
-│   │   ├── baml_src/          # BAML source: clients.baml, router.baml, judge.baml
 │   │   └── baml_client/       # Generated BAML Python client (coverage-excluded)
 │   └── static/                # Vanilla HTML chat UI
 ├── tests/

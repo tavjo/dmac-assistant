@@ -1,3 +1,7 @@
+// Shared GCP client for all DMAC BAML functions (router + e2e judges).
+// Consolidated from src/dmac_assistant/router/baml_src/clients.baml and
+// tools/e2e/baml_src/clients.baml (2026-05-20).
+
 retry_policy Exponential {
   max_retries 2
   strategy {

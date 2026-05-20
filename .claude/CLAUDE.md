@@ -21,12 +21,19 @@ Read the SDS and ADRs before making architecture changes. When a decision is unc
 Open issues that affect architecture decisions or block production deployment live under [`.claude/known-issues/`](known-issues/). Read these before proposing changes that touch the relevant subsystem:
 
 - [`bedrock-token-exposure.md`](known-issues/bedrock-token-exposure.md) — `AWS_BEARER_TOKEN_BEDROCK` is exfiltrable by the in-container agent. **Production-blocker; deferred for solo-developer POC use only.** The containment plan at [`bedrock-token-containment-2026-04-24.md`](bedrock-token-containment-2026-04-24.md) was aborted at Phase 0 spike 0.2 (2026-04-24). Two surviving pivot options + spike evidence are documented in the issue file.
+- [`nextseek-doc-ingest-stabilization-fix-2026-05-04.md`](../.codex/reports/nextseek-doc-ingest-stabilization-fix-2026-05-04.md) — `make ingest-nextseek-docs` now uses GitBook `site-index` plus dynamically discovered per-page Markdown because live PDF exports produced nondeterministic output. Do not reintroduce PDF/`markitdown` ingestion without a new explicit plan.
 
 ## Pre-Production Hardening Designs
 
 Design specs captured for work that must land before any non-solo deployment. These are documents, not active plans — do not begin implementation without an explicit task that references them:
 
 - [`docs/superpowers/specs/2026-05-01-output-scrubber-design.md`](../docs/superpowers/specs/2026-05-01-output-scrubber-design.md) — defense-in-depth output scrubber + egress lockdown for the credential-leak vector documented in `bedrock-token-exposure.md`. Additive to (not a replacement for) Options A or B in that issue.
+
+## Active Plans (in-flight handoffs)
+
+Read the linked handoff before continuing any of these plans across sessions:
+
+- [`plans/hibayes-evaluator-expansion-design-2026-05-14.md`](plans/hibayes-evaluator-expansion-design-2026-05-14.md) — `/ultraplan` design spec for the HiBayes evaluator 2-axis expansion (artifact validity + functional usefulness via BAML/Gemini). **LOCKED 2026-05-15** after 8 iters of independent adversarial vetting (iter-01 → iter-08; final verdict `UNCONDITIONAL_ACCEPTANCE`). 48 DDs DECIDED (26 individually + 22 via DD-46 blanket), all 20 active OQs RESOLVED (OQ-09 retracted). Prior hard-prerequisite P1 (manifest emitter) retired in DL-009 (verified correct per V13); P2 (in-image HiBayes runtime reuse) addressed via DD-40 + V9 (six HiBayes 1.0.0 model factories enumerated, `two_level_group_binomial` pinned). Vet-loop history preserved at `.claude/plans/hibayes-evaluator-expansion-vet-2026-05-14/`. The successor `/ultraplan` plan builds FROM this spec in a separate session — no further edits to the locked spec without `/ultraplan amend`.
 
 Files under `.claude/known-issues/` are intentionally outside any path that could be COPY'd into the in-container `dmac-assistant` image. Keep it that way — these documents enumerate containment failure modes the in-container agent must not be able to read.
 
@@ -76,3 +83,16 @@ Keep the current POC scope narrow. Do not add container pooling, Bedrock token r
 - Plugins read from `/data/projects/`, write to `/data/scratch/`, and receive credentials from env.
 - Plugin docs are a primary instruction surface for the in-container Claude runtime.
 - Bridge runtime/docs live in `src/dmac_assistant/`, `tests/unit/`, `tests/integration/`, and `docs/bridge/`; keep WebSocket docs aligned with the code and the task specs.
+- One-shot evidence tooling and non-shipping helpers (e.g. E2E runbooks, BAML judge sources, evidence aggregators) live under `tools/` (e.g. `tools/e2e/`). Treat `tools/` as a fourth canonical source tree alongside `src/dmac_assistant/`, `tests/`, and `docs/bridge/`. `pyproject.toml` `addopts` does NOT auto-cover `tools/` — pytest invocations against tooling under `tools/` must pass `--cov=tools/<subdir> --cov-report=term-missing` explicitly. (Established 2026-05-06 via E2E plan Amendment 2 / OP-6.)
+
+## `tools/hibayes/` — `artifact_count` semantics caveat
+
+The `artifact_count` column emitted by `tools/hibayes/exporter.py` is computed as `len(raw.artifacts)` per summary. The literal count is correct, but the upstream meaning is conditional on how the headless runner produced the manifest:
+
+- **Source**: `tools/e2e/run_batch.py` populates `summaries[i]["artifacts"]` with **destination paths** of files copied into `artifacts/<query_id>/` after a per-query file-set diff of the shared scratch mount.
+- **Extension allowlist (curated)**: only `.xlsx .xls .csv .tsv .html .htm .pptx .pdf .png .jpg .jpeg .svg .gif .webp .docx .md` are promoted. `.json`, `.txt`, `.log`, `.py`, etc. are filtered out as intermediate state. So `artifact_count` is NOT "all files the agent wrote" — it is "user-facing deliverable files in this allowlist."
+- **Mode-dependent zeroing**: promotion only runs when `fixed_scratch is not None AND artifacts_root is not None` (i.e. the runner was invoked with both `--scratch-dir` and `--output-dir`). In per-query-tempdir mode (no fixed scratch), `promoted_paths = []` for every query, so `artifact_count` is uniformly 0 across the whole report regardless of what the agent actually produced. The 224850Z reference fixture used fixed-scratch mode, so its counts are real.
+- **Rename-disambiguation**: on basename collision across queries within the same session, files are renamed `<stem>__1.<ext>`, `__2.<ext>`, etc. The COUNT per query is stable; the PATH VALUES depend on cross-query ordering.
+- **Granularity**: a single deliverable that ships as `(report.xlsx, report.html)` counts as 2 artifacts, not 1.
+
+When HiBayes analysis treats `artifact_count` as a proxy for "task completion" or "agent productivity," the extension allowlist and the fixed-scratch precondition are the two factors that materially shape the number. Confirm the run mode of the source report before drawing inferences from this column. (Established 2026-05-09 via plan `hibayes-csv-exporter-2026-05-08` Phase 7 follow-up.)

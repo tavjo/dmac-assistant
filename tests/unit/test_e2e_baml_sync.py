@@ -1,7 +1,7 @@
 """
 T5 — N3 enum-spelling sync gate.
 
-Verifies that the BAML output enum literals in tools/e2e/baml_src/judge.baml
+Verifies that the BAML output enum literals in baml_src/judge_ui.baml
 match T2's Pydantic JUDGE_VERDICT_LITERALS exactly.
 """
 
@@ -15,7 +15,7 @@ import pytest
 from tools.e2e.schema import JUDGE_VERDICT_LITERALS
 
 
-BAML_PATH = Path(__file__).resolve().parents[2] / "tools" / "e2e" / "baml_src" / "judge.baml"
+BAML_PATH = Path(__file__).resolve().parents[2] / "baml_src" / "judge_ui.baml"
 
 
 @pytest.mark.parametrize("verdict", JUDGE_VERDICT_LITERALS)

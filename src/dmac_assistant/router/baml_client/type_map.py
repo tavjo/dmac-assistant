@@ -31,9 +31,17 @@ type_map = {
     "types.RouterJudgeOutput": types.RouterJudgeOutput,
     "stream_types.RouterJudgeOutput": stream_types.RouterJudgeOutput,
 
+    "types.SimpleEvaluatorInput": types.SimpleEvaluatorInput,
+    "stream_types.SimpleEvaluatorInput": stream_types.SimpleEvaluatorInput,
+
+    "types.SimpleEvaluatorOutput": types.SimpleEvaluatorOutput,
+    "stream_types.SimpleEvaluatorOutput": stream_types.SimpleEvaluatorOutput,
+
     "types.TaskFamily": types.TaskFamily,
     "stream_types.TaskFamily": stream_types.TaskFamily,
 
+
+    "types.JudgeVerdict": types.JudgeVerdict,
 
     "types.ModelClass": types.ModelClass,
 
