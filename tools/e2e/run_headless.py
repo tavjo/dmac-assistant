@@ -233,7 +233,8 @@ def run_one(*, query_text: str, query_id: str, image: str,
             env: dict[str, str], timeout: int, output_dir: pathlib.Path,
             catalog_host_path: pathlib.Path, scratch_dir: pathlib.Path,
             claude_dir: pathlib.Path,
-            max_budget_usd: float | None = None) -> dict:
+            max_budget_usd: float | None = None,
+            model_id: str | None = None) -> dict:
     """Run a single query through dmac-assistant headless.
 
     Returns the structured QueryRecord dict. Also writes side files under
@@ -264,6 +265,8 @@ def run_one(*, query_text: str, query_id: str, image: str,
         "--output-format", "stream-json",
         "--verbose", "--dangerously-skip-permissions",
     ]
+    if model_id:
+        claude_args.extend(["--model", model_id])
     if max_budget_usd is not None and max_budget_usd > 0:
         claude_args.extend(["--max-budget-usd", str(max_budget_usd)])
     # The skill formats artifact paths to the user using DMAC_PATH_MAPPINGS
