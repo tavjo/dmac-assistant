@@ -1,0 +1,28 @@
+<section class="hibayes-section hibayes-section--artifact">
+  <h2>Artifact Validity</h2>
+  <p>Model: {{ posterior.model }} — σ<sub>group</sub> = {{ posterior.prior_sigma_group_scale }}</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Task family</th>
+        <th>N</th>
+        <th>Posterior mean</th>
+        <th>HDI</th>
+        <th>P(success&lt;strong)</th>
+        <th>Band</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for stratum in posterior.strata %}
+      <tr>
+        <td>{{ stratum.task_family }}</td>
+        <td>{{ stratum.n_total }}</td>
+        <td>{{ "%.3f"|format(stratum.posterior_mean) }}</td>
+        <td>[{{ "%.3f"|format(stratum.hdi_low) }}, {{ "%.3f"|format(stratum.hdi_high) }}]</td>
+        <td>{{ "%.3f"|format(stratum.p_success_lt_strong) }}</td>
+        <td>{{ stratum.band }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
