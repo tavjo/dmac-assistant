@@ -370,6 +370,7 @@ SMOKE_IMAGE ?= hibayes-runtime-reliability:dev
 SMOKE_EXPECTED_ROWS ?= 103
 SMOKE_EXPECTED_HEADER ?= run_id,query_id,task_family,artifact_eval_id,artifact_expected,expected_artifact_kind,artifact_declared,artifact_path,artifact_basename,artifact_ext,runtime_success,failure_mode,artifact_exists,artifact_accessible,file_size_bytes,parser_used,parse_success,sheet_count,row_count,column_count,nonempty_cell_count,null_cell_fraction,required_fields_present,required_fields_complete,missing_required_fields,all_required_rows_complete,artifact_validity_status,artifact_success,validation_notes
 
+.PHONY: hibayes-stage-a-smoke
 hibayes-stage-a-smoke: | hibayes-eval-build
 	@mkdir -p out
 	@docker run --rm \

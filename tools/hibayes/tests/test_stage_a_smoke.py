@@ -120,3 +120,30 @@ def test_make_dry_run_smoke_target_resolves() -> None:
         text=True,
     )
     assert "No rule to make target" not in result.stderr
+
+
+def test_hibayes_stage_a_smoke_is_declared_phony() -> None:
+    """The `hibayes-stage-a-smoke` target MUST appear in a `.PHONY:` declaration.
+
+    task-15's own spec calls the target "intrinsically PHONY (no produced file
+    in the prereq chain to time-stamp against)". Without an explicit `.PHONY:`
+    declaration, if a file or directory named `hibayes-stage-a-smoke` ever
+    appears in the repo root, GNU Make treats the target as a real file and may
+    silently skip the smoke recipe (`Nothing to be done`) or attempt
+    implicit-rule resolution. task-14's hardener Pass 4 D3 added explicit
+    `.PHONY:` declarations for all 8 of its targets for exactly this reason;
+    this test pins the same protection for the task-15 smoke target.
+    """
+    text = MAKEFILE_PATH.read_text(encoding="utf-8")
+    # Collect every name appearing on a `.PHONY:` line (continuation lines
+    # ending in `\` are joined first).
+    phony_names: set[str] = set()
+    joined = re.sub(r"\\\n", " ", text)
+    for line in joined.splitlines():
+        m = re.match(r"\.PHONY:\s*(.*)", line.strip())
+        if m:
+            phony_names.update(m.group(1).split())
+    assert "hibayes-stage-a-smoke" in phony_names, (
+        "Makefile must declare `hibayes-stage-a-smoke` in a `.PHONY:` line; "
+        f"PHONY names found: {sorted(phony_names)!r}"
+    )
