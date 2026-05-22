@@ -28,12 +28,16 @@ mkdir -p "${REPO}/data"
 # at /work/src. The pyproject `pythonpath = ["src", "."]` is pytest-only and
 # does NOT cover `python -m dmac_assistant.eval...run_hibayes`. See
 # scripts/run_hibayes_eval.sh:25-34 for the canonical comment block.
+# build_tools/ is mounted at /work/build_tools and /work is added to PYTHONPATH
+# because tests/conftest.py imports build_tools.verify_env at collection time
+# (task-3R2).
 docker run --rm \
     --platform linux/amd64 \
-    -e PYTHONPATH=/work/src \
+    -e PYTHONPATH=/work:/work/src \
     -v "${REPO}/src:/work/src:ro" \
     -v "${REPO}/tests:/work/tests:ro" \
     -v "${REPO}/tools:/work/tools:ro" \
+    -v "${REPO}/build_tools:/work/build_tools:ro" \
     -v "${REPO}/data:/work/data:ro" \
     -v "${REPO}/out:/work/out:rw" \
     -v "${REPO}/src/dmac_assistant/eval/hibayes_artifact_validity/config:/work/config:ro" \
