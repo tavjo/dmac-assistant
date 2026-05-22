@@ -524,3 +524,15 @@ shape.
 These are illustrative diffs, not a v1+1 task spec. A real extension needs
 its own `/ultraplan` cycle covering aggregator changes, model selection,
 posterior shape changes, and band-classification adjustments.
+
+## Related axes (2026-05 evaluator expansion)
+
+This module is the load-bearing reference for the broader HiBayes evaluator expansion:
+
+- `src/dmac_assistant/eval/hibayes_artifact_validity/` — artifact-validity axis (T3.1)
+- `src/dmac_assistant/eval/hibayes_functional_usefulness/` — functional-usefulness axis (T3.2)
+- `src/dmac_assistant/eval/hibayes_combined_report/` — combined HTML report renderer (T4.1)
+
+All three new modules mirror this axis's posterior shape (`PosteriorTaskFamilyReliability`) and model family (`two_level_group_binomial`). The `posterior_json_adapter.py` in THIS module emits a `posterior.json` matching the same nested wrapper schema (DD-41) so the combined renderer can consume all four axes uniformly.
+
+See `.claude/plans/hibayes-evaluator-expansion-build-2026-05-15.md` for the locked build plan.

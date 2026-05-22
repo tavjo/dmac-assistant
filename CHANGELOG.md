@@ -27,6 +27,19 @@ Changes shipped:
 
 `tools/e2e/run_router_e2e.py` no longer hardcodes the synthetic-user project label `"proj-a"`. The new `_synthetic_project()` helper reads `DMAC_E2E_PROJECT` from the environment with `"proj-a"` as the default, so multi-user deployments where `proj-a` is not in the bridge project allowlist can override without editing the script. Empty-string env values fall back to the default (operator-typo defense). Pinned by 3 unit tests in `tests/unit/test_e2e_project_override.py`. Part of the iter-02 residual-debt closeout (see Fixed entry above).
 
+### Added — 2026-05-18 — HiBayes evaluator expansion (Stages A/B/C/D + combined report)
+
+Added three new HiBayes evaluator axes alongside the existing runtime-reliability axis. The four axes share a common posterior schema (DD-41 nested wrapper) and render into a single combined HTML report.
+
+- **Stage A — Artifact Validity** (`tools/hibayes/artifact_validator.py`): deterministic GEO `.xlsx` / nf-core CSV / SVG validation against the locked DD-17/18/19/20 rule set. CLI `--help` carries the verbatim DD-25 tempdir-mode warning per DL-014.
+- **Stage B — Functional Eval Input CSV** (`tools/hibayes/functional_inputs.py`): deterministic merge of manifest + runtime + Stage A artifact CSV + per-query record.json into a 12-column input CSV.
+- **Stage C — Functional Usefulness** (`tools/e2e/functional_evaluator.py`): BAML/Gemini judge with three sequential calls per query and per-field aggregation; emits both the 12-column usefulness CSV and the 12-column review sidecar per DD-43.
+- **Combined HTML Report** (`src/dmac_assistant/eval/hibayes_combined_report/`): page-level Jinja2 template `{% include %}`-ing each axis's section partial; partial-failure render on missing axis.
+
+New Make targets: `hibayes-stage-a`, `hibayes-stage-b`, `hibayes-stage-c`, `hibayes-eval-artifact`, `hibayes-eval-functional`, `hibayes-runtime-posterior-json`, `hibayes-combined-report`, `hibayes-axes`, `hibayes-stage-a-smoke`.
+
+Plan: [`.claude/plans/hibayes-evaluator-expansion-build-2026-05-15.md`](.claude/plans/hibayes-evaluator-expansion-build-2026-05-15.md).
+
 ### Added — 2026-05-16 — LLM router subsystem
 
 Per-turn LLM router inserted into the WebSocket bridge. For each user message, the router picks one of two execution routes: `nextseek_query` (deterministic `chat_nextseek` pipeline running inside the long-lived `dmac-assistant:poc` container via `docker exec`) or `container_cc` (in-container Claude Code with a router-chosen model class — `"opus"`, `"sonnet"`, or `"haiku"`). The router is flag-gated by `DMAC_ROUTER_ENABLED`; with the flag unset or falsy, bridge behavior is byte-identical to the pre-router build. Plan: `llm-router-2026-05-14` (16 tasks, Wave 0–6, Phase 4 round-4 reviewer UA across all specs).
