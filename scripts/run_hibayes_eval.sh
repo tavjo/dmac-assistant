@@ -28,12 +28,16 @@ mkdir -p "${REPO}/data"
 # `python -m dmac_assistant.eval...run_hibayes` or any other non-pytest
 # invocation. Without this env var, `make hibayes-eval` exits 1 with
 # `ModuleNotFoundError: No module named 'dmac_assistant'`.
+# build_tools/ is mounted at /work/build_tools and /work is added to PYTHONPATH
+# because tests/conftest.py imports build_tools.verify_env at collection time
+# (task-3R2).
 docker run --rm \
     --platform linux/amd64 \
-    -e PYTHONPATH=/work/src \
+    -e PYTHONPATH=/work:/work/src \
     -v "${REPO}/src:/work/src:ro" \
     -v "${REPO}/tests:/work/tests:ro" \
     -v "${REPO}/tools:/work/tools:ro" \
+    -v "${REPO}/build_tools:/work/build_tools:ro" \
     -v "${REPO}/data:/work/data:ro" \
     -v "${REPO}/out:/work/out:rw" \
     -v "${REPO}/src/dmac_assistant/eval/hibayes_runtime_reliability/config:/work/config:ro" \
