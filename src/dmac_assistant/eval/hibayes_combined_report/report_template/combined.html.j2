@@ -1,0 +1,88 @@
+{# Combined-report page template. ESC-5 resolution (locked DD-41 line 388):
+   - Artifact + functional axes use `{% include %}` to pull in per-axis section
+     partials owned by task-10 / task-11 (loader keys
+     `artifact_section.html.j2` / `functional_section.html.j2` set up by
+     render.py's _build_jinja_environment via DictLoader → ChoiceLoader).
+   - Runtime axis is rendered INLINE because no runtime section.html.j2 exists
+     in the codebase (task-12 adapter is JSON-only; existing runtime module has
+     no report_template/ directory). #}
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>HiBayes Evaluator — Combined Report</title>
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 2em; }
+  section { margin-bottom: 2em; padding: 1em; border: 1px solid #ddd; border-radius: 4px; }
+  .hibayes-placeholder { background: #fff3cd; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { padding: 0.4em 0.6em; border-bottom: 1px solid #ccc; text-align: left; }
+</style>
+</head>
+<body>
+<h1>HiBayes Evaluator — Combined Report</h1>
+
+{# === Runtime axis (inline; no per-axis section partial exists) === #}
+{% if runtime is none %}
+<section class="hibayes-placeholder">
+  <h2>Runtime Reliability — NOT AVAILABLE</h2>
+  <p>No posterior.json found for the runtime axis. Re-run <code>make hibayes-axes</code> after resolving the upstream stage failure.</p>
+</section>
+{% else %}
+<section class="hibayes-section hibayes-section--runtime">
+  <h2>Runtime Reliability</h2>
+  <p>Model: {{ runtime.model }} — σ<sub>group</sub> = {{ runtime.prior_sigma_group_scale }}</p>
+  <p>Run: {{ runtime.metadata.run_id }} — input: <code>{{ runtime.metadata.axis_input_csv }}</code></p>
+  <table>
+    <thead>
+      <tr>
+        <th>Task family</th>
+        <th>N</th>
+        <th>Posterior mean</th>
+        <th>HDI</th>
+        <th>P(success&lt;strong)</th>
+        <th>Band</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for stratum in runtime.strata %}
+      <tr>
+        <td>{{ stratum.task_family }}</td>
+        <td>{{ stratum.n_total }}</td>
+        <td>{{ "%.3f"|format(stratum.posterior_mean) }}</td>
+        <td>[{{ "%.3f"|format(stratum.hdi_low) }}, {{ "%.3f"|format(stratum.hdi_high) }}]</td>
+        <td>{{ "%.3f"|format(stratum.p_success_lt_strong) }}</td>
+        <td>{{ stratum.band }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{# === Artifact axis (per locked DD-41 line 388: `{% include %}` per-axis section partial) === #}
+{% if artifact is none %}
+<section class="hibayes-placeholder">
+  <h2>Artifact Validity — NOT AVAILABLE</h2>
+  <p>No posterior.json found for the artifact axis. Re-run <code>make hibayes-axes</code> after resolving the upstream stage failure.</p>
+</section>
+{% else %}
+{% with posterior = artifact %}
+{% include "artifact_section.html.j2" %}
+{% endwith %}
+{% endif %}
+
+{# === Functional axis (per locked DD-41 line 388: `{% include %}` per-axis section partial) === #}
+{% if functional is none %}
+<section class="hibayes-placeholder">
+  <h2>Functional Usefulness — NOT AVAILABLE</h2>
+  <p>No posterior.json found for the functional axis. Re-run <code>make hibayes-axes</code> after resolving the upstream stage failure.</p>
+</section>
+{% else %}
+{% with posterior = functional %}
+{% include "functional_section.html.j2" %}
+{% endwith %}
+{% endif %}
+
+</body>
+</html>
