@@ -500,7 +500,6 @@ def test_make_hibayes_axes_skips_up_to_date_on_reinvoke(tmp_path: Path, monkeypa
     than every input file, then `make --dry-run hibayes-axes` should print
     `Nothing to be done` (or no commands at all).
     """
-    import os, time
     # The orchestrator is PHONY so it always "runs" — but its prereqs (the file
     # targets) must each be skipped. We check that dry-run output for the
     # full chain contains NO recipe lines for the upstream file targets.
