@@ -308,6 +308,78 @@ The pipeline is opt-in. Bridge users do not need it; reliability-evaluation oper
 
 ---
 
+## HiBayes Evaluator Axes (2026-05)
+
+The DMAC Assistant evaluation pipeline ships three new evaluation axes alongside the existing runtime-reliability axis. All four axes share a common HiBayes posterior schema (5-key wrapper + 9-field per-stratum) and render into a single combined HTML report.
+
+### Pipeline
+
+```
+manifest.json
+    │
+    ├── Stage A (host) ──► hibayes_artifact_validity.csv
+    ├── Stage B (host) ──► hibayes_functional_eval_inputs.csv (joins Stage A + runtime axis CSV)
+    └── Stage C (host, BAML) ──► hibayes_functional_usefulness.csv + hibayes_review_sidecar.csv
+
+Then:
+    Stage D in-image fits (one per axis):
+        runtime, artifact, functional → posterior.json files
+    Then:
+        combined HTML report
+```
+
+### Usage
+
+```bash
+make hibayes-axes
+# Produces: 3 CSVs + 1 sidecar + 3 posterior.json + 1 combined.html
+```
+
+Individual stages are also addressable:
+
+```bash
+make hibayes-stage-a
+make hibayes-stage-b
+make hibayes-stage-c
+make hibayes-eval-artifact
+make hibayes-eval-functional
+make hibayes-runtime-posterior-json
+make hibayes-combined-report
+```
+
+### Stage A: tempdir-mode-vs-fixed-scratch manifest caveat (DD-25)
+
+The Stage A CLI `--help` text and module docstring carry a verbatim warning (the canonical source is `DD25_TEMPDIR_WARNING` in `tools/hibayes/artifact_validator.py`). The README reproduces it byte-for-byte so the pinning test `test_readme_contains_verbatim_dd25_tempdir_warning` can enforce it:
+
+> WARNING (locked DD-25): Running Stage A against a manifest emitted without `--scratch-dir` (tempdir-mode) will produce a `hibayes_artifact_validity.csv` in which every expected-artifact row is `Missing`, indistinguishable from real failure. Stage A cannot detect tempdir-mode-vs-fixed-scratch-mode from the manifest itself. Verify the upstream run used `--scratch-dir` before drawing inferences from a 100%-Missing Stage A CSV.
+
+Important: the warning text inside the blockquote above MUST match `DD25_TEMPDIR_WARNING` character-for-character (no bold/italic, no smart quotes, plain backticks around `--scratch-dir`, `hibayes_artifact_validity.csv`, and `Missing`). If T1.1 ever edits the constant, this section must be updated in lockstep — the pinning test will fail otherwise.
+
+See also: `tools/hibayes/` — `artifact_count` semantics caveat in [`.claude/CLAUDE.md`](.claude/CLAUDE.md) for the analogous warning on the runtime axis exporter.
+
+### Stage A smoke gate
+
+```bash
+make hibayes-stage-a-smoke
+```
+
+Runs Stage A end-to-end inside `hibayes-runtime-reliability:dev` against the reference fixture (Linux base, no macOS Keychain).
+
+### Live Stage C tests
+
+The live test against `gemini-3.1-pro-preview` is gated behind `@pytest.mark.live`:
+
+```bash
+uv run pytest tools/e2e/tests/test_functional_evaluator_live.py -m live \
+    --enable-socket \
+    --override-ini="addopts=" \
+    --override-ini="testpaths=tools/e2e/tests"
+```
+
+Cost envelope: ~9 API calls per local run; ~$0.001–$0.01 per run on the paid tier.
+
+---
+
 ## Project status
 
 | Plan | Status | Notes |
