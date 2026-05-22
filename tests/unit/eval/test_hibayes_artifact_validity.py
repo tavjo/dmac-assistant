@@ -286,7 +286,11 @@ def test_render_section_emits_expected_substrings() -> None:
     Asserts substrings the Jinja2 template MUST emit per Section 6 File 8
     (`<h2>Artifact Validity</h2>`, the model name, task_family + band cells).
     No `pytest.importorskip("hibayes")` — render_section.py is
-    hibayes-import-clean by design (it only imports jinja2 + stdlib).
+    hibayes-import-clean. But it DOES import jinja2, an eval-group dep
+    image-only (Dockerfile.hibayes-eval:51); a per-test
+    `pytest.importorskip("jinja2")` keeps this a clean host-skip. The
+    pinning assertions run in-image where jinja2 is installed and the
+    `--cov` gate runs. (Mirrors test_hibayes_functional_usefulness.py.)
 
     `posterior` is intentionally a plain dict here (not a Pydantic model
     instance) because Jinja2 attribute lookup falls back to item access on
@@ -294,6 +298,7 @@ def test_render_section_emits_expected_substrings() -> None:
     """
     import importlib.resources
 
+    pytest.importorskip("jinja2")
     from dmac_assistant.eval.hibayes_artifact_validity.render_section import (
         render_section,
     )
@@ -557,3 +562,29 @@ def test_fit_two_level_group_binomial_empty_returns_empty() -> None:
         seed=42,
     )
     assert result == []
+
+
+def test_render_section_test_has_jinja2_importskip_guard() -> None:
+    """Regression (task-3R1): the artifact-axis `test_render_section_emits_
+    expected_substrings` MUST gate on `pytest.importorskip("jinja2")` because
+    it imports `render_section.py`, which does `from jinja2 import ...`.
+    jinja2 is an eval-group dep image-only (Dockerfile.hibayes-eval:51); the
+    host venv lacks it. Without the guard the test errors at run time on host
+    instead of skipping. The functional-axis mirror
+    (test_hibayes_functional_usefulness.py) already carries this guard; this
+    test pins parity so a future edit cannot silently drop it again.
+    """
+    src = Path(__file__).resolve()
+    content = src.read_text(encoding="utf-8")
+    # Locate the test function body.
+    marker = "def test_render_section_emits_expected_substrings("
+    start = content.index(marker)
+    # The next top-level `def ` after the marker bounds the function body.
+    rest = content[start + len(marker):]
+    next_def = rest.find("\ndef ")
+    body = rest if next_def == -1 else rest[:next_def]
+    assert 'pytest.importorskip("jinja2")' in body, (
+        "test_render_section_emits_expected_substrings must call "
+        'pytest.importorskip("jinja2") — jinja2 is image-only per '
+        "Dockerfile.hibayes-eval:51; without the guard the test errors on host."
+    )
