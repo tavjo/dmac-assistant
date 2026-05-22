@@ -320,3 +320,81 @@ hibayes-combined-report: $(COMBINED_HTML)
 hibayes-axes: hibayes-combined-report
 	@echo "hibayes-axes chain (9 steps): hibayes-eval-build -> hibayes-eval -> hibayes-stage-a -> hibayes-stage-b -> hibayes-stage-c -> hibayes-eval-artifact -> hibayes-eval-functional -> hibayes-runtime-posterior-json -> hibayes-combined-report"
 	@echo "hibayes-axes: complete; combined report at $(COMBINED_HTML)"
+
+# T4.3 — Stage A in-container smoke gate (DD-04). Runs Stage A inside the image
+# (Linux base, no macOS Keychain) on the reference fixture. Renamed per DL-020 to
+# avoid collision with `hibayes-eval-artifact` (Stage D axis fit).
+#
+# Uses a DIRECT `docker run` invocation (NOT scripts/run_hibayes_eval_artifact.sh)
+# because the smoke gate needs `evidence/` bind-mounted into the container to
+# reach the reference manifest, and the per-axis wrapper does not mount evidence/.
+# This `docker run` shape mirrors plan BP-9 verbatim. See §9 for the rationale.
+#
+# `hibayes-eval-build` is declared as an ORDER-ONLY prereq (after `|`) so the
+# smoke recipe does not retrigger a network + docker-cache check (which
+# `hibayes-eval-build` performs via `git ls-remote https://github.com/.../hibayes.git`)
+# on every invocation; the image presence is required, but its .PHONY recipe
+# should not drive smoke-target rebuilds. This preserves the CI-portability
+# proof in offline environments. Pattern matches task-14's order-only positioning
+# on `hibayes-eval-artifact` / `hibayes-eval-functional` / `hibayes-combined-report`.
+#
+# `mkdir -p out` runs BEFORE the `docker run` so that the host-side `out/`
+# directory exists prior to the `-v $(CURDIR)/out:/work/out:rw` bind-mount.
+# Without this, on Linux Docker (and some macOS Docker Desktop configurations),
+# Docker will auto-create the missing host-side path as root-owned, breaking
+# subsequent host-side writes / rm / edits. Same precedent as
+# `scripts/run_hibayes_eval.sh` lines 19-20 (`mkdir -p "${REPO}/out"`).
+#
+# The in-container entry is `uv run python -m tools.hibayes.artifact_validator`.
+# The image is built with `uv sync --no-install-project` (Dockerfile.hibayes-eval),
+# so runtime deps such as `pydantic` (imported transitively via
+# `tools/hibayes/__init__.py -> exporter.py`) live ONLY in `/work/.venv`, not in
+# the system Python. A bare `python -m ...` fails with
+# `ModuleNotFoundError: No module named 'pydantic'`; `uv run` activates the venv.
+# Same `uv run` pattern as the canonical sibling wrappers
+# `scripts/run_hibayes_eval.sh` and `scripts/run_hibayes_eval_artifact.sh`.
+#
+# Asserts the produced CSV exists, has the locked-design 29-column header, and
+# has the expected number of data rows (one per manifest summary).
+#
+# The header extraction pipes through `tr -d '\r'`: `tools/hibayes/artifact_validator.py`
+# writes the CSV via `csv.writer` (default dialect), whose `lineterminator` is
+# `\r\n` (CRLF). Without stripping the trailing CR, the extracted header carries
+# an invisible `\r` and the exact-equality test against the LF-terminated
+# `SMOKE_EXPECTED_HEADER` literal fails. The row-count check uses `wc -l` (counts
+# `\n`), which is unaffected by CRLF.
+
+SMOKE_MANIFEST ?= /work/evidence/headless/20260507T224850Z/manifest.json
+SMOKE_ARTIFACT_ROOT ?= /work/evidence/headless/20260507T224850Z/artifacts
+SMOKE_IMAGE ?= hibayes-runtime-reliability:dev
+SMOKE_EXPECTED_ROWS ?= 103
+SMOKE_EXPECTED_HEADER ?= run_id,query_id,task_family,artifact_eval_id,artifact_expected,expected_artifact_kind,artifact_declared,artifact_path,artifact_basename,artifact_ext,runtime_success,failure_mode,artifact_exists,artifact_accessible,file_size_bytes,parser_used,parse_success,sheet_count,row_count,column_count,nonempty_cell_count,null_cell_fraction,required_fields_present,required_fields_complete,missing_required_fields,all_required_rows_complete,artifact_validity_status,artifact_success,validation_notes
+
+hibayes-stage-a-smoke: | hibayes-eval-build
+	@mkdir -p out
+	@docker run --rm \
+		--platform linux/amd64 \
+		-v $(CURDIR)/tools:/work/tools:ro \
+		-v $(CURDIR)/src:/work/src:ro \
+		-v $(CURDIR)/evidence:/work/evidence:ro \
+		-v $(CURDIR)/out:/work/out:rw \
+		-e PYTHONPATH=/work/src:/work/tools \
+		$(SMOKE_IMAGE) \
+		uv run python -m tools.hibayes.artifact_validator \
+			--manifest-path $(SMOKE_MANIFEST) \
+			--artifact-root $(SMOKE_ARTIFACT_ROOT) \
+			--geo-template-path /work/tools/hibayes/resources/GEO-updated.json \
+			--out-csv /work/out/hibayes_artifact_validity_smoke.csv \
+			--ignore-rebase-failures
+	@test -s out/hibayes_artifact_validity_smoke.csv \
+		|| { echo "ERROR: smoke gate did not produce output CSV"; exit 1; }
+	@HEADER=$$(head -n 1 out/hibayes_artifact_validity_smoke.csv | tr -d '\r'); \
+		test "$$HEADER" = "$(SMOKE_EXPECTED_HEADER)" \
+		|| { echo "ERROR: smoke gate CSV header mismatch."; \
+		     echo "  expected: $(SMOKE_EXPECTED_HEADER)"; \
+		     echo "  actual:   $$HEADER"; exit 1; }
+	@ROWS=$$(tail -n +2 out/hibayes_artifact_validity_smoke.csv | wc -l | tr -d ' '); \
+		test "$$ROWS" -eq $(SMOKE_EXPECTED_ROWS) \
+		|| { echo "ERROR: smoke gate produced $$ROWS data rows; expected $(SMOKE_EXPECTED_ROWS)."; exit 1; }; \
+		echo "hibayes-stage-a-smoke: $$ROWS rows, header OK"
+	@echo "hibayes-stage-a-smoke: PASS"
