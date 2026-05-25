@@ -214,7 +214,7 @@ $(ARTIFACT_VALIDITY_CSV): $(MANIFEST_PATH) $(GEO_TEMPLATE)
 # effect; per the session-15 user decision, those tracked files stay
 # uncommitted regardless of dirty status after invocation.
 $(BAML_CLIENT_SENTINEL): $(BAML_SOURCES)
-	baml-cli generate --from baml_src
+	@uv run baml-cli generate --from baml_src
 
 .PHONY: baml-generate
 baml-generate: $(BAML_CLIENT_SENTINEL)

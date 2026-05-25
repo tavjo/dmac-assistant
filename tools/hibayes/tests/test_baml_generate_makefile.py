@@ -40,17 +40,23 @@ def test_baml_sources_variable_defined() -> None:
 
 
 def test_baml_client_sentinel_file_target_rule_exists() -> None:
-    """`$(BAML_CLIENT_SENTINEL): $(BAML_SOURCES)` rule exists with a `baml-cli generate` recipe."""
+    """`$(BAML_CLIENT_SENTINEL): $(BAML_SOURCES)` rule exists with a `uv run baml-cli generate` recipe.
+
+    Per the uv-project convention used everywhere else in this Makefile (`@uv run python -m ...`),
+    the BAML codegen invocation MUST be `uv run baml-cli` (NOT bare `baml-cli`), so the
+    `.venv`-pinned `baml-py` console-script is used regardless of the developer's PATH.
+    """
     text = _makefile_text()
-    # Match the rule header + at least one recipe line containing `baml-cli generate --from baml_src`.
+    # Match the rule header + at least one recipe line containing `uv run baml-cli generate --from baml_src`.
+    # Optional `@` silencing prefix (consistent with other Make recipe lines in this file).
     pattern = (
         r"^\$\(BAML_CLIENT_SENTINEL\):\s+\$\(BAML_SOURCES\)\s*\n"
         r"(?:\t.*\n)*?"   # zero or more recipe lines (tab-indented)
-        r"\tbaml-cli\s+generate\s+--from\s+baml_src\s*$"
+        r"\t@?uv\s+run\s+baml-cli\s+generate\s+--from\s+baml_src\s*$"
     )
     assert re.search(pattern, text, flags=re.MULTILINE), (
         "Makefile missing `$(BAML_CLIENT_SENTINEL): $(BAML_SOURCES)` rule with "
-        "`baml-cli generate --from baml_src` recipe"
+        "`uv run baml-cli generate --from baml_src` recipe"
     )
 
 
