@@ -186,6 +186,13 @@ FUNCTIONAL_POSTERIOR_JSON ?= out/hibayes_functional_usefulness/posterior.json
 RUNTIME_POSTERIOR_JSON ?= out/hibayes_runtime_reliability/posterior.json
 COMBINED_HTML ?= out/hibayes_combined_report.html
 
+# task-7R1 — BAML codegen sentinel for `make baml-generate` (regenerates the
+# gitignored host-side e2e BAML client from baml_src/). Pinned on sync_client.py
+# because Stage C imports `from tools.e2e.baml_client import b` and `b` is
+# exported there. `:=` for BAML_SOURCES so $(wildcard) evaluates once at parse.
+BAML_CLIENT_SENTINEL ?= tools/e2e/baml_client/sync_client.py
+BAML_SOURCES         := $(wildcard baml_src/*.baml)
+
 # ----------------------------------------------------------------------------
 # FILE TARGETS (the load-bearing rules; recipes produce the file)
 # ----------------------------------------------------------------------------
@@ -198,6 +205,20 @@ $(ARTIFACT_VALIDITY_CSV): $(MANIFEST_PATH) $(GEO_TEMPLATE)
 		--geo-template-path $(GEO_TEMPLATE) \
 		--out-csv $(ARTIFACT_VALIDITY_CSV)
 
+# task-7R1 — BAML client regeneration. File-target keyed on `baml_src/*.baml`,
+# so `baml-cli generate` only runs when a source is newer than the sentinel
+# (DL-026 idempotency). `baml-cli generate --from baml_src` writes BOTH codegen
+# targets per `baml_src/generators.baml` — the gitignored `tools/e2e/baml_client/`
+# (sync; Stage C consumer) AND the tracked `src/dmac_assistant/router/baml_client/`
+# (async; router subsystem). The router-client rewrite is a documented side
+# effect; per the session-15 user decision, those tracked files stay
+# uncommitted regardless of dirty status after invocation.
+$(BAML_CLIENT_SENTINEL): $(BAML_SOURCES)
+	baml-cli generate --from baml_src
+
+.PHONY: baml-generate
+baml-generate: $(BAML_CLIENT_SENTINEL)
+
 # Stage B — host-side functional inputs builder.
 $(FUNCTIONAL_INPUTS_CSV): $(ARTIFACT_VALIDITY_CSV) $(RUNTIME_CSV) $(MANIFEST_PATH)
 	@uv run python -m tools.hibayes.functional_inputs \
@@ -207,7 +228,7 @@ $(FUNCTIONAL_INPUTS_CSV): $(ARTIFACT_VALIDITY_CSV) $(RUNTIME_CSV) $(MANIFEST_PAT
 		--out-csv $(FUNCTIONAL_INPUTS_CSV)
 
 # Stage C — host-side BAML-driven evaluator.
-$(FUNCTIONAL_USEFULNESS_CSV): $(FUNCTIONAL_INPUTS_CSV) $(ARTIFACT_VALIDITY_CSV)
+$(FUNCTIONAL_USEFULNESS_CSV): $(FUNCTIONAL_INPUTS_CSV) $(ARTIFACT_VALIDITY_CSV) $(BAML_CLIENT_SENTINEL)
 	@uv run python -m tools.e2e.functional_evaluator \
 		--fei-csv $(FUNCTIONAL_INPUTS_CSV) \
 		--av-csv $(ARTIFACT_VALIDITY_CSV) \
