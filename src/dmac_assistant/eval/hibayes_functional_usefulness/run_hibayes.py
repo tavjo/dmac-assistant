@@ -129,17 +129,22 @@ def _fit_two_level_group_binomial(
     prior_sigma_group_scale: float,
     thresholds: dict[str, float],
     seed: int,
-) -> list[PosteriorTaskFamilyReliability]:
+) -> tuple[list[PosteriorTaskFamilyReliability], ModelAnalysisState | None]:
     """Per locked DD-40: fit `two_level_group_binomial`; extract posteriors
     via ArviZ on `idata.posterior["group_effects"]` + sigmoid (mirroring the
     runtime axis at `run_hibayes.py:156-224` verbatim).
+
+    Task-17 D9 change: returns `(results, state)` so the caller can produce
+    plots from `state.inference_data` (forest plot) and from `state.diagnostics`
+    populated by the HiBayes predictive-plot checkers. `state` is `None` when
+    no aggregates were supplied (early return).
 
     Sampler-knob translation (matches existing axis lines 75-80 + 128-152):
       warmup=500, samples=1000, chains=2, chain_method="sequential",
       prior_sigma_group_scale tuned per locked DD-40 methodology.
     """
     if not aggregates:
-        return []
+        return [], None
 
     features = _build_features(aggregates)
     model_builder = two_level_group_binomial(
@@ -199,7 +204,91 @@ def _fit_two_level_group_binomial(
                 band=band,  # str per locked DD-41 + models.py
             )
         )
-    return results
+    return results, state
+
+
+def _emit_axis_plots(
+    state: ModelAnalysisState,
+    *,
+    plots_dir: Path,
+) -> None:
+    """Task-17 D9: emit posterior-predictive, prior-predictive, and forest plots.
+
+    Forest plot: arviz `plot_forest` on `group_effects` (logit space — acceptable
+    for a diagnostic forest plot per spec §6.3).
+
+    Predictive plots: invoke HiBayes 1.0.0 `posterior_predictive_plot` and
+    `prior_predictive_plot` checker factories; each stashes a
+    `matplotlib.Figure` in `state.diagnostics[name]` (mirrors the runtime
+    axis's `_dispatch_diagnostic` pattern at
+    `hibayes_runtime_reliability/run_hibayes.py:227-264`). Function-scoped
+    `from hibayes.check import checkers` is fine — this module already imports
+    `hibayes` at module level (DL-028).
+    """
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    # ----- Forest plot ------------------------------------------------------
+    import matplotlib.pyplot as plt
+    forest_axes = az.plot_forest(
+        state.inference_data,
+        var_names=["group_effects"],
+        combined=True,
+    )
+    forest_fig = None
+    try:
+        forest_fig = forest_axes.ravel()[0].figure  # type: ignore[attr-defined]
+    except AttributeError:  # pragma: no cover -- defensive ArviZ shape fallback
+        if hasattr(forest_axes, "figure"):
+            forest_fig = forest_axes.figure  # type: ignore[attr-defined]
+        elif isinstance(forest_axes, (list, tuple)) and forest_axes:
+            forest_fig = forest_axes[0].figure
+    if forest_fig is None:  # pragma: no cover -- defensive last-resort branch
+        forest_fig = plt.gcf()
+    forest_fig.savefig(plots_dir / "forest_plot.png")
+    plt.close(forest_fig)
+
+    # ----- Predictive plots -------------------------------------------------
+    # Diagnostic-key naming (live-probed against pinned HiBayes 1.0.0):
+    #   - `posterior_predictive_plot`: stores under the bare name
+    #     `"posterior_predictive_plot"` (checkers.py line 142).
+    #   - `prior_predictive_plot`: stores per-variable as
+    #     `f"{var}_prior_predictive"` (checkers.py line 188). We capture the
+    #     first matching Figure and write it as `prior_predictive_plot.png`
+    #     so the combined renderer can discover it under the canonical filename.
+    from hibayes.check import checkers
+
+    pp_factory = checkers.posterior_predictive_plot
+    pp_check_fn = pp_factory()
+    pp_check_fn(state)
+    pp_fig = (
+        state.diagnostics.get("posterior_predictive_plot")
+        if hasattr(state, "diagnostics")
+        else None
+    )
+    if pp_fig is not None and hasattr(pp_fig, "savefig"):
+        pp_fig.savefig(plots_dir / "posterior_predictive_plot.png")
+        plt.close(pp_fig)
+
+    pre_keys = (
+        set(state.diagnostics.keys())
+        if hasattr(state, "diagnostics") and state.diagnostics is not None
+        else set()
+    )
+    prior_factory = checkers.prior_predictive_plot
+    prior_check_fn = prior_factory()
+    prior_check_fn(state)
+    if hasattr(state, "diagnostics") and state.diagnostics is not None:
+        new_keys = [
+            k
+            for k in state.diagnostics.keys()
+            if k not in pre_keys and k.endswith("_prior_predictive")
+        ]
+        for new_key in new_keys:
+            prior_fig = state.diagnostics.get(new_key)
+            if prior_fig is not None and hasattr(prior_fig, "savefig"):
+                prior_fig.savefig(plots_dir / "prior_predictive_plot.png")
+                plt.close(prior_fig)
+                break
 
 
 def write_posterior_json(
@@ -230,11 +319,17 @@ def run_functional_axis(
     thresholds: dict[str, float],
     prior_sigma_group_scale: float,
     seed: int,
+    plots_dir: Path | None = None,
 ) -> Path:
-    """Run the functional-usefulness axis end-to-end. Returns the posterior.json path."""
+    """Run the functional-usefulness axis end-to-end. Returns the posterior.json path.
+
+    Task-17 D9: also emits posterior-predictive, prior-predictive, and forest
+    plots into `plots_dir` (default: `out_dir / "plots"`). Plot emission is
+    skipped when the fit short-circuits on no aggregates (state is None).
+    """
     rows = load_functional_usefulness_csv(input_csv)
     aggregates = aggregate_by_task_family(rows)
-    strata = _fit_two_level_group_binomial(
+    strata, state = _fit_two_level_group_binomial(
         aggregates,
         prior_sigma_group_scale=prior_sigma_group_scale,
         thresholds=thresholds,
@@ -255,6 +350,9 @@ def run_functional_axis(
             "fit_diagnostics": {},
         },
     )
+    if state is not None:
+        plots_target = plots_dir if plots_dir is not None else out_dir / "plots"
+        _emit_axis_plots(state, plots_dir=plots_target)
     return posterior_path
 
 

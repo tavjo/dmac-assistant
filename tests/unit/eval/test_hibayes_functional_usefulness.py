@@ -243,70 +243,6 @@ def test_functional_usefulness_csv_header_12_columns_pin() -> None:
     assert len(FUNCTIONAL_USEFULNESS_CSV_COLUMNS) == 12
 
 
-def test_render_section_emits_expected_substrings() -> None:
-    """In-image coverage pin (mirror of task-10's DL-038 hardener pass 2 D1
-    MED): exercise `render_section.render_section()` so the in-image `--cov`
-    gate reaches its 95% floor on `render_section.py`.
-
-    Loads the packaged `section.html.j2` from the per-axis `report_template/`
-    directory (locked DD-28) via `importlib.resources` — the same discovery
-    pattern `run_hibayes._discover_default_config_path` uses for the YAML.
-    Asserts substrings the Jinja2 template MUST emit per Section 6 substitution
-    rules (`<h2>Functional Usefulness</h2>`, the model name, task_family + band
-    cells). No `pytest.importorskip("hibayes")` — render_section.py is
-    hibayes-import-clean by design (it only imports jinja2 + stdlib).
-
-    `posterior` is intentionally a plain dict here (not a Pydantic model
-    instance) because Jinja2 attribute lookup falls back to item access on
-    dicts; the combined renderer (task-13) feeds the same dict shape.
-
-    NOTE: `render_section.py` is hibayes-import-clean (no `import hibayes`),
-    but it DOES import `jinja2`, which is an eval-group dependency installed
-    only inside the `hibayes-runtime-reliability:dev` image (see
-    `pyproject.toml [tool.coverage.run]` comment and the existing
-    `tests/unit/eval/test_render_report.py:23` module-level
-    `pytest.importorskip("jinja2")`). A per-test `pytest.importorskip("jinja2")`
-    keeps this test a clean host-skip; the pinning assertions run in-image
-    where jinja2 IS installed and the `--cov` gate runs — exactly the context
-    this test is documented as an in-image coverage pin for.
-    """
-    import importlib.resources
-
-    pytest.importorskip("jinja2")
-    from dmac_assistant.eval.hibayes_functional_usefulness.render_section import (
-        render_section,
-    )
-
-    template_dir = Path(
-        importlib.resources.files("dmac_assistant.eval.hibayes_functional_usefulness")
-        / "report_template"
-    )
-    posterior = {
-        "axis": "functional",
-        "model": "two_level_group_binomial",
-        "prior_sigma_group_scale": 2.0,
-        "strata": [
-            {
-                "task_family": "Search-Basic",
-                "n_total": 3,
-                "posterior_mean": 0.85,
-                "posterior_median": 0.86,
-                "hdi_low": 0.6,
-                "hdi_high": 0.95,
-                "p_success_lt_strong": 0.05,
-                "p_success_lt_acceptable": 0.02,
-                "band": "Reliable",
-            },
-        ],
-        "metadata": {},
-    }
-    html = render_section(posterior=posterior, template_dir=template_dir)
-    assert "<h2>Functional Usefulness</h2>" in html
-    assert "two_level_group_binomial" in html
-    assert "Search-Basic" in html
-    assert "Reliable" in html
-
-
 def test_discover_default_config_path_returns_packaged_yaml() -> None:
     """In-image coverage pin (mirror of task-10's DL-038 hardener pass 2 D1
     MED): exercise `_discover_default_config_path` directly so it shows as
@@ -432,16 +368,22 @@ def test_band_covers_all_four_branches() -> None:
 
 
 def test_fit_returns_empty_for_no_aggregates() -> None:
-    """Pin `_fit_two_level_group_binomial`'s empty-aggregate early return."""
+    """Pin `_fit_two_level_group_binomial`'s empty-aggregate early return.
+
+    Task-17 §6.3 changed the return type from `list` to
+    `tuple[list, state|None]` so callers can produce plots from the fitted
+    state. The early return now yields `([], None)`.
+    """
     pytest.importorskip("hibayes")
     from dmac_assistant.eval.hibayes_functional_usefulness.run_hibayes import (
         _fit_two_level_group_binomial,
     )
 
-    result = _fit_two_level_group_binomial(
+    result, state = _fit_two_level_group_binomial(
         [], prior_sigma_group_scale=2.0, thresholds={"strong": 0.9}, seed=1
     )
     assert result == []
+    assert state is None
 
 
 def test_load_csv_skips_malformed_rows(tmp_path: Path) -> None:
@@ -492,3 +434,109 @@ def test_posterior_model_rejects_inverted_hdi() -> None:
             p_success_lt_acceptable=0.1,
             band="Watch",
         )
+
+
+# --------------------------------------------------------------------------- #
+# Task-17 plot-emission tests (D9 / spec §5 tests 13-15).                     #
+# Each test runs a real `run_functional_axis` fit and asserts that the three  #
+# plot PNGs land in `out/<axis>/plots/`. Per-test                             #
+# `pytest.importorskip("hibayes")` keeps these clean host-skips; in-image     #
+# they exercise the new §6.3 plot-emission code.                              #
+# --------------------------------------------------------------------------- #
+
+
+def _build_minimal_functional_csv(fu_csv: Path) -> None:
+    """Write a minimal Stage C 12-column CSV with enough strata for a fit.
+
+    Mirrors the fixture in `test_run_hibayes_consumes_functional_csv`; pulled
+    into a helper so the three task-17 plot tests can share it.
+    """
+    fu_csv.write_text(
+        "query_id,task_family,expected_behavior,runtime_success,artifact_status,"
+        "outcome,usefulness_score,primary_issue,functional_success,"
+        "needs_human_review,review_priority,rationale\n"
+    )
+    for i in range(1, 4):
+        for fam in ("Search-Basic", "Report-GEO"):
+            success = "True" if i != 3 else "False"
+            outcome = "FullySatisfied" if success == "True" else "NotSatisfied"
+            primary_issue = "NoIssue" if success == "True" else "RuntimeFailure"
+            review_priority = "Low" if success == "True" else "High"
+            needs_review = "False" if success == "True" else "True"
+            fu_csv.write_text(
+                fu_csv.read_text()
+                + f"Q-{fam}-{i},{fam},AnswerExpected,{success},Valid,"
+                f"{outcome},3,{primary_issue},{success},"
+                f"{needs_review},{review_priority},r\n"
+            )
+
+
+def test_run_hibayes_emits_posterior_predictive_plot(tmp_path: Path) -> None:
+    """§5 test 13: after `run_functional_axis`,
+    `out/<axis>/plots/posterior_predictive_plot.png` exists and is non-empty.
+    """
+    pytest.importorskip("hibayes")
+    from dmac_assistant.eval.hibayes_functional_usefulness.run_hibayes import (
+        run_functional_axis,
+    )
+
+    fu_csv = tmp_path / "fu.csv"
+    _build_minimal_functional_csv(fu_csv)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    run_functional_axis(
+        input_csv=fu_csv,
+        out_dir=out_dir,
+        thresholds={"strong": 0.9, "acceptable": 0.8},
+        prior_sigma_group_scale=2.0,
+        seed=42,
+    )
+    plot = out_dir / "plots" / "posterior_predictive_plot.png"
+    assert plot.is_file(), f"missing plot {plot}"
+    assert plot.stat().st_size > 0, f"plot {plot} is empty"
+
+
+def test_run_hibayes_emits_prior_predictive_plot(tmp_path: Path) -> None:
+    """§5 test 14: `prior_predictive_plot.png` exists and is non-empty."""
+    pytest.importorskip("hibayes")
+    from dmac_assistant.eval.hibayes_functional_usefulness.run_hibayes import (
+        run_functional_axis,
+    )
+
+    fu_csv = tmp_path / "fu.csv"
+    _build_minimal_functional_csv(fu_csv)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    run_functional_axis(
+        input_csv=fu_csv,
+        out_dir=out_dir,
+        thresholds={"strong": 0.9, "acceptable": 0.8},
+        prior_sigma_group_scale=2.0,
+        seed=42,
+    )
+    plot = out_dir / "plots" / "prior_predictive_plot.png"
+    assert plot.is_file(), f"missing plot {plot}"
+    assert plot.stat().st_size > 0, f"plot {plot} is empty"
+
+
+def test_run_hibayes_emits_forest_plot(tmp_path: Path) -> None:
+    """§5 test 15: `forest_plot.png` exists and is non-empty."""
+    pytest.importorskip("hibayes")
+    from dmac_assistant.eval.hibayes_functional_usefulness.run_hibayes import (
+        run_functional_axis,
+    )
+
+    fu_csv = tmp_path / "fu.csv"
+    _build_minimal_functional_csv(fu_csv)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    run_functional_axis(
+        input_csv=fu_csv,
+        out_dir=out_dir,
+        thresholds={"strong": 0.9, "acceptable": 0.8},
+        prior_sigma_group_scale=2.0,
+        seed=42,
+    )
+    plot = out_dir / "plots" / "forest_plot.png"
+    assert plot.is_file(), f"missing plot {plot}"
+    assert plot.stat().st_size > 0, f"plot {plot} is empty"

@@ -1,36 +1,56 @@
-"""T4.1 — Combined HTML report renderer.
+"""Task-17 — Combined HiBayes HTML report renderer (tabbed, posterior.json-driven).
 
-Reads three posterior.json files (runtime + artifact + functional) and emits
-hibayes_combined_report.html. Hibayes-import-clean (locked DD-41 + plan DL-013).
+Reads three posterior.json files (runtime + artifact + functional) and emits a
+single tabbed HTML file (`out/hibayes_combined_report.html`) whose three tab
+panels mirror the visual quality of the existing runtime report. Hibayes-import-
+clean (locked DD-41 + plan DL-013).
 
 Per locked DD-41 partial-failure behavior:
 - Render placeholder section for each missing axis.
 - Exit non-zero by default if any expected axis is missing; --allow-partial overrides.
 
-ESC-5 resolution (Hardener Pass 2, 2026-05-18): per locked DD-41 line 388,
-combined.html.j2 uses `{% include %}` for the artifact + functional axes'
-section partials (owned by task-10 / task-11). The runtime axis is rendered
-INLINE in combined.html.j2 because task-12 (the runtime CSV→JSON adapter)
-does NOT emit a section.html.j2 and the existing runtime module has no
-`report_template/` directory. The Jinja2 FileSystemLoader is configured with
-three search paths and the per-axis partials are exposed under unique loader
-keys (`artifact_section.html.j2`, `functional_section.html.j2`) via a small
-DictLoader → ChoiceLoader chain to avoid `section.html.j2` basename collision
-across the three FileSystemLoader search paths.
+Task-17 D1: ONE shared Jinja2 template (combined.html.j2); no per-axis
+`section.html.j2` partials. Each tab panel uses the runtime report's CSS /
+content vocabulary.
+
+Task-17 D8: per-axis chart set is constrained to `posterior.json` data — metric
+cards, a posterior-mean-by-task-family bar chart, a risk bar chart of
+p_success_lt_acceptable per family, the per-task-family table of all 9 strata
+fields, and embedded plot PNGs. The runtime report's observedVsPosteriorChart
+and failureModeChart are NOT reproduced — they require aggregate data that
+posterior.json does not carry.
+
+Task-17 D5: forest plot appears on the artifact + functional tabs only (the
+runtime tab keeps its existing two plots). The shared template renders the
+forest-plot slot conditionally on `axis.has_forest_plot`.
 """
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
-from jinja2 import ChoiceLoader, DictLoader, Environment, FileSystemLoader, select_autoescape
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+from markupsafe import Markup
 
 
 REQUIRED_WRAPPER_KEYS: frozenset[str] = frozenset(
     {"axis", "model", "prior_sigma_group_scale", "strata", "metadata"}
 )
+
+# Filenames the renderer looks for in each axis's plots/ dir (D4 / D5).
+# Order is render-order: posterior-predictive first, then prior-predictive,
+# then forest (last; new-axis-only per D5).
+_PLOT_FILENAMES: tuple[str, ...] = (
+    "posterior_predictive_plot.png",
+    "prior_predictive_plot.png",
+    "forest_plot.png",
+)
+
+_FOREST_FILENAME: str = "forest_plot.png"
 
 
 def validate_posterior_wrapper_schema(
@@ -84,75 +104,176 @@ def _check_axis(
         )
 
 
-def _discover_axis_section_partial(axis_module_dotted: str) -> str | None:
-    """Locate a per-axis `report_template/section.html.j2` partial via Python
-    module-relative path discovery.
+# --------------------------------------------------------------------------- #
+# Helpers (copied from `hibayes_runtime_reliability.render_report` per §6.1).  #
+# render.py stays hibayes-import-clean — these are duplicated rather than     #
+# imported to avoid coupling `hibayes_combined_report` to                     #
+# `hibayes_runtime_reliability`.                                              #
+# --------------------------------------------------------------------------- #
 
-    Returns the file's text content (so it can be registered under an
-    axis-namespaced loader key) or None if the module / partial is absent
-    (e.g., when running host-side tests before the per-axis module's files
-    have been materialized by task-10 / task-11).
 
-    Args:
-        axis_module_dotted: e.g.
-            `dmac_assistant.eval.hibayes_artifact_validity` or
-            `dmac_assistant.eval.hibayes_functional_usefulness`.
+def encode_plot_png(path: Path) -> str | None:
+    """Base64-encode a PNG file; return None if missing/unreadable.
+
+    Verbatim copy from `hibayes_runtime_reliability.render_report.encode_plot_png`
+    (lines 88-98) per spec §6.1. `OSError` covers `FileNotFoundError`,
+    `PermissionError`, and `IsADirectoryError` (all subclasses) — the single
+    except is sufficient for every "file is not readable" condition.
     """
-    import importlib.util
+    try:
+        return base64.b64encode(path.read_bytes()).decode("ascii")
+    except OSError:
+        return None
 
-    spec = importlib.util.find_spec(axis_module_dotted)
-    if spec is None or spec.origin is None:
+
+def _dash_for_none(x: Any) -> str:
+    """Jinja filter: render '—' (em-dash) for None/NaN, else `str(x)`.
+
+    Verbatim copy from `hibayes_runtime_reliability.render_report._dash_for_none`
+    (lines 70-77) per spec §6.1.
+    """
+    if x is None:
+        return "—"
+    # numpy NaN check without importing numpy:
+    if isinstance(x, float) and x != x:
+        return "—"
+    return str(x)
+
+
+# --------------------------------------------------------------------------- #
+# Per-axis context builder                                                    #
+# --------------------------------------------------------------------------- #
+
+
+_BAND_TO_PILL_CLASS: dict[str, str] = {
+    "Reliable": "pill ok",
+    "Watch": "pill warn",
+    "Brittle": "pill fail",
+    "TooUncertain": "pill muted",
+}
+
+
+def _build_axis_context(
+    payload: dict[str, Any] | None,
+    *,
+    axis_key: str,
+    axis_heading: str,
+    plots_dir: Path | None,
+) -> dict[str, Any] | None:
+    """Produce the per-axis context dict consumed by `combined.html.j2`.
+
+    Returns None when `payload` is None (missing axis); the template renders a
+    placeholder block for None panels.
+    """
+    if payload is None:
         return None
-    module_dir = Path(spec.origin).parent
-    partial = module_dir / "report_template" / "section.html.j2"
-    if not partial.is_file():
-        return None
-    return partial.read_text(encoding="utf-8")
+
+    strata: list[dict[str, Any]] = list(payload.get("strata", []) or [])
+    # Decorate strata rows with a pill class for the band cell (template uses it).
+    table_rows: list[dict[str, Any]] = []
+    for s in strata:
+        row = dict(s)
+        row["pill_class"] = _BAND_TO_PILL_CLASS.get(
+            str(s.get("band", "")), "pill muted"
+        )
+        table_rows.append(row)
+
+    # Metric-card values.
+    family_count = len(strata)
+    total_n = sum(int(s.get("n_total", 0) or 0) for s in strata)
+    band_counts = {
+        "Reliable": sum(1 for s in strata if s.get("band") == "Reliable"),
+        "Watch": sum(1 for s in strata if s.get("band") == "Watch"),
+        "Brittle": sum(1 for s in strata if s.get("band") == "Brittle"),
+        "TooUncertain": sum(
+            1 for s in strata if s.get("band") == "TooUncertain"
+        ),
+    }
+
+    # Chart data — only what posterior.json carries (D8).
+    families = [str(s.get("task_family", "")) for s in strata]
+    posterior_means = [s.get("posterior_mean") for s in strata]
+    risk_values = [s.get("p_success_lt_acceptable") for s in strata]
+    chart_data: dict[str, Any] = {
+        "posteriorMean": {
+            "families": families,
+            "values": posterior_means,
+        },
+        "risk": {
+            "families": families,
+            "values": risk_values,
+        },
+    }
+
+    # Plot embedding — read every PNG that lives in `plots_dir` for this axis.
+    plot_inlines: list[dict[str, str]] = []
+    has_forest_plot = False
+    if plots_dir is not None and plots_dir.is_dir():
+        for name in _PLOT_FILENAMES:
+            p = plots_dir / name
+            if not p.is_file():
+                continue
+            encoded = encode_plot_png(p)
+            if encoded is None:
+                continue
+            label = p.stem  # "posterior_predictive_plot", etc.
+            plot_inlines.append({"label": label, "b64": encoded})
+            if name == _FOREST_FILENAME:
+                has_forest_plot = True
+
+    return {
+        "axis_key": axis_key,
+        "axis_heading": axis_heading,
+        "model": payload.get("model", ""),
+        "prior_sigma_group_scale": payload.get("prior_sigma_group_scale", ""),
+        "metadata": payload.get("metadata", {}) or {},
+        "strata": table_rows,
+        "metrics": {
+            "family_count": family_count,
+            "total_n": total_n,
+            "band_counts": band_counts,
+        },
+        "chart_data": chart_data,
+        "plot_inlines": plot_inlines,
+        "has_forest_plot": has_forest_plot,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Jinja2 environment                                                          #
+# --------------------------------------------------------------------------- #
 
 
 def _build_jinja_environment() -> Environment:
-    """Configure the Jinja2 environment so `combined.html.j2` can `{% include %}`
-    the artifact + functional axes' section partials per locked DD-41 line 388.
+    """Configure the Jinja2 environment for the combined-report template.
 
-    Loader layout (resolution order via ChoiceLoader):
-      1. DictLoader exposing the artifact axis's `section.html.j2` content
-         under the loader key `artifact_section.html.j2`.
-      2. DictLoader exposing the functional axis's `section.html.j2` content
-         under the loader key `functional_section.html.j2`.
-      3. FileSystemLoader pointed at the combined-report's own
-         `report_template/` directory (which contains `combined.html.j2`).
+    Single FileSystemLoader pointed at the combined-report's own
+    `report_template/` directory. No DictLoader / ChoiceLoader: task-17 D1
+    removes the per-axis `section.html.j2` partial mechanism (one shared
+    template per D1).
 
-    The DictLoader indirection sidesteps `section.html.j2` basename collision
-    across the three per-axis FileSystemLoaders. If a per-axis partial is
-    missing (e.g., host-side tests before task-10 / task-11 have landed), the
-    corresponding key is omitted from the DictLoader; the `{% include %}` will
-    then raise `jinja2.TemplateNotFound` at render time — fail-loud, matching
-    DD-41's render-policy posture.
+    Filter registrations copied from
+    `hibayes_runtime_reliability.render_report._build_environment` (lines 70-77
+    for the `_dash_for_none` function body and 249-252 for the filter
+    registrations) per spec §6.1.
     """
     combined_template_dir = Path(__file__).parent / "report_template"
-
-    per_axis_templates: dict[str, str] = {}
-    artifact_partial = _discover_axis_section_partial(
-        "dmac_assistant.eval.hibayes_artifact_validity"
-    )
-    if artifact_partial is not None:
-        per_axis_templates["artifact_section.html.j2"] = artifact_partial
-    functional_partial = _discover_axis_section_partial(
-        "dmac_assistant.eval.hibayes_functional_usefulness"
-    )
-    if functional_partial is not None:
-        per_axis_templates["functional_section.html.j2"] = functional_partial
-
-    loader = ChoiceLoader(
-        [
-            DictLoader(per_axis_templates),
-            FileSystemLoader(str(combined_template_dir)),
-        ]
-    )
-    return Environment(
-        loader=loader,
+    env = Environment(
+        loader=FileSystemLoader(str(combined_template_dir)),
         autoescape=select_autoescape(["html", "htm", "j2", "xml"]),
+        trim_blocks=False,
+        lstrip_blocks=False,
     )
+    env.filters["dash_for_none"] = _dash_for_none
+    env.filters["pct"] = lambda x: "—" if x is None else f"{100 * x:.1f}%"
+    env.filters["money"] = lambda x: "—" if x is None else f"${x:.4f}"
+    env.filters["fixed"] = lambda x, d=2: "—" if x is None else f"{x:.{d}f}"
+    return env
+
+
+# --------------------------------------------------------------------------- #
+# Public entrypoint                                                           #
+# --------------------------------------------------------------------------- #
 
 
 def render_combined_report(
@@ -162,7 +283,17 @@ def render_combined_report(
     functional_path: Path,
     out_html: Path,
     allow_partial: bool,
+    runtime_plots_dir: Path | None = None,
+    artifact_plots_dir: Path | None = None,
+    functional_plots_dir: Path | None = None,
 ) -> int:
+    """Render the combined tabbed HTML report; return 0 / 1 exit code.
+
+    Plot-directory derivation rule (§6.1): for each axis, if the corresponding
+    `*_plots_dir` argument is None, the renderer derives the directory as
+    `<that axis's posterior.json>.parent / "plots"`. An explicit `*_plots_dir`
+    argument overrides the derivation.
+    """
     runtime = _load_posterior(runtime_path)
     artifact = _load_posterior(artifact_path)
     functional = _load_posterior(functional_path)
@@ -171,22 +302,63 @@ def render_combined_report(
     _check_axis(artifact, "artifact", source_label=str(artifact_path))
     _check_axis(functional, "functional", source_label=str(functional_path))
 
+    # Plot-directory derivation (§6.1): default to `<posterior.json>.parent / "plots"`.
+    rt_plots = (
+        runtime_plots_dir
+        if runtime_plots_dir is not None
+        else runtime_path.parent / "plots"
+    )
+    av_plots = (
+        artifact_plots_dir
+        if artifact_plots_dir is not None
+        else artifact_path.parent / "plots"
+    )
+    fu_plots = (
+        functional_plots_dir
+        if functional_plots_dir is not None
+        else functional_path.parent / "plots"
+    )
+
+    runtime_ctx = _build_axis_context(
+        runtime,
+        axis_key="runtime",
+        axis_heading="Runtime Reliability",
+        plots_dir=rt_plots,
+    )
+    artifact_ctx = _build_axis_context(
+        artifact,
+        axis_key="artifact",
+        axis_heading="Artifact Validity",
+        plots_dir=av_plots,
+    )
+    functional_ctx = _build_axis_context(
+        functional,
+        axis_key="functional",
+        axis_heading="Functional Usefulness",
+        plots_dir=fu_plots,
+    )
+
     env = _build_jinja_environment()
     template = env.get_template("combined.html.j2")
 
+    # Per-axis chart-data JSON — passed through Markup so the autoescape does
+    # not turn `<` into `&lt;`. Pattern mirrors
+    # `hibayes_runtime_reliability.render_report.render_report` lines 285-291.
+    def _dump_chart_data(ctx: dict[str, Any] | None) -> Markup:
+        if ctx is None:
+            return Markup("null")
+        return Markup(
+            json.dumps(ctx["chart_data"], default=str).replace("</", "<\\/")
+        )
+
     html = template.render(
-        runtime=runtime,
-        artifact=artifact,
-        functional=functional,
-        missing_axes=[
-            label
-            for label, payload in [
-                ("runtime", runtime),
-                ("artifact", artifact),
-                ("functional", functional),
-            ]
-            if payload is None
-        ],
+        runtime=runtime_ctx,
+        artifact=artifact_ctx,
+        functional=functional_ctx,
+        runtime_chart_data_json=_dump_chart_data(runtime_ctx),
+        artifact_chart_data_json=_dump_chart_data(artifact_ctx),
+        functional_chart_data_json=_dump_chart_data(functional_ctx),
+        chartjs_cdn="https://cdn.jsdelivr.net/npm/chart.js@4",
     )
     out_html.parent.mkdir(parents=True, exist_ok=True)
     out_html.write_text(html, encoding="utf-8")
@@ -217,5 +389,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    import sys
     sys.exit(main())
