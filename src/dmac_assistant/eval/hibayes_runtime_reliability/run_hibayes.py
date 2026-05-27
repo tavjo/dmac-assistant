@@ -232,9 +232,26 @@ def _dispatch_diagnostic(name: str, state: ModelAnalysisState, *, plots_dir: Pat
     factory with defaults, call the returned check, and return the verdict
     string (typically "pass", "fail", or "NA").
 
-    Plot-producing checkers (`posterior_predictive_plot`, `prior_predictive_plot`)
-    stash the rendered `matplotlib.Figure` into `state.diagnostics[name]`; we
-    save that figure to `plots_dir / f"{name}.png"` after the call.
+    Plot-producing checkers stash the rendered `matplotlib.Figure` into
+    `state.diagnostics`, but the key under which the Figure lands varies by
+    checker (live-probed against pinned HiBayes 1.0.0):
+
+      * `posterior_predictive_plot` — stores under the bare name
+        `"posterior_predictive_plot"` (`hibayes/check/checkers.py:142`).
+      * `prior_predictive_plot` — stores per-variable as
+        `f"{var}_prior_predictive"` (`hibayes/check/checkers.py:188`). For the
+        observation variable `obs` the key is `obs_prior_predictive`, NOT the
+        bare `prior_predictive_plot`.
+
+    AM-003 fix: use the snapshot-diff plot-discovery pattern (mirrored from the
+    sibling axes' `_emit_axis_plots` at
+    `hibayes_artifact_validity/run_hibayes.py:209-306` and
+    `hibayes_functional_usefulness/run_hibayes.py`) — snapshot
+    `state.diagnostics.keys()` before the check call, then pick out the new
+    key after. We still save the Figure as `plots_dir / f"{name}.png"`
+    (renamed to the caller's canonical filename) so the downstream renderer
+    discovers it under the expected name regardless of HiBayes's internal
+    key convention.
     """
     from hibayes.check import checkers  # local import: deferred until first call
     factory = getattr(checkers, name)
@@ -255,13 +272,53 @@ def _dispatch_diagnostic(name: str, state: ModelAnalysisState, *, plots_dir: Pat
         "ess_bulk": {"threshold": 400},
         "ess_tail": {"threshold": 400},
     }
+    # AM-003: snapshot diagnostics keys BEFORE the checker call so the post-
+    # call diff isolates exactly what the checker stashed. Only relevant for
+    # plot checkers; cheap enough to do unconditionally.
+    pre_keys: set[str] = (
+        set(state.diagnostics.keys())
+        if hasattr(state, "diagnostics") and state.diagnostics is not None
+        else set()
+    )
     check_fn = factory(**_CHECKER_KWARGS.get(name, {}))
     _result, verdict = check_fn(state)
     if name.endswith("_plot"):
-        fig = state.diagnostics.get(name) if hasattr(state, "diagnostics") else None
+        fig = _resolve_plot_figure(name, state, pre_keys=pre_keys)
         if fig is not None and hasattr(fig, "savefig"):
             fig.savefig(plots_dir / f"{name}.png")
     return verdict
+
+
+def _resolve_plot_figure(
+    name: str,
+    state: ModelAnalysisState,
+    *,
+    pre_keys: set[str],
+) -> Any:
+    """AM-003: snapshot-diff Figure discovery for plot checkers.
+
+    Resolution order:
+      1. Bare name (`state.diagnostics[name]`) — covers `posterior_predictive_plot`
+         and any future checker that stores under its own canonical name.
+      2. For `prior_predictive_plot`, the per-variable key
+         `f"{var}_prior_predictive"`. Identify it as a newly-added key (not
+         present in `pre_keys`) whose name ends with `_prior_predictive`. The
+         first such key is taken; HiBayes 1.0.0's `prior_predictive_plot`
+         checker emits one Figure per observation variable, and this axis has
+         exactly one (`obs`) per the locked `_build_features` shape.
+    """
+    if not hasattr(state, "diagnostics") or state.diagnostics is None:
+        return None
+    fig = state.diagnostics.get(name)
+    if fig is not None:
+        return fig
+    if name == "prior_predictive_plot":
+        for key in state.diagnostics.keys():
+            if key in pre_keys:
+                continue
+            if key.endswith("_prior_predictive"):
+                return state.diagnostics.get(key)
+    return None
 
 
 def _run_diagnostics(

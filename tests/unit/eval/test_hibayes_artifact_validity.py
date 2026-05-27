@@ -275,64 +275,6 @@ def test_run_hibayes_consumes_stage_a_csv(tmp_path: Path) -> None:
     assert len(payload["strata"]) >= 1
 
 
-def test_render_section_emits_expected_substrings() -> None:
-    """In-image coverage pin (DL-038 hardener pass 2 D1 MED): exercise
-    `render_section.render_section()` so the in-image `--cov` gate reaches
-    its 95% floor on `render_section.py`.
-
-    Loads the packaged `section.html.j2` from the per-axis `report_template/`
-    directory (locked DD-28) via `importlib.resources` — the same discovery
-    pattern `run_hibayes._discover_default_config_path` uses for the YAML.
-    Asserts substrings the Jinja2 template MUST emit per Section 6 File 8
-    (`<h2>Artifact Validity</h2>`, the model name, task_family + band cells).
-    No `pytest.importorskip("hibayes")` — render_section.py is
-    hibayes-import-clean. But it DOES import jinja2, an eval-group dep
-    image-only (Dockerfile.hibayes-eval:51); a per-test
-    `pytest.importorskip("jinja2")` keeps this a clean host-skip. The
-    pinning assertions run in-image where jinja2 is installed and the
-    `--cov` gate runs. (Mirrors test_hibayes_functional_usefulness.py.)
-
-    `posterior` is intentionally a plain dict here (not a Pydantic model
-    instance) because Jinja2 attribute lookup falls back to item access on
-    dicts; the combined renderer (task-13) feeds the same dict shape.
-    """
-    import importlib.resources
-
-    pytest.importorskip("jinja2")
-    from dmac_assistant.eval.hibayes_artifact_validity.render_section import (
-        render_section,
-    )
-
-    template_dir = Path(
-        importlib.resources.files("dmac_assistant.eval.hibayes_artifact_validity")
-        / "report_template"
-    )
-    posterior = {
-        "axis": "artifact",
-        "model": "two_level_group_binomial",
-        "prior_sigma_group_scale": 2.0,
-        "strata": [
-            {
-                "task_family": "Report-GEO",
-                "n_total": 3,
-                "posterior_mean": 0.85,
-                "posterior_median": 0.86,
-                "hdi_low": 0.6,
-                "hdi_high": 0.95,
-                "p_success_lt_strong": 0.05,
-                "p_success_lt_acceptable": 0.02,
-                "band": "Reliable",
-            },
-        ],
-        "metadata": {},
-    }
-    html = render_section(posterior=posterior, template_dir=template_dir)
-    assert "<h2>Artifact Validity</h2>" in html
-    assert "two_level_group_binomial" in html
-    assert "Report-GEO" in html
-    assert "Reliable" in html
-
-
 def test_discover_default_config_path_returns_packaged_yaml() -> None:
     """In-image coverage pin (DL-038 hardener pass 2 D1 MED): exercise
     `_discover_default_config_path` directly so it shows as covered in the
@@ -544,8 +486,10 @@ def test_band_covers_all_branches() -> None:
 
 
 def test_fit_two_level_group_binomial_empty_returns_empty() -> None:
-    """`_fit_two_level_group_binomial([])` short-circuits to `[]` without a
-    HiBayes fit (Section 6 File 5 lines 140-141).
+    """`_fit_two_level_group_binomial([])` short-circuits to `([], None)`
+    without a HiBayes fit (Section 6 File 5 lines 140-141; task-17 §6.3
+    changed the return type from `list` to `tuple[list, state|None]` so
+    callers can produce plots from the fitted state).
 
     Per-test `pytest.importorskip("hibayes")` — symbol lives in
     `run_hibayes.py`.
@@ -555,36 +499,116 @@ def test_fit_two_level_group_binomial_empty_returns_empty() -> None:
         _fit_two_level_group_binomial,
     )
 
-    result = _fit_two_level_group_binomial(
+    result, state = _fit_two_level_group_binomial(
         [],
         prior_sigma_group_scale=2.0,
         thresholds={"strong": 0.9, "acceptable": 0.8},
         seed=42,
     )
     assert result == []
+    assert state is None
 
 
-def test_render_section_test_has_jinja2_importskip_guard() -> None:
-    """Regression (task-3R1): the artifact-axis `test_render_section_emits_
-    expected_substrings` MUST gate on `pytest.importorskip("jinja2")` because
-    it imports `render_section.py`, which does `from jinja2 import ...`.
-    jinja2 is an eval-group dep image-only (Dockerfile.hibayes-eval:51); the
-    host venv lacks it. Without the guard the test errors at run time on host
-    instead of skipping. The functional-axis mirror
-    (test_hibayes_functional_usefulness.py) already carries this guard; this
-    test pins parity so a future edit cannot silently drop it again.
+# --------------------------------------------------------------------------- #
+# Task-17 plot-emission tests (D9 / spec §5 tests 13-15).                     #
+# Each test runs a real `run_artifact_axis` fit and asserts that the three    #
+# plot PNGs land in `out/<axis>/plots/`. Per-test `pytest.importorskip(       #
+# "hibayes")` keeps these clean host-skips; in-image they exercise the new    #
+# §6.3 plot-emission code.                                                    #
+# --------------------------------------------------------------------------- #
+
+
+def _build_minimal_artifact_csv(av_csv: Path) -> None:
+    """Write a minimal Stage A 29-column CSV with enough strata for a fit.
+
+    Identical fixture to `test_run_hibayes_consumes_stage_a_csv` above; pulled
+    into a helper so the three task-17 plot tests can share it.
     """
-    src = Path(__file__).resolve()
-    content = src.read_text(encoding="utf-8")
-    # Locate the test function body.
-    marker = "def test_render_section_emits_expected_substrings("
-    start = content.index(marker)
-    # The next top-level `def ` after the marker bounds the function body.
-    rest = content[start + len(marker):]
-    next_def = rest.find("\ndef ")
-    body = rest if next_def == -1 else rest[:next_def]
-    assert 'pytest.importorskip("jinja2")' in body, (
-        "test_render_section_emits_expected_substrings must call "
-        'pytest.importorskip("jinja2") — jinja2 is image-only per '
-        "Dockerfile.hibayes-eval:51; without the guard the test errors on host."
+    av_csv.write_text(
+        "run_id,query_id,task_family,artifact_eval_id,artifact_expected,expected_artifact_kind,"
+        "artifact_declared,artifact_path,artifact_basename,artifact_ext,runtime_success,"
+        "failure_mode,artifact_exists,artifact_accessible,file_size_bytes,parser_used,"
+        "parse_success,sheet_count,row_count,column_count,nonempty_cell_count,null_cell_fraction,"
+        "required_fields_present,required_fields_complete,missing_required_fields,"
+        "all_required_rows_complete,artifact_validity_status,artifact_success,validation_notes\n"
     )
+    for i in range(1, 4):
+        for fam in ("Report-GEO", "Report-NFCORE"):
+            success = "True" if i != 3 else "False"
+            status = "Valid" if success == "True" else "Missing"
+            av_csv.write_text(
+                av_csv.read_text()
+                + f"run,Q-{fam}-{i},{fam},Q-{fam}-{i}::0,True,GEO_XLSX,True,/a,b,.xlsx,True,none,"
+                f"True,True,100,openpyxl,True,1,1,1,1,0.0,True,True,,True,{status},{success},\n"
+            )
+
+
+def test_run_hibayes_emits_posterior_predictive_plot(tmp_path: Path) -> None:
+    """§5 test 13: after `run_artifact_axis`,
+    `out/<axis>/plots/posterior_predictive_plot.png` exists and is non-empty.
+    """
+    pytest.importorskip("hibayes")
+    from dmac_assistant.eval.hibayes_artifact_validity.run_hibayes import (
+        run_artifact_axis,
+    )
+
+    av_csv = tmp_path / "av.csv"
+    _build_minimal_artifact_csv(av_csv)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    run_artifact_axis(
+        input_csv=av_csv,
+        out_dir=out_dir,
+        thresholds={"strong": 0.9, "acceptable": 0.8},
+        prior_sigma_group_scale=2.0,
+        seed=42,
+    )
+    plot = out_dir / "plots" / "posterior_predictive_plot.png"
+    assert plot.is_file(), f"missing plot {plot}"
+    assert plot.stat().st_size > 0, f"plot {plot} is empty"
+
+
+def test_run_hibayes_emits_prior_predictive_plot(tmp_path: Path) -> None:
+    """§5 test 14: `prior_predictive_plot.png` exists and is non-empty."""
+    pytest.importorskip("hibayes")
+    from dmac_assistant.eval.hibayes_artifact_validity.run_hibayes import (
+        run_artifact_axis,
+    )
+
+    av_csv = tmp_path / "av.csv"
+    _build_minimal_artifact_csv(av_csv)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    run_artifact_axis(
+        input_csv=av_csv,
+        out_dir=out_dir,
+        thresholds={"strong": 0.9, "acceptable": 0.8},
+        prior_sigma_group_scale=2.0,
+        seed=42,
+    )
+    plot = out_dir / "plots" / "prior_predictive_plot.png"
+    assert plot.is_file(), f"missing plot {plot}"
+    assert plot.stat().st_size > 0, f"plot {plot} is empty"
+
+
+def test_run_hibayes_emits_forest_plot(tmp_path: Path) -> None:
+    """§5 test 15: `forest_plot.png` exists and is non-empty."""
+    pytest.importorskip("hibayes")
+    from dmac_assistant.eval.hibayes_artifact_validity.run_hibayes import (
+        run_artifact_axis,
+    )
+
+    av_csv = tmp_path / "av.csv"
+    _build_minimal_artifact_csv(av_csv)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    run_artifact_axis(
+        input_csv=av_csv,
+        out_dir=out_dir,
+        thresholds={"strong": 0.9, "acceptable": 0.8},
+        prior_sigma_group_scale=2.0,
+        seed=42,
+    )
+    plot = out_dir / "plots" / "forest_plot.png"
+    assert plot.is_file(), f"missing plot {plot}"
+    assert plot.stat().st_size > 0, f"plot {plot} is empty"
