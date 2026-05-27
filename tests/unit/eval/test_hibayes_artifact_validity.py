@@ -10,8 +10,8 @@ import pytest
 # (because DL-028 mandates module-level `import hibayes` in `run_hibayes.py` so
 # `--help` exercises the import path; on host where hibayes is NOT installed, a
 # `from ...run_hibayes import ...` collection-time evaluation would otherwise error,
-# not skip). Tests that import only from `models.py` / `load_csv.py` / `process.py` /
-# `render_section.py` run unconditionally on host — those modules are
+# not skip). Tests that import only from `models.py` / `load_csv.py` / `process.py`
+# run unconditionally on host — those modules are
 # hibayes-import-clean per locked DD-42.
 #
 # The locked DD-42 counter-example at design line 421 grounds the
@@ -23,8 +23,7 @@ import pytest
 #
 # Module-level `importorskip` is INTENTIONALLY NOT used here either — the
 # DD-42 import-cleanliness pin (which reads `models.py` as text) and the
-# Stage A 29-column header pin (which imports from `load_csv.py`) and the
-# `render_section` substring pin (which imports from `render_section.py`)
+# Stage A 29-column header pin (which imports from `load_csv.py`)
 # all MUST run on host. Putting `importorskip` at module scope would skip
 # those too.
 
