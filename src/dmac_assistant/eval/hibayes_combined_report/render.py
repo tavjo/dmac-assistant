@@ -21,8 +21,11 @@ and failureModeChart are NOT reproduced — they require aggregate data that
 posterior.json does not carry.
 
 Task-17 D5: forest plot appears on the artifact + functional tabs only (the
-runtime tab keeps its existing two plots). The shared template renders the
-forest-plot slot conditionally on `axis.has_forest_plot`.
+runtime tab keeps its existing two plots). Enforced by the data layer —
+`_build_axis_context` skips `forest_plot.png` when it is absent from the
+axis's `plots_dir`, so `plot_inlines` carries no `forest_plot` entry on the
+runtime axis. The `has_forest_plot` context flag is retained for callers
+that may want to inspect it but is no longer load-bearing in the template.
 """
 from __future__ import annotations
 

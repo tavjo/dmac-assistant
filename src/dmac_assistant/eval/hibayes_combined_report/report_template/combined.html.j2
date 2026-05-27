@@ -224,18 +224,15 @@ footer { color: var(--text-light); font-size: 11px; margin-top: 24px; text-align
 
     {% if axis.plot_inlines %}
     <section class="charts" style="margin-top:20px;">
+        {# D5: forest plot only on artifact + functional tabs. Enforced by the
+           data layer — _build_axis_context skips forest_plot.png if it is not
+           present on disk under the axis's plots_dir, so plot_inlines never
+           carries a forest_plot entry on the runtime axis. #}
         {% for plot in axis.plot_inlines %}
-        {# D5: forest plot only on artifact + functional tabs. The runtime axis
-           omits forest_plot.png on disk, so this conditional protects against
-           a stray forest_plot.png ever leaking onto the runtime tab. #}
-        {% if plot.label == "forest_plot" and not axis.has_forest_plot %}
-        {# Should not happen given the loader logic, but defend in template. #}
-        {% else %}
         <div class="chart-card" style="height:auto;">
             <h3 style="margin-top:0;">{{ plot.label }}</h3>
             <img class="diag-img" alt="{{ plot.label }}" src="data:image/png;base64,{{ plot.b64 }}">
         </div>
-        {% endif %}
         {% endfor %}
     </section>
     {% endif %}
