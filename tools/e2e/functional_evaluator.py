@@ -488,6 +488,13 @@ def run_stage_c(
             "stage_c_call_count, stage_c_status.\n"
         )
         if not allow_partial:
+            out_usefulness_csv.unlink(missing_ok=True)
+            sys.stderr.write(
+                f"Stage C: deleted {out_usefulness_csv} so downstream callers "
+                "(e.g. GNU make) do not treat partial output as a valid target. "
+                "Sidecar CSV preserved for inspection. Re-run with "
+                "--allow-partial-stage-c to keep the usefulness CSV.\n"
+            )
             return 1
     return 0
 

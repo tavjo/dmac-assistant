@@ -343,6 +343,10 @@ def test_run_stage_c_all_3_calls_fail_exit_nonzero(tmp_path: Path) -> None:
             allow_partial=False,
         )
     assert exit_code != 0
+    # Usefulness CSV is deleted on failure so GNU make / other timestamp-based
+    # callers cannot treat partial output as a valid cached target. Sidecar
+    # preserved for debug inspection.
+    assert not fu_csv.exists()
     with sidecar_csv.open("r", encoding="utf-8") as fh:
         sidecar_rows = list(csv.DictReader(fh))
     assert sidecar_rows[0]["stage_c_call_count"] == "0"
@@ -391,6 +395,8 @@ def test_run_stage_c_partial_success_1_of_3(tmp_path: Path) -> None:
             allow_partial=False,
         )
     assert exit_code != 0  # PartialSuccess still exits non-zero by default
+    # Usefulness CSV deleted on PartialSuccess too (same return-1 path).
+    assert not fu_csv.exists()
     with sidecar_csv.open("r", encoding="utf-8") as fh:
         sidecar_rows = list(csv.DictReader(fh))
     assert sidecar_rows[0]["stage_c_call_count"] == "1"
