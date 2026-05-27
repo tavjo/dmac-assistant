@@ -49,7 +49,8 @@ RUN uv add --no-sync --group eval \
         "numpyro>=0.21.0" \
         "arviz>=0.21.0,<1.0.0" \
         jinja2 \
-        matplotlib
+        matplotlib \
+        openpyxl
 RUN uv sync --no-install-project --group eval --frozen
 
 # Default command: drop into the project venv's interactive Python. The

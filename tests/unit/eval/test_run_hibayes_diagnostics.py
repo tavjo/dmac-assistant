@@ -160,3 +160,38 @@ def test_diagnostic_na_verdict_maps_to_skip(tmp_path: Path) -> None:
     )
     # Pipeline did not abort and other diagnostics still ran.
     assert len(report.posteriors) == 3
+
+
+def test_prior_and_posterior_predictive_plot_files_emitted(tmp_path: Path) -> None:
+    """AM-003: after `run_hibayes`, `plots/` contains BOTH posterior- and
+    prior-predictive PNGs.
+
+    Bug background: HiBayes 1.0.0's `prior_predictive_plot` checker stashes its
+    Figure under the per-variable key `f"{var}_prior_predictive"` (e.g.
+    `obs_prior_predictive` for the observation variable `obs`), NOT under the
+    bare name `"prior_predictive_plot"` (see
+    `hibayes/check/checkers.py:188`). The pre-AM-003 implementation of
+    `_dispatch_diagnostic` used `state.diagnostics.get("prior_predictive_plot")`
+    — the bare-key lookup — so the prior-predictive Figure was never saved to
+    `plots_dir`, even though the checker ran successfully (returned "pass").
+    The fix mirrors the snapshot-diff pattern in the sibling axes'
+    `_emit_axis_plots` (`hibayes_artifact_validity/run_hibayes.py:209-306` and
+    `hibayes_functional_usefulness/run_hibayes.py`): snapshot
+    `state.diagnostics.keys()` before the checker call and pick out the new
+    `f"{var}_prior_predictive"` key after.
+    """
+    rows, _ = load_runtime_eval_csv(FIXTURES / "tiny_three_family.csv")
+    run_hibayes(rows, ReliabilityThresholds(), out_dir=tmp_path, seed=SEED)
+
+    posterior_plot = tmp_path / "plots" / "posterior_predictive_plot.png"
+    prior_plot = tmp_path / "plots" / "prior_predictive_plot.png"
+
+    assert posterior_plot.is_file(), f"missing plot {posterior_plot}"
+    assert posterior_plot.stat().st_size > 0, f"plot {posterior_plot} is empty"
+    assert prior_plot.is_file(), (
+        f"AM-003 regression: missing {prior_plot}. The prior-predictive "
+        "checker likely returned a Figure under a per-variable key "
+        "(e.g. `obs_prior_predictive`) and `_dispatch_diagnostic` failed "
+        "to discover it via the snapshot-diff pattern."
+    )
+    assert prior_plot.stat().st_size > 0, f"plot {prior_plot} is empty"
