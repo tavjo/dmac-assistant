@@ -49,6 +49,12 @@ __all__ = [
 ]
 
 
+# Repo root used by `main()` to locate the project's `.env` file for `load_dotenv`.
+# Path math: this file lives at `<repo>/tools/e2e/functional_evaluator.py`, so the
+# repo root is three parents up.
+_REPO_ROOT: Path = Path(__file__).resolve().parent.parent.parent
+
+
 # Locked §5.3 — 12 columns in exact order.
 FUNCTIONAL_USEFULNESS_HEADER_12: tuple[str, ...] = (
     "query_id",
@@ -517,9 +523,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         dest="allow_partial",
     )
     return parser
-
-
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def main(argv: list[str] | None = None) -> int:
