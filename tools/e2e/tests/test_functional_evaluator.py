@@ -357,7 +357,12 @@ def test_run_stage_c_all_3_calls_fail_exit_nonzero(tmp_path: Path) -> None:
 
 
 def test_run_stage_c_allow_partial_returns_zero_despite_failure(tmp_path: Path) -> None:
-    """DD-43: --allow-partial-stage-c overrides non-zero exit."""
+    """DD-43: --allow-partial-stage-c overrides non-zero exit AND preserves
+    the usefulness CSV on disk. The complement of the two delete-on-failure
+    tests (commit `1bdac64`) that assert `not fu_csv.exists()` when
+    `allow_partial=False`; this one pins the positive case so the
+    `if not allow_partial:` guard cannot be silently inverted.
+    """
     fei_csv, av_csv = _seed_inputs(tmp_path)
     fu_csv = tmp_path / "fu.csv"
     sidecar_csv = tmp_path / "sidecar.csv"
@@ -374,6 +379,14 @@ def test_run_stage_c_allow_partial_returns_zero_despite_failure(tmp_path: Path) 
             allow_partial=True,
         )
     assert exit_code == 0
+    # NEW-3 pin: with --allow-partial, the usefulness CSV must NOT be deleted
+    # even when every call fails. The `if not allow_partial:` guard on the
+    # `unlink` call (functional_evaluator.py) is load-bearing; this assertion
+    # would fail if that guard were ever inverted or removed.
+    assert fu_csv.exists(), (
+        "With allow_partial=True, the usefulness CSV must remain on disk "
+        "even after total Stage C failure."
+    )
 
 
 def test_run_stage_c_partial_success_1_of_3(tmp_path: Path) -> None:
