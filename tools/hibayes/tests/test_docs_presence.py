@@ -64,8 +64,19 @@ def test_runtime_axis_readme_cross_references_new_siblings() -> None:
     )
 
 
-def test_claude_md_has_active_plan_line_for_build_plan() -> None:
-    """.claude/CLAUDE.md `## Active Plans` section references the build plan."""
-    claude_md = (REPO_ROOT / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
-    # The build-plan slug must appear somewhere in the Active Plans line.
-    assert "hibayes-evaluator-expansion-build-2026-05-15" in claude_md
+def test_readme_lists_hibayes_evaluator_expansion_as_complete() -> None:
+    """README.md's project status table records the HiBayes evaluator 2-axis
+    expansion build plan as complete.
+
+    Replaces the prior `test_claude_md_has_active_plan_line_for_build_plan`
+    which read `.claude/CLAUDE.md`. The `.claude/` directory was untracked per
+    `.gitignore` intent (originally force-added via `git add -f`); README.md's
+    project status table is now the canonical "completed plans" record.
+    """
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "HiBayes evaluator 2-axis expansion" in readme, (
+        "README.md missing the build plan's project status row name."
+    )
+    assert "✅ **Complete** (2026-05-27)" in readme, (
+        "README.md missing the build plan's completion marker (`✅ **Complete** (2026-05-27)`)."
+    )
