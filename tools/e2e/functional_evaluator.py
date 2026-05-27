@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
 from tools.e2e.functional_evaluator_models import (
     FunctionalEvaluation,
     FunctionalEvaluationInput,
@@ -510,7 +512,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv(_REPO_ROOT / ".env", override=False)
     args = build_arg_parser().parse_args(argv)
     return run_stage_c(
         fei_csv_path=args.fei_csv,
