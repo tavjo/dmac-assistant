@@ -577,7 +577,10 @@ def test_collect_dynamic_enum_extensions_empty_corpus_yields_empty_sets() -> Non
 
 def test_main_invokes_run_stage_c(tmp_path: Path) -> None:
     """`main(argv)` parses args and delegates to `run_stage_c`; the exit code
-    of `run_stage_c` propagates back as `main`'s return value.
+    of `run_stage_c` propagates back as `main`'s return value. Also pins the
+    `load_dotenv(<repo>/.env, override=False)` call so a regression of the
+    "GCP_API_KEY in .env but not in shell env" failure mode (see commit
+    `243f256`) is caught here, not only by live tests.
     """
     fu_csv = tmp_path / "fu.csv"
     sidecar_csv = tmp_path / "sidecar.csv"
@@ -586,10 +589,13 @@ def test_main_invokes_run_stage_c(tmp_path: Path) -> None:
     fei_csv.touch()
     av_csv.touch()
 
-    with patch(
-        "tools.e2e.functional_evaluator.run_stage_c",
-        MagicMock(return_value=0),
-    ) as mock_run:
+    with (
+        patch("tools.e2e.functional_evaluator.load_dotenv") as mock_load_dotenv,
+        patch(
+            "tools.e2e.functional_evaluator.run_stage_c",
+            MagicMock(return_value=0),
+        ) as mock_run,
+    ):
         rc = main([
             "--fei-csv", str(fei_csv),
             "--av-csv", str(av_csv),
@@ -608,6 +614,17 @@ def test_main_invokes_run_stage_c(tmp_path: Path) -> None:
     assert call_kwargs["out_sidecar_csv"] == sidecar_csv
     assert call_kwargs["max_parallel_queries"] == 2
     assert call_kwargs["allow_partial"] is True
+    # NEW-2 pin: `main()` must call `load_dotenv(<repo>/.env, override=False)`
+    # before delegating to run_stage_c, otherwise live Stage C will reject every
+    # query when GCP_API_KEY is in .env but not in shell env (commit 243f256).
+    assert mock_load_dotenv.call_count == 1
+    load_args, load_kwargs = mock_load_dotenv.call_args
+    assert str(load_args[0]).endswith(".env"), (
+        f"load_dotenv called with non-.env path: {load_args[0]!r}"
+    )
+    assert load_kwargs.get("override") is False, (
+        "override=False is load-bearing: shell-set GCP_API_KEY must win over .env"
+    )
 
 
 def test_read_artifact_validation_notes_returns_empty_when_file_absent(
