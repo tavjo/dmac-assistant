@@ -208,11 +208,13 @@ $(ARTIFACT_VALIDITY_CSV): $(MANIFEST_PATH) $(GEO_TEMPLATE)
 # task-7R1 — BAML client regeneration. File-target keyed on `baml_src/*.baml`,
 # so `baml-cli generate` only runs when a source is newer than the sentinel
 # (DL-026 idempotency). `baml-cli generate --from baml_src` writes BOTH codegen
-# targets per `baml_src/generators.baml` — the gitignored `tools/e2e/baml_client/`
-# (sync; Stage C consumer) AND the tracked `src/dmac_assistant/router/baml_client/`
-# (async; router subsystem). The router-client rewrite is a documented side
-# effect; per the session-15 user decision, those tracked files stay
-# uncommitted regardless of dirty status after invocation.
+# targets per `baml_src/generators.baml` — `tools/e2e/baml_client/` (sync;
+# Stage C consumer) AND `src/dmac_assistant/router/baml_client/` (async; router
+# subsystem). Both directories are gitignored (.gitignore: tools/e2e/baml_client/
+# + src/dmac_assistant/router/baml_client/). Aligned 2026-05-28 to match the
+# session-15 "stay uncommitted" intent with gitignore enforcement, so fresh
+# clones must run `uv sync && make baml-generate` before bridge/tests can
+# import from these packages.
 $(BAML_CLIENT_SENTINEL): $(BAML_SOURCES)
 	@uv run baml-cli generate --from baml_src
 
