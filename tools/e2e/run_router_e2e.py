@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
+from dotenv import load_dotenv
 from websockets.asyncio.client import connect as ws_connect
 
 
@@ -546,6 +547,8 @@ def main(argv: list[str] | None = None) -> int:
         help=f"Output root for per-run dirs (default: {OUTPUT_BASE})",
     )
     args = parser.parse_args(argv)
+
+    load_dotenv(REPO_ROOT / ".env", override=False)
 
     missing = _check_credentials()
     if missing:

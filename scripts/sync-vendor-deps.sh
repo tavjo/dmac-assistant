@@ -6,7 +6,7 @@
 # Bump PIN to upgrade; CI / image-build will pick up the new SHA next run.
 set -euo pipefail
 
-PIN="5588f3becbbc7d8f735c7f009e4940cddf97000b"
+PIN="1217c95885735b8ab63399a5d021669f87b7a297"
 REPO_URL="https://github.com/cdemurjian/chat_nextseek.git"
 VENDOR_DIR="vendor/chat_nextseek"
 

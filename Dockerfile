@@ -79,6 +79,13 @@ RUN cd /tmp/dmac-deps \
     && uv sync --locked --no-install-project \
     && echo "uv sync done; deps installed into /opt/dmac-venv"
 
+# chat_nextseek (vendor pin 1217c95+) pulls sentence-transformers transitively,
+# which requires torch. The default PyPI torch wheel is the CUDA build (~2 GB);
+# the bridge does not need GPU. Install torch from PyTorch's CPU-only index
+# FIRST so the subsequent chat_nextseek install sees torch as already satisfied
+# and skips re-resolving it from PyPI default. The CPU wheel is ~200 MB.
+RUN uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+
 # Plan A T8 Amendment 4 (vendored-source): install chat_nextseek from the
 # host-side vendor/ tree (populated by `make sync-vendor-deps`). No
 # build-time GitHub egress; the image rebuilds wheels in its own
