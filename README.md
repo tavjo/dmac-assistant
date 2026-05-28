@@ -2,7 +2,7 @@
 
 A lab-aware Claude Code agent for the [MIT BioMicro Center (BMC)](https://biomicro.mit.edu/). DMAC Assistant wraps a containerized [`claude`](https://github.com/anthropics/claude-code) CLI behind a thin FastAPI bridge so lab users can chat with an agent that knows their projects, their NExtSEEK sample catalog, and their pipelines — without ever opening a terminal.
 
-> **Status**: Proof-of-concept. Plan A (containerized POC + bridge) is complete; Plan B (production hardening + plugin swap-in) is the next milestone. See [Project Status](#project-status) for the full state.
+> **Status**: Proof-of-concept. Plan A (containerized POC + bridge) and the Plan B `nextseek` plugin swap-in are complete; the remaining Plan B work (core production hardening + multi-user pooling) is the next milestone. See [Project Status](#project-status) for the full state.
 
 ---
 
@@ -11,7 +11,7 @@ A lab-aware Claude Code agent for the [MIT BioMicro Center (BMC)](https://biomic
 DMAC Assistant is **not** a custom agent framework. It is a deliberately small bridge around four load-bearing pieces:
 
 1. **A FastAPI bridge** (`src/dmac_assistant/`) that authenticates lab users, resolves the project directories they're authorized to read, starts a per-user Docker container, and relays chat messages between a browser UI and Claude Code's `stream-json` output.
-2. **A Docker image** (`dmac-assistant:poc`) that contains Claude Code, [`uv`](https://github.com/astral-sh/uv), the `nextseek-api` plugin, and the in-container agent instructions.
+2. **A Docker image** (`dmac-assistant:poc`) that contains Claude Code, [`uv`](https://github.com/astral-sh/uv), the `nextseek` plugin, and the in-container agent instructions.
 3. **Plugin and documentation surfaces** that the in-container Claude runtime reads from fixed paths inside the image — most importantly the NExtSEEK API documentation and the `chat_nextseek` Python orchestrator.
 4. **An offline reliability-analysis pipeline** (`src/dmac_assistant/eval/hibayes_runtime_reliability/`) that consumes the HiBayes-ready CSV emitted by `tools/hibayes/exporter.py` and produces per-task-family Bayesian posterior estimates of agent success probability, plus a self-contained HTML report. Runs inside a sibling Docker image (`hibayes-runtime-reliability:dev`) — see [Reliability analysis pipeline](#reliability-analysis-pipeline) below.
 
@@ -52,7 +52,7 @@ The agent runs **inside the container**. The bridge process never executes user-
                                             │ └─────────┬─────────────────┘ │
                                             │           │                   │
                                             │ Plugins:  ▼                   │
-                                            │   nextseek-api (chat_nextseek)│
+                                            │   nextseek (chat_nextseek)    │
                                             │                               │
                                             │ Mounts:                       │
                                             │   /data/projects/<name> (ro)  │
@@ -235,7 +235,7 @@ If you change `run_tracker.py`, `copier.py`, or `ws.py`'s `dispatch_post_turn_co
 
 ## Image build
 
-The image is named `dmac-assistant:poc` (~1.27 GB; specific SHA rotates with each build — run `docker image inspect dmac-assistant:poc --format '{{.Id}}'` for the current digest). It is `linux/amd64` and contains Python 3.14, `uv`, Claude Code (Node-based with native-binary wrapper), the `nextseek-api` plugin, the vendored `chat_nextseek` Python source, and the BAML-generated router client.
+The image is named `dmac-assistant:poc` (~1.27 GB; specific SHA rotates with each build — run `docker image inspect dmac-assistant:poc --format '{{.Id}}'` for the current digest). It is `linux/amd64` and contains Python 3.14, `uv`, Claude Code (Node-based with native-binary wrapper), the `nextseek` plugin, the vendored `chat_nextseek` Python source, and the BAML-generated router client.
 
 ```sh
 make sync-vendor-deps    # clone chat_nextseek pinned source into vendor/ (HTTPS, uses GH Keychain auth)
@@ -388,7 +388,8 @@ Cost envelope: ~9 API calls per local run; ~$0.001–$0.01 per run on the paid t
 | **HiBayes runtime-reliability pipeline** — offline posterior reliability analysis | ✅ **Complete** (2026-05-13) | All 8 tasks merged; Phase 7 round-4 reviewer PASS; split-coverage model formalized as Amendment 7 |
 | **LLM router** — per-turn route selection between `chat_nextseek` and Container-CC | ✅ **Complete** (2026-05-18) | All 16 tasks merged (Wave 0–6); iter-02 independent Phase 7 reviewer PASS; flag-gated by `DMAC_ROUTER_ENABLED` (default off = byte-identical legacy bridge); iter-02 residual debt closed in `fix/llm-router-residual-debt` (`dd34d6e`) |
 | **HiBayes evaluator 2-axis expansion** — Stage A (artifact validity, deterministic) + Stage B (functional eval input CSV, deterministic) + Stage C (functional usefulness via BAML/Gemini-3.1-pro-preview) + combined tabbed HTML report | ✅ **Complete** (2026-05-27) | All 16 originally-planned tasks merged + 5 Phase-4 remediation tasks + task-17 combined-report rebuild + AM-001/AM-002/AM-003 amendments + 7 Phase-7 follow-up commits; both adversarial post-merge reviewer passes PROCEED; live Stage C green against gemini-3.1-pro-preview (103-query corpus, ~$1–10 per run); §8.3 Playwright MCP smoke green (3 tabs, 0 console errors, 8 plot PNGs + 6 Chart.js charts); locked design spec `hibayes-evaluator-expansion-design-2026-05-14.md` |
-| **Plan B** — production hardening, plugin swap-in, multi-user pooling | ⏳ Not started | Unblocked by Plan A closure |
+| **Plan B (nextseek plugin)** — swap `nextseek-api` → new `nextseek` plugin + D19 host-path reporting consumer | ✅ **Complete** (2026-05-06) | All waves merged to `main` (`adb54aa`); tasks B01–B17c closed (entity/parse/plan/api/graph/submission/report agents, SKILL.md, `/nextseek` command, permission allowlist, catalog snapshot, Dockerfile swap `5c517b5`, image-binding gate, B17c cred-leak mitigation); post-merge adversarial review ALL-PASS; SKILL.md consumes `DMAC_PATH_MAPPINGS` for container→host path translation |
+| **Plan B (remaining)** — core production hardening + multi-user pooling | ⏳ Not started | Two pieces remain: (1) AWS Bedrock token containment + output scrubber — B17c shipped only a stopgap cred-masking layer, the architectural fix is still open (see production-blockers below); (2) multi-user container pooling (today: one container per user per session) |
 
 ### What Plan A delivered
 
