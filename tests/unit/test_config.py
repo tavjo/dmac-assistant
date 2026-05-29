@@ -90,9 +90,36 @@ def test_load_config_happy_path(clean_env: pytest.MonkeyPatch) -> None:
     assert config.users["alice"].projects == ["proj-a"]
     assert config.bridge_host == "127.0.0.1"
     assert config.bridge_port == 8000
-    assert config.claude_users_root == Path("./var/claude-users")
-    assert config.scratch_root == Path("./var/scratch")
+    from dmac_assistant.config import _REPO_ROOT
+
+    # Relative roots are resolved against the repo root (Docker bind sources
+    # must be absolute); absolute roots pass through unchanged.
+    assert config.claude_users_root == (_REPO_ROOT / "var/claude-users").resolve()
+    assert config.scratch_root == (_REPO_ROOT / "var/scratch").resolve()
     assert config.dropbox_root == Path("/tmp/dropbox-fake")
+
+
+def test_load_config_resolves_relative_roots_to_absolute(
+    clean_env: pytest.MonkeyPatch,
+) -> None:
+    """Relative path roots from .env must be resolved to absolute paths.
+
+    Regression for the ``container_start_failed`` APIError: Docker rejects a
+    relative bind-mount source (it reads it as a named-volume name, e.g.
+    ``var/scratch/demo`` -> "invalid characters for a local volume name").
+    ``DMAC_SCRATCH_ROOT=var/scratch`` in .env must therefore resolve against
+    the repo root before it can become a mount source.
+    """
+    _set_good_env(clean_env)  # sets scratch/claude roots to ./var/... (relative)
+
+    from dmac_assistant.config import _REPO_ROOT, load_config
+
+    config = load_config()
+
+    assert config.scratch_root.is_absolute()
+    assert config.claude_users_root.is_absolute()
+    assert config.scratch_root == (_REPO_ROOT / "var/scratch").resolve()
+    assert config.claude_users_root == (_REPO_ROOT / "var/claude-users").resolve()
 
 
 def test_bridge_config_is_frozen(clean_env: pytest.MonkeyPatch) -> None:

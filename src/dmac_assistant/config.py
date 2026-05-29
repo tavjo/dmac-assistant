@@ -106,10 +106,27 @@ def _is_dev_mode() -> bool:
     return os.environ.get("DMAC_DEV_MODE", "").strip().lower() in _DEV_MODE_TRUE_VALUES
 
 
+def _abs_root(path: Path) -> Path:
+    """Make a config path absolute so it is a valid Docker bind source.
+
+    ``~`` is expanded; a path that is still relative is resolved against the
+    repo root (``_REPO_ROOT``) — deterministic and independent of the bridge
+    process cwd — rather than the current working directory. Absolute paths
+    pass through unchanged. Docker rejects relative bind sources (it reads them
+    as named-volume names, e.g. ``var/scratch/demo`` -> "invalid characters for
+    a local volume name"), so every directory root that becomes a mount must be
+    absolute.
+    """
+    path = path.expanduser()
+    if path.is_absolute():
+        return path
+    return (_REPO_ROOT / path).resolve()
+
+
 def _required_path(name: str, default: Path | None = None) -> Path:
     raw = os.environ.get(name)
     if raw is not None and raw.strip():
-        return Path(raw)
+        return _abs_root(Path(raw))
     if default is not None and _is_dev_mode():
         return default
     raise ConfigError(f"{name} is required")
