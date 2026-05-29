@@ -297,19 +297,19 @@ exec claude --print --output-format stream-json --dangerously-skip-permissions "
 
 - `GCP_API_KEY` — passed through to the in-container plugin for chat_nextseek's `gcp:current` profile. **Exfiltration surface** (see Known Issues — Bedrock token exposure file enumerates this).
 - `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PASSWORD` — passed through for the in-container graph agent. Soft-optional: missing values disable graph queries gracefully. **`NEO4J_PASSWORD` is an exfiltration surface** (see Known Issues).
-- `DMAC_OUTPUT_ROOT` — host directory mounted at `/data/output/` ro inside the container. Bridge writes to this directory via the post-turn copier (see "Bridge-side artifact copier" below). **D19 (CC reports host-side paths to the user) is NOT yet implemented; deferred to Plan B's slash-command preamble.**
+- `DMAC_OUTPUT_ROOT` — host directory mounted at `/data/output/` ro inside the container. Bridge writes to this directory via the post-turn copier (see "Bridge-side artifact copier" below). **D19 (CC reports host-side paths to the user) is implemented end-to-end: the bridge injects `DMAC_PATH_MAPPINGS` (Plan A T9b) and the `nextseek` plugin's `SKILL.md` consumes it (Plan B, merged 2026-05-06).**
 
 #### D19 — Host-path reporting
 
 D19 (host-path reporting) is implemented by `DMAC_PATH_MAPPINGS`; see Plan A T9b. Implemented by Plan A T9b: the bridge constructs `DMAC_PATH_MAPPINGS` in `_build_bridge_env(config, identity)` and passes it to the container via `bridge_env`. The shape is `{"output": {"container_root": "/data/output", "host_root": "<config.output_root>/<user_id>"}, "scratch": {"container_root": "/data/scratch", "host_root": "<config.scratch_root>/<user_id>"}}`. Plan B's `SKILL.md` consumes it for path translation so plugin output messages can report host-side paths back to the user.
 
-**Status (Plan A):** the bridge-side injection is complete; the in-container Plan B SKILL.md consumer that translates container paths to host paths in user-facing messages is NOT yet shipped. Until Plan B lands, the in-container agent receives the mapping but does not consume it for output translation. The Plan A milestone is "infrastructure for D19 in place"; the user-facing D19 behavior arrives with Plan B — i.e., end-to-end host-path translation deferred to Plan B.
+**Status:** complete end-to-end. The bridge-side injection landed in Plan A (T9b), and the in-container `nextseek` plugin `SKILL.md` consumer that translates container paths to host paths in user-facing messages shipped with Plan B (merged 2026-05-06, `adb54aa`). The in-container agent now both receives the mapping and consumes it for output translation.
 
 ### 5.5 Bridge-side artifact copier
 
 After every container turn, the bridge copies `<scratch_root>/<user_id>/<run_id>/` to `<output_root>/<user_id>/<run_id>/`. Run-ids are discovered by the bridge via a directory-listing diff: it snapshots `<scratch_root>/<user_id>/` subdirs before the turn starts and again after CC's terminating message; new subdirs are the run_ids the copier publishes. Symlinks within the source tree are skipped to prevent path-traversal exfiltration via plugin-staged symlinks. Copier failures are logged but never raise — partial publish is acceptable; a session crash from publishing is not.
 
-Image v2 (Plan A): the copier infra is in place; the new `nextseek` plugin is NOT yet swapped in. The existing `nextseek-api` plugin keeps running. Plan B does the plugin swap.
+Image v2: the copier infra landed in Plan A; the new `nextseek` plugin swap-in shipped with Plan B (Dockerfile swap `5c517b5`, merged 2026-05-06). The image now ships only the `nextseek` plugin; the old `nextseek-api` plugin is preserved host-side under `build_context/plugins/nextseek-api/` for reuse but no longer runs in the image.
 
 ---
 
