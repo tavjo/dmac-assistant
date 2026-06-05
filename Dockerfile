@@ -15,7 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV UV_INSTALL_DIR=/usr/local/bin
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
-RUN npm install -g @anthropic-ai/claude-code@2.1.92
+# OI-5: >= 2.1.158 required for CLAUDE_CODE_ENABLE_AUTO_MODE on Bedrock.
+RUN npm install -g @anthropic-ai/claude-code@2.1.163
 
 # Plan A · T0 R4: pin uv-managed CPython 3.14 BEFORE any downstream
 # dependency-install or run step. Two well-known symlinks make `python`
@@ -123,4 +124,7 @@ USER user
 WORKDIR /home/user
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["claude", "--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"]
+# NOTE: cosmetic in router mode — the bridge starts the container in idle mode
+# (entrypoint runs `sleep infinity`) and every turn is a fresh `docker exec`
+# (see containers.py::exec_cc_turn). This CMD only runs on a bare `docker run`.
+CMD ["claude", "--print", "--output-format", "stream-json", "--verbose", "--permission-mode", "auto"]

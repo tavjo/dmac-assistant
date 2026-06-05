@@ -14,12 +14,15 @@ from tests.harness.containers import docker_available, ensure_image
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
+# OI-4/OI-5: 3 NS + 2 container_cc + 1 unrelated (mirrors DISCRIMINATORS in
+# tools/e2e/run_router_e2e.py).
 EXPECTED_QUERY_IDS = {
     "Search-Basic-1",
     "Graph-Lineage-1",
     "Edge-2",
     "Unsupported-1",
-    "Unsupported-2",
+    "Unsupported-4",
+    "Unrelated-1",
 }
 
 
@@ -126,10 +129,10 @@ def test_run_router_e2e_full(
     assert isinstance(manifest["bridge_pid"], int) and manifest["bridge_pid"] > 0
 
     queries = manifest["queries"]
-    assert len(queries) == 5, f"expected 5 query records; got {len(queries)}"
+    assert len(queries) == 6, f"expected 6 query records; got {len(queries)}"
 
     summary = manifest["summary"]
-    assert summary["total"] == 5
+    assert summary["total"] == 6
     matched_recount = sum(1 for query in queries if query["route_match"])
     assert summary["matched"] == matched_recount
     # New v2 summary fields are present and counts cohere with per-query data.
@@ -147,7 +150,11 @@ def test_run_router_e2e_full(
     for query in queries:
         query_id = query["query_id"]
         assert query_id in EXPECTED_QUERY_IDS, f"unexpected query_id: {query_id!r}"
-        assert query["actual_route"] in {"nextseek_query", "container_cc"}, (
+        assert query["actual_route"] in {
+            "nextseek_query",
+            "container_cc",
+            "unrelated",
+        }, (
             f"missing/invalid actual_route for {query_id!r}: "
             f"{query['actual_route']!r}"
         )
@@ -180,7 +187,7 @@ def test_run_router_e2e_full(
             f"{query_id}: record missing reply_text (Phase 7 Residual #5)"
         )
 
-    assert summary["matched"] == 5, (
+    assert summary["matched"] == 6, (
         f"route mismatches: matched={summary['matched']}; "
         f"mismatched={summary['mismatched']}; errored={summary['errored']}\n"
         f"records: "
@@ -188,7 +195,7 @@ def test_run_router_e2e_full(
     )
     # Exit code 0 already implies semantic PASS for every query, but assert
     # explicitly so the failure message is interpretable.
-    assert summary["semantically_passed"] == 5, (
+    assert summary["semantically_passed"] == 6, (
         f"semantic-judge failures: "
         f"passed={summary['semantically_passed']}; "
         f"failed={summary['semantically_failed']}; "

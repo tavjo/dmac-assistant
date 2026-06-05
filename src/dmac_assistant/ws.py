@@ -74,12 +74,24 @@ _ROUTER_TRUTHY = frozenset({"1", "true", "yes", "on"})
 _ROUTE_ALIAS: dict[Route, str] = {
     Route.NextseekQuery: "nextseek_query",
     Route.ContainerCC: "container_cc",
+    Route.Unrelated: "unrelated",
 }
 _MODEL_CLASS_ALIAS: dict[ModelClass, str] = {
     ModelClass.Sonnet: "sonnet",
     ModelClass.Haiku: "haiku",
     ModelClass.Opus: "opus",
 }
+
+# OI-4: queries the router classifies as `unrelated` never reach a container.
+# The user sees this fixed message instead (PI requirement: no CC/NS routing
+# for out-of-scope queries). Edit the wording here to change what users see.
+_UNRELATED_CANNED_TEXT = (
+    "I'm the NExtSEEK research assistant for the MIT BioMicro Center. I can "
+    "help with the lab's samples, projects, studies, sequencing and other "
+    "research data, lineage, and related analysis tasks — but that question "
+    "is outside that scope, so I can't help with it here. Try asking about "
+    "your lab's samples, projects, or data."
+)
 
 _NS_TURN_TIMEOUT_SECONDS = 600.0
 _CC_TURN_TIMEOUT_SECONDS = 300.0
@@ -959,12 +971,11 @@ async def _dispatch_one_turn(
     agent = _get_router_agent()
     decision: RouterDecision = await agent.route(query)
 
+    # OI-5: the router no longer selects a model class for container_cc; CC
+    # always runs the fixed Opus 4.8 tier (resolve_cc_model). model_class is
+    # retained on the decision (and emitted below) only for telemetry/back-
+    # compat — it is null in practice and not used for dispatch.
     model_class: ModelClass | None = decision.model_class
-    if decision.route == Route.ContainerCC and model_class is None:
-        model_class = ModelClass.Sonnet
-        log.warning(
-            "router fallback: container_cc/model_class=null -> sonnet substituted"
-        )
 
     await _send_json_safe(
         websocket,
@@ -979,8 +990,24 @@ async def _dispatch_one_turn(
         },
     )
 
+    if decision.route == Route.Unrelated:
+        # OI-4: out-of-scope query — never reaches a container. Emit the canned
+        # reply + a terminal session_ended frame and return without dispatching
+        # to either _dispatch_cc_turn or _dispatch_ns_turn.
+        await _send_json_safe(
+            websocket,
+            {"type": "assistant_message", "content": _UNRELATED_CANNED_TEXT},
+        )
+        await _send_json_safe(
+            websocket,
+            {"type": "session_ended", "session_id": current_session_id},
+        )
+        if post_turn_callback is not None:
+            await post_turn_callback()
+        return session_started_emitted, session_ended_emitted, current_session_id
+
     if decision.route == Route.ContainerCC:
-        model_id = router_models.resolve(model_class)
+        model_id = router_models.resolve_cc_model()
         return await _dispatch_cc_turn(
             websocket=websocket,
             container=container,

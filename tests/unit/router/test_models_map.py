@@ -9,7 +9,11 @@ import pytest
 
 from dmac_assistant.config import ConfigError
 from dmac_assistant.router.baml_client.types import ModelClass
-from dmac_assistant.router.models import load_model_class_map, resolve
+from dmac_assistant.router.models import (
+    load_model_class_map,
+    resolve,
+    resolve_cc_model,
+)
 
 
 BEDROCK_ID_RE = re.compile(r"^us\.anthropic\.[a-z0-9.\-:]+$")
@@ -24,7 +28,7 @@ def test_default_path_loads_three_class_dict() -> None:
 
 def test_default_values_match_locked_spec_literals() -> None:
     mapping = load_model_class_map()
-    assert mapping["opus"] == "us.anthropic.claude-opus-4-7"
+    assert mapping["opus"] == "us.anthropic.claude-opus-4-8"
     assert mapping["sonnet"] == "us.anthropic.claude-sonnet-4-6"
     assert mapping["haiku"] == "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
@@ -45,9 +49,16 @@ def test_resolve_returns_string_for_every_model_class_enum_value() -> None:
 
 
 def test_resolve_returns_the_locked_literals() -> None:
-    assert resolve(ModelClass.Opus) == "us.anthropic.claude-opus-4-7"
+    assert resolve(ModelClass.Opus) == "us.anthropic.claude-opus-4-8"
     assert resolve(ModelClass.Sonnet) == "us.anthropic.claude-sonnet-4-6"
     assert resolve(ModelClass.Haiku) == "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+
+def test_resolve_cc_model_returns_the_fixed_opus_id() -> None:
+    # OI-5: container_cc always runs the fixed auto-mode-capable Opus tier,
+    # read from the map's "opus" key (DD-08), independent of any model class.
+    assert resolve_cc_model() == "us.anthropic.claude-opus-4-8"
+    assert resolve_cc_model() == load_model_class_map()["opus"]
 
 
 def test_env_override_takes_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

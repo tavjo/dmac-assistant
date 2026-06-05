@@ -35,15 +35,20 @@ function JudgeRouterAnswer(input: RouterJudgeInput) -> RouterJudgeOutput {
     You evaluate whether a research-assistant's reply to a user query is
     semantically satisfactory. The reply was produced by one of two
     execution routes: `nextseek_query` (a deterministic NExtSEEK metadata
-    pipeline) or `container_cc` (a generic Claude Code agent inside a
-    container). Output a single structured verdict.
+    pipeline), `container_cc` (a generic Claude Code agent inside a
+    container), or `unrelated` (the query is outside the assistant's scope
+    and is answered with a fixed out-of-scope message, with no agent run).
+    Output a single structured verdict.
 
     Verdict semantics:
     - PASS: the reply visibly addresses the query. For an `nextseek_query`
       route, the reply contains a non-trivial structured answer (sample
       counts, project metadata, lineage, etc.). For a `container_cc` route,
-      the reply contains a substantive on-topic answer. For a query the
-      system genuinely cannot support, an explicit refusal that names the
+      the reply contains a substantive on-topic answer. For an `unrelated`
+      route, a brief polite message that declines the out-of-scope request
+      and explains the assistant only handles NExtSEEK / BioMicro Center lab
+      and research-data tasks IS correct (PASS). For a query the system
+      genuinely cannot support, an explicit refusal that names the
       limitation and (optionally) redirects the user is also PASS.
     - FAIL: the reply is empty, an error stub, off-topic, evasive, or
       asserts inability without explanation. A bare "I can't turn that into

@@ -98,9 +98,12 @@ def test_route_query_function_class_present() -> None:
 
     route_enum = types_mod.Route
     route_values = {member.value for member in route_enum}
-    assert route_values == {"NextseekQuery", "ContainerCC"}, (
+    # OI-4: `Unrelated` added as a third route (out-of-scope queries get a
+    # canned reply, never a container). Originally locked at two routes
+    # (SDS lines 185-188); intentional design change.
+    assert route_values == {"NextseekQuery", "ContainerCC", "Unrelated"}, (
         f"Route enum identifiers drifted; got {route_values}; expected "
-        f"{{'NextseekQuery', 'ContainerCC'}} per locked spec lines 185-188."
+        f"{{'NextseekQuery', 'ContainerCC', 'Unrelated'}}."
     )
     model_class_enum = types_mod.ModelClass
     model_class_values = {member.value for member in model_class_enum}

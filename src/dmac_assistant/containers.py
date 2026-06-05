@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import struct
 from typing import Any, BinaryIO, Mapping
@@ -325,6 +326,11 @@ def _build_environment(
 ) -> dict[str, str]:
     env: dict[str, str] = {
         "CLAUDE_CODE_USE_BEDROCK": "1",
+        # OI-5: enable Claude Code auto mode on Bedrock (requires CC >= 2.1.158).
+        # Read from the process env by the in-container `claude` (same mechanism
+        # a settings.json `env` block uses). Harmless on the NS route, which
+        # execs a python runner, not `claude`.
+        "CLAUDE_CODE_ENABLE_AUTO_MODE": "1",
         "NEXTSEEK_USERNAME": identity.user_id,
         "NEXTSEEK_PASSWORD": identity.password.get_secret_value(),
     }
@@ -552,6 +558,52 @@ def _build_exec_environment(
     return env
 
 
+# OI-5: caps applied to every container_cc turn. Both are print-mode-only
+# Claude Code flags that EXIT WITH ERROR when reached, so defaults are generous.
+_DEFAULT_CC_MAX_TURNS = "50"
+_DEFAULT_CC_MAX_BUDGET_USD = "10.00"
+
+
+def _cc_limit_args() -> list[str]:
+    """Turn + dollar caps for a container_cc turn.
+
+    Overridable per-deployment via DMAC_CC_MAX_TURNS / DMAC_CC_MAX_BUDGET_USD.
+    """
+    max_turns = os.environ.get("DMAC_CC_MAX_TURNS", _DEFAULT_CC_MAX_TURNS)
+    max_budget = os.environ.get("DMAC_CC_MAX_BUDGET_USD", _DEFAULT_CC_MAX_BUDGET_USD)
+    return ["--max-turns", max_turns, "--max-budget-usd", max_budget]
+
+
+def _automode_settings_args(bridge_env: Mapping[str, str]) -> list[str]:
+    """Inline --settings JSON declaring trusted lab infra for the auto-mode
+    classifier (OI-5).
+
+    Without this, the classifier treats the NS API / Neo4j / GCP as external and
+    can block the CC turn; 3 consecutive or 20 total blocks abort a headless
+    `-p` session. The list MUST start with the literal "$defaults" so the
+    built-in trust rules are EXTENDED, not replaced.
+    """
+    environment: list[str] = ["$defaults"]
+    ns_url = bridge_env.get("NEXTSEEK_URL")
+    if ns_url:
+        environment.append(
+            "Trusted internal service: the NExtSEEK metadata API at "
+            f"{ns_url} — the MIT BioMicro Center lab's own sample/project database."
+        )
+    neo4j_uri = bridge_env.get("NEO4J_URI")
+    if neo4j_uri:
+        environment.append(
+            f"Trusted internal graph database: Neo4j at {neo4j_uri} (lab lineage graph)."
+        )
+    if bridge_env.get("GCP_API_KEY"):
+        environment.append(
+            "Trusted LLM provider: Google Cloud Gemini API — the assistant's own "
+            "model provider."
+        )
+    settings = {"autoMode": {"environment": environment}}
+    return ["--settings", json.dumps(settings, separators=(",", ":"))]
+
+
 def exec_cc_turn(
     container: Container,
     *,
@@ -573,10 +625,17 @@ def exec_cc_turn(
         "--output-format",
         "stream-json",
         "--verbose",
-        "--dangerously-skip-permissions",
+        # OI-5: auto mode replaces --dangerously-skip-permissions. A classifier
+        # gates each tool call (blocks exfiltration/escalation) instead of the
+        # bypass-everything model. Bounded by turn + dollar caps below, and
+        # given a trusted-infra allowlist via --settings.
+        "--permission-mode",
+        "auto",
         "--model",
         model_id,
     ]
+    cmd.extend(_cc_limit_args())
+    cmd.extend(_automode_settings_args(bridge_env))
     if session_id:
         cmd.extend(["--resume", session_id])
     environment = _build_exec_environment(identity, bridge_env, route="cc")

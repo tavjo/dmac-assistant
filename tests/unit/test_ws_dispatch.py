@@ -19,6 +19,7 @@ SECRET = "hunter2-not-a-real-password"
 USER_ID = "alice"
 MODEL_ID_SONNET = "us.anthropic.claude-sonnet-4-6"
 MODEL_ID_HAIKU = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+MODEL_ID_OPUS = "us.anthropic.claude-opus-4-8"
 NS_SESSION_RE = re.compile(r"^ns-[0-9a-f]{12}$")
 
 
@@ -271,9 +272,13 @@ async def test_route_decided_emitted_for_ns_route(
 
 
 @pytest.mark.asyncio
-async def test_container_cc_with_model_class_none_falls_back_to_sonnet(
+async def test_container_cc_always_dispatches_fixed_opus_model(
     tmp_path: Path, monkeypatch
 ) -> None:
+    # OI-5: the router no longer selects a model class. A container_cc decision
+    # with model_class=None must dispatch the fixed Opus 4.8 id (resolve_cc_model)
+    # — there is no longer a Sonnet substitution — and route_decided carries the
+    # null model_class through unchanged.
     from dmac_assistant.router.baml_client.types import Route, RouterDecision
     from dmac_assistant.ws import _dispatch_one_turn
 
@@ -281,7 +286,7 @@ async def test_container_cc_with_model_class_none_falls_back_to_sonnet(
     decision = RouterDecision(
         route=Route.ContainerCC,
         model_class=None,
-        reasoning="schema returned cc without model_class",
+        reasoning="router returned cc without a model class",
     )
 
     async def fake_route(query: str) -> RouterDecision:
@@ -294,7 +299,7 @@ async def test_container_cc_with_model_class_none_falls_back_to_sonnet(
     dispatch_cc_mock = AsyncMock(return_value=(True, True, "sess-1"))
     monkeypatch.setattr("dmac_assistant.ws._dispatch_cc_turn", dispatch_cc_mock)
     monkeypatch.setattr(
-        "dmac_assistant.router.models.resolve", lambda mc: MODEL_ID_SONNET
+        "dmac_assistant.router.models.resolve_cc_model", lambda: MODEL_ID_OPUS
     )
 
     await _dispatch_one_turn(
@@ -309,8 +314,59 @@ async def test_container_cc_with_model_class_none_falls_back_to_sonnet(
         session_ended_emitted=False,
     )
 
-    assert ws.sent_frames[0]["model_class"] == "sonnet"
-    assert dispatch_cc_mock.call_args.kwargs["model_id"] == MODEL_ID_SONNET
+    assert ws.sent_frames[0]["model_class"] is None
+    assert dispatch_cc_mock.call_args.kwargs["model_id"] == MODEL_ID_OPUS
+
+
+@pytest.mark.asyncio
+async def test_unrelated_route_emits_canned_message_and_spawns_no_container(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # OI-4: an `unrelated` decision emits route_decided + the canned
+    # assistant_message + a terminal session_ended, and NEVER dispatches a CC
+    # or NS turn (no container is touched).
+    from dmac_assistant.router.baml_client.types import Route, RouterDecision
+    from dmac_assistant.ws import _UNRELATED_CANNED_TEXT, _dispatch_one_turn
+
+    ws = _StubWebSocket()
+    decision = RouterDecision(
+        route=Route.Unrelated,
+        model_class=None,
+        reasoning="celebrity gossip, unrelated to the lab",
+    )
+
+    async def fake_route(query: str) -> RouterDecision:
+        del query
+        return decision
+
+    fake_agent = AsyncMock()
+    fake_agent.route = fake_route
+    monkeypatch.setattr("dmac_assistant.ws._get_router_agent", lambda: fake_agent)
+    cc_mock = AsyncMock(return_value=(True, True, "sess-1"))
+    ns_mock = AsyncMock()
+    monkeypatch.setattr("dmac_assistant.ws._dispatch_cc_turn", cc_mock)
+    monkeypatch.setattr("dmac_assistant.ws._dispatch_ns_turn", ns_mock)
+
+    result = await _dispatch_one_turn(
+        websocket=ws,
+        container=object(),
+        query="When is Taylor Swift getting married to Travis Kelce?",
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env(),
+        current_session_id=None,
+        session_started_emitted=False,
+        session_ended_emitted=False,
+    )
+
+    types = [frame["type"] for frame in ws.sent_frames]
+    assert types == ["route_decided", "assistant_message", "session_ended"]
+    assert ws.sent_frames[0]["route"] == "unrelated"
+    assert ws.sent_frames[1]["content"] == _UNRELATED_CANNED_TEXT
+    cc_mock.assert_not_awaited()
+    ns_mock.assert_not_awaited()
+    # 3-tuple contract preserved; no session state changed.
+    assert result == (False, False, None)
 
 
 @pytest.mark.asyncio

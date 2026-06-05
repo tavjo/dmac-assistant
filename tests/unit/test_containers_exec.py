@@ -206,7 +206,17 @@ def test_cc_argv_has_required_flags_and_model(tmp_path: Path) -> None:
     assert "--output-format" in cmd
     assert cmd[cmd.index("--output-format") + 1] == "stream-json"
     assert "--verbose" in cmd
-    assert "--dangerously-skip-permissions" in cmd
+    # OI-5: auto mode replaces --dangerously-skip-permissions on the CC turn.
+    assert "--dangerously-skip-permissions" not in cmd
+    assert "--permission-mode" in cmd
+    assert cmd[cmd.index("--permission-mode") + 1] == "auto"
+    # OI-5: turn + dollar caps are always present.
+    assert "--max-turns" in cmd
+    assert "--max-budget-usd" in cmd
+    # OI-5: inline trusted-infra allowlist for the auto-mode classifier; MUST
+    # preserve the built-in defaults via the literal "$defaults".
+    assert "--settings" in cmd
+    assert "$defaults" in cmd[cmd.index("--settings") + 1]
     assert "--model" in cmd
     assert cmd[cmd.index("--model") + 1] == MODEL_ID
     assert "--resume" not in cmd

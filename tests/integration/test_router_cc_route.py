@@ -17,7 +17,7 @@ from dmac_assistant.router.baml_client.types import (
     Route,
     RouterDecision,
 )
-from dmac_assistant.router.models import resolve as resolve_model_id
+from dmac_assistant.router.models import resolve_cc_model
 from tests.harness.containers import IMAGE_TAG, docker_available, ensure_image
 
 
@@ -179,7 +179,9 @@ async def test_cc_route_real_container_with_mocked_exec(
     assert route_frame["model_class"] == "sonnet"
 
     assert captured_calls, "exec_cc_turn was not called"
-    expected_model_id = resolve_model_id(ModelClass.Sonnet)
+    # OI-5: CC always dispatches the fixed Opus 4.8 tier (resolve_cc_model),
+    # regardless of the model_class the (faked) router returned.
+    expected_model_id = resolve_cc_model()
     assert captured_calls[0].get("model_id") == expected_model_id
 
     await asyncio.sleep(1.5)

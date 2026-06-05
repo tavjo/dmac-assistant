@@ -45,9 +45,12 @@ from tools.e2e.router_judge import (  # noqa: E402 — sys.path must be set firs
 DEFAULT_CORPUS = REPO_ROOT / "evidence" / "full-corpus-2026-05-07" / "corpus.json"
 OUTPUT_BASE = REPO_ROOT / "evidence" / "router-e2e"
 
-PER_QUERY_TIMEOUT_S = 180.0
+# OI-5: raised 180->300 because auto-mode adds a classifier round-trip per CC
+# tool call, slowing container_cc turns (the prior 180s Unsupported-1 timeout
+# could otherwise worsen).
+PER_QUERY_TIMEOUT_S = 300.0
 BRIDGE_READY_TIMEOUT_S = 30.0
-OVERALL_TIMEOUT_S = 30.0 + (5 * PER_QUERY_TIMEOUT_S) + 30.0
+OVERALL_TIMEOUT_S = 30.0 + (6 * PER_QUERY_TIMEOUT_S) + 30.0
 
 REQUIRED_CREDENTIALS = (
     "AWS_BEARER_TOKEN_BEDROCK",
@@ -58,12 +61,15 @@ REQUIRED_CREDENTIALS = (
     "GCP_API_KEY",
 )
 
+# OI-4/OI-5 demo set: 3 NS + 2 container_cc (lab-data TASKS, not the off-topic-
+# knowledge queries that now route `unrelated`) + 1 unrelated (Taylor Swift).
 DISCRIMINATORS: tuple[tuple[str, str], ...] = (
     ("Search-Basic-1", "nextseek_query"),
     ("Graph-Lineage-1", "nextseek_query"),
     ("Edge-2", "nextseek_query"),
     ("Unsupported-1", "container_cc"),
-    ("Unsupported-2", "container_cc"),
+    ("Unsupported-4", "container_cc"),
+    ("Unrelated-1", "unrelated"),
 )
 
 KNOWN_FRAME_TYPES = frozenset(

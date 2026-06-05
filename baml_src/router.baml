@@ -21,6 +21,7 @@ class RouterInput {
 enum Route {
   NextseekQuery @alias("nextseek_query")
   ContainerCC   @alias("container_cc")
+  Unrelated     @alias("unrelated")
 }
 
 enum ModelClass {
@@ -61,11 +62,11 @@ function RouteQuery(input: RouterInput) -> RouterDecision {
 
     User query: {{ input.user_query }}
 
-    If you select `container_cc`, also pick a model class:
-      - haiku  : trivial Q&A / classification / short factual lookups
-      - sonnet : default general-purpose
-      - opus   : hard reasoning, multi-step planning, large refactors
-    If you select `nextseek_query`, omit model_class.
+    If the query has no connection to NExtSEEK, the BioMicro Center lab, or
+    the user's research data — for example general world trivia, celebrity or
+    pop-culture gossip, current events, or chit-chat unrelated to the lab's
+    samples, studies, code, or files — select `unrelated`. Do NOT route such
+    queries to `container_cc` or `nextseek_query`.
 
     {{ ctx.output_format }}
   "#
