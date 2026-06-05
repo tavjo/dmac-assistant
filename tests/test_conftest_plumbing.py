@@ -49,11 +49,13 @@ def test_live_env_fixture_skips_when_env_missing(
 
 
 def test_live_env_fixture_provides_vars_when_env_present(
-    pytester: pytest.Pytester, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pytester: pytest.Pytester,
 ) -> None:
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    (fake_home / ".env").write_text(
+    pytester.makeconftest(_CONFTEST_SRC)
+    # conftest._locate_env_file() walks UP from the conftest's own dir
+    # (pytester.path) to find .env; it does NOT read $HOME (changed in 8460d8f,
+    # 2026-05-06). Put the fake .env where that walk-up reaches it.
+    (pytester.path / ".env").write_text(
         "AWS_BEARER_TOKEN_BEDROCK=t\n"
         "AWS_REGION=us-east-1\n"
         "NEXTSEEK_USERNAME=u\n"
@@ -62,8 +64,6 @@ def test_live_env_fixture_provides_vars_when_env_present(
         "GCP_API_KEY=g\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("HOME", str(fake_home))
-    pytester.makeconftest(_CONFTEST_SRC)
     pytester.makepyfile(
         test_uses_live=textwrap.dedent(
             """
@@ -81,11 +81,12 @@ def test_live_env_fixture_provides_vars_when_env_present(
 
 
 def test_live_socket_fixture_allows_computed_bedrock_and_nextseek_hosts(
-    pytester: pytest.Pytester, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pytester: pytest.Pytester,
 ) -> None:
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    (fake_home / ".env").write_text(
+    pytester.makeconftest(_CONFTEST_SRC)
+    # See note above: the fake .env must live where _locate_env_file()'s
+    # walk-up from the conftest dir reaches it, not in $HOME.
+    (pytester.path / ".env").write_text(
         "AWS_BEARER_TOKEN_BEDROCK=t\n"
         "AWS_REGION=us-east-1\n"
         "NEXTSEEK_USERNAME=u\n"
@@ -94,8 +95,6 @@ def test_live_socket_fixture_allows_computed_bedrock_and_nextseek_hosts(
         "GCP_API_KEY=g\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("HOME", str(fake_home))
-    pytester.makeconftest(_CONFTEST_SRC)
     pytester.makepyfile(
         test_sockets=textwrap.dedent(
             """
@@ -182,7 +181,7 @@ def test_terminal_hook_stays_silent_when_no_live_selected(
 
 
 def test_terminal_hook_fails_when_live_selected_but_none_ran(
-    pytester: pytest.Pytester, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pytester: pytest.Pytester,
 ) -> None:
     """Guard fires (non-zero exit) when live was selected but every test
     errored out before a call-phase pass OR skip — e.g., the env loaded,
@@ -194,9 +193,11 @@ def test_terminal_hook_fails_when_live_selected_but_none_ran(
     L-2 regression cover: a pure ``pytest.skip`` population does NOT
     fire this guard (see :func:`test_terminal_hook_silent_when_all_live_skip`).
     """
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    (fake_home / ".env").write_text(
+    pytester.makeconftest(_CONFTEST_SRC)
+    # The guard requires env_loaded=True, which needs a .env on the conftest
+    # dir's walk-up (not $HOME). See note in
+    # test_live_env_fixture_provides_vars_when_env_present.
+    (pytester.path / ".env").write_text(
         "AWS_BEARER_TOKEN_BEDROCK=t\n"
         "AWS_REGION=us-east-1\n"
         "NEXTSEEK_USERNAME=u\n"
@@ -205,8 +206,6 @@ def test_terminal_hook_fails_when_live_selected_but_none_ran(
         "GCP_API_KEY=g\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("HOME", str(fake_home))
-    pytester.makeconftest(_CONFTEST_SRC)
     pytester.makepyfile(
         test_failing_live=textwrap.dedent(
             """

@@ -25,7 +25,6 @@ direct import in the same pytest process (see task-B17a §5.2).
 """
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 from pathlib import Path
@@ -207,7 +206,20 @@ def test_wave3_shim_tests_pass_not_skipped_in_image(
         "-e", "NEXTSEEK_DRY_RUN=1",
         IMAGE_TAG,
         "python", "-m", "pytest",
-        "/host-repo/tests/unit/",
+        # Scope to the 8 shim files only. Collecting the whole tests/unit/ tree
+        # also collects tests/unit/eval/*, whose module-level
+        # pytest.importorskip("hibayes") skips at COLLECTION time (hibayes is
+        # intentionally NOT in this image — the split-coverage model), which
+        # would inflate the skipped count asserted below even though every shim
+        # test passes. `-k test_shim` stays as a belt-and-suspenders filter.
+        "/host-repo/tests/unit/test_shim_api_read.py",
+        "/host-repo/tests/unit/test_shim_api_write.py",
+        "/host-repo/tests/unit/test_shim_entity_extract.py",
+        "/host-repo/tests/unit/test_shim_generate_submission.py",
+        "/host-repo/tests/unit/test_shim_graph.py",
+        "/host-repo/tests/unit/test_shim_parse.py",
+        "/host-repo/tests/unit/test_shim_plan.py",
+        "/host-repo/tests/unit/test_shim_report.py",
         "-k", "test_shim",
         "--no-cov",
         "-v",

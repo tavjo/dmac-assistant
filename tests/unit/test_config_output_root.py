@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from dmac_assistant.config import BridgeConfig, ConfigError, load_config
+from dmac_assistant.config import ConfigError, load_config
 
 
 @pytest.fixture
@@ -22,6 +22,16 @@ def base_env(tmp_path, monkeypatch):
     catalog = tmp_path / "agent_model_catalog.json"
     catalog.write_text('{"default": {}}', encoding="utf-8")
     monkeypatch.setenv("DMAC_CATALOG_FILE_HOST_PATH", str(catalog))
+    # Isolate load_config() from the developer's real repo .env. load_config()
+    # runs load_dotenv(_REPO_ROOT / ".env", override=False), which re-injects
+    # DMAC_DEV_MODE=true (present in the real .env) right after the delenv above,
+    # flipping the loader into dev mode and defeating the prod-required check.
+    # Point _REPO_ROOT at an empty dir (matches tests/unit/test_config.py).
+    import dmac_assistant.config as config_mod
+
+    isolated = tmp_path / "no_dotenv_here"
+    isolated.mkdir()
+    monkeypatch.setattr(config_mod, "_REPO_ROOT", isolated, raising=False)
     return tmp_path
 
 
