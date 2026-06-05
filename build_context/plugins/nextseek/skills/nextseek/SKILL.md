@@ -207,7 +207,7 @@ After any `nextseek-*` call:
 
 For non-GET operations (`nextseek-api-write`, write-class endpoints):
 
-- **Layer 1 (mechanical, deployment-dependent)**: a Claude Code permission allowlist that gates `nextseek-api-write`. **In the dmac-assistant bridge POC, the in-container Claude runs with `--dangerously-skip-permissions` (per the host bridge's launch command), so Layer 1 is BYPASSED here.** Layer 1 only applies in deployments that omit `--dangerously-skip-permissions` AND ship a `Bash(nextseek-api-write:*)` deny rule. Treat L1 as defense-in-depth, not as a guarantee — the load-bearing layers are L2 and L3.
+- **Layer 1 (mechanical, deployment-dependent)**: a Claude Code permission allowlist / deny rule that gates `nextseek-api-write`. **In the dmac-assistant bridge POC, the `container_cc` route runs under `--permission-mode auto` (per the host bridge's launch command), NOT `--dangerously-skip-permissions`.** Under auto mode, blanket `Bash(*)` allow rules are dropped and every tool call — including `nextseek-api-write` — is screened by the auto-mode classifier, which blocks escalation/exfiltration. That classifier is a behavioral gate, not a hard guarantee, and no explicit `Bash(nextseek-api-write:*)` deny rule is shipped here. Treat L1 as defense-in-depth, not as a guarantee — the load-bearing layers are L2 and L3.
 - **Layer 2 (mechanical, always on)**: the `nextseek-api-write` shim refuses execution unless `--confirmed-write` is explicitly passed (`_nextseek_runner.py` line 179–181). Cannot be bypassed by the in-container agent.
 - **Layer 3 (behavioral, this skill — load-bearing)**: NEVER call `AskUserQuestion` (`container/CLAUDE.md` forbids it; the chat UI doesn't render the widget). Instead, write plain text:
 
