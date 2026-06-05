@@ -1,6 +1,7 @@
 """Build-and-introspect tests for the dmac-assistant Docker image."""
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import textwrap
@@ -111,6 +112,13 @@ def test_layout_contract_paths_present(built_image: str) -> None:
 @pytest.mark.slow
 @pytest.mark.skipif(not _docker_available(), reason="docker daemon not running")
 def test_claude_version_pinned(built_image: str) -> None:
+    # Derive the pinned version from the Dockerfile so this tracks the pin
+    # automatically across bumps (no hardcoded literal to drift). The
+    # streamjson fixture test independently forces a per-version fixture.
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    match = re.search(r"claude-code@([0-9.]+)", dockerfile)
+    assert match, "could not find claude-code@<version> pin in Dockerfile"
+    pinned = match.group(1)
     result = subprocess.run(
         ["docker", "run", "--rm", "--entrypoint", "claude", built_image, "--version"],
         capture_output=True,
@@ -118,7 +126,7 @@ def test_claude_version_pinned(built_image: str) -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert "2.1.92" in result.stdout
+    assert pinned in result.stdout, f"expected pinned {pinned}, got {result.stdout!r}"
 
 
 @pytest.mark.slow
@@ -133,14 +141,20 @@ def test_claude_is_real_npm_binary(built_image: str) -> None:
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "/usr/local/bin/claude"
 
+    # Claude Code 2.1.158+ ships `claude` as a native compiled binary (ELF),
+    # not a node-shebang script as older npm builds did. Either is a "real"
+    # binary; the guard is against a hand-rolled stub/shim. Read raw bytes
+    # (text=False) since the file may be a binary that is not valid UTF-8.
     result2 = subprocess.run(
-        ["docker", "run", "--rm", "--entrypoint", "sh", built_image, "-c", "head -1 /usr/local/bin/claude"],
+        ["docker", "run", "--rm", "--entrypoint", "sh", built_image, "-c", "head -c 4 /usr/local/bin/claude"],
         capture_output=True,
-        text=True,
         check=False,
     )
     assert result2.returncode == 0, result2.stderr
-    assert "node" in result2.stdout.lower() or "#!" in result2.stdout
+    head4 = result2.stdout  # bytes
+    assert head4.startswith(b"\x7fELF") or head4.startswith(b"#!"), (
+        f"claude is neither an ELF binary nor a shebang script; head4={head4!r}"
+    )
 
 
 @pytest.mark.slow
