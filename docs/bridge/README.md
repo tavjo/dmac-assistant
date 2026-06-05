@@ -112,12 +112,13 @@ When the LLM router is enabled (see below), `GCP_API_KEY` must also be set on th
 
 ## Routing and model selection
 
-The bridge supports an optional LLM router (flag-gated by `DMAC_ROUTER_ENABLED`). When the flag is unset or falsy, the bridge dispatches every turn through the legacy long-lived Claude attach socket exactly as before; when set, the bridge classifies each user turn into one of two routes:
+The bridge supports an optional LLM router (flag-gated by `DMAC_ROUTER_ENABLED`). When the flag is unset or falsy, the bridge dispatches every turn through the legacy long-lived Claude attach socket exactly as before; when set, the bridge classifies each user turn into one of three routes:
 
 - `nextseek_query` - runs the deterministic `chat_nextseek` orchestrator pipeline inside the long-lived container (per-turn `docker exec`). Used for NExtSEEK-shaped queries (catalog lookups, sample lineage, study metadata).
-- `container_cc` - runs Claude Code inside the container with a router-chosen model class (`"opus"`, `"sonnet"`, or `"haiku"`). Used for everything else.
+- `container_cc` - runs Claude Code inside the container on the fixed `opus`-class model under `--permission-mode auto` (OI-5). Used for in-scope agent tasks on the lab's data. The router no longer selects a model class for this route.
+- `unrelated` (OI-4) - queries with no connection to NExtSEEK / the lab / research data (general trivia, pop-culture, chit-chat). The bridge returns a fixed canned reply and runs NO agent turn (no `container_cc`, no `nextseek_query`). Per the PI requirement, out-of-scope queries are never routed to Claude Code.
 
-The route decision and (for `container_cc`) the model class are emitted to the client as an optional `route_decided` WebSocket frame BEFORE `session_started`. See [`ws-protocol.md`](./ws-protocol.md) for the full frame schema.
+The route decision is emitted to the client as an optional `route_decided` WebSocket frame BEFORE `session_started`. The `model_class` field is advisory only (always the fixed `opus`-class model on `container_cc`). See [`ws-protocol.md`](./ws-protocol.md) for the full frame schema.
 
 Bridge-side env vars added by the router:
 

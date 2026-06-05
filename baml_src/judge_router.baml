@@ -33,7 +33,7 @@ function JudgeRouterAnswer(input: RouterJudgeInput) -> RouterJudgeOutput {
   client GCPReasoner
   prompt #"
     You evaluate whether a research-assistant's reply to a user query is
-    semantically satisfactory. The reply was produced by one of two
+    semantically satisfactory. The reply was produced by one of three
     execution routes: `nextseek_query` (a deterministic NExtSEEK metadata
     pipeline), `container_cc` (a generic Claude Code agent inside a
     container), or `unrelated` (the query is outside the assistant's scope

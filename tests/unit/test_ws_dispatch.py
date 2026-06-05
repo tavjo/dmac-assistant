@@ -363,6 +363,8 @@ async def test_unrelated_route_emits_canned_message_and_spawns_no_container(
     assert types == ["route_decided", "assistant_message", "session_ended"]
     assert ws.sent_frames[0]["route"] == "unrelated"
     assert ws.sent_frames[1]["content"] == _UNRELATED_CANNED_TEXT
+    # session_ended carries no session_id — an unrelated turn ends no session.
+    assert ws.sent_frames[2]["session_id"] is None
     cc_mock.assert_not_awaited()
     ns_mock.assert_not_awaited()
     # 3-tuple contract preserved; no session state changed.

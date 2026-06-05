@@ -991,16 +991,20 @@ async def _dispatch_one_turn(
     )
 
     if decision.route == Route.Unrelated:
-        # OI-4: out-of-scope query — never reaches a container. Emit the canned
-        # reply + a terminal session_ended frame and return without dispatching
-        # to either _dispatch_cc_turn or _dispatch_ns_turn.
+        # OI-4: out-of-scope query — never runs a CC/NS agent turn (the idle
+        # container, if any, is untouched). Emit the canned reply + a terminal
+        # session_ended and return without dispatching _dispatch_cc_turn or
+        # _dispatch_ns_turn. session_ended carries session_id=None: this turn
+        # ends no real session, and emitting the live current_session_id would
+        # falsely signal that a prior CC/NS session ended. The resume chain is
+        # preserved by RETURNING current_session_id unchanged below.
         await _send_json_safe(
             websocket,
             {"type": "assistant_message", "content": _UNRELATED_CANNED_TEXT},
         )
         await _send_json_safe(
             websocket,
-            {"type": "session_ended", "session_id": current_session_id},
+            {"type": "session_ended", "session_id": None},
         )
         if post_turn_callback is not None:
             await post_turn_callback()

@@ -140,23 +140,24 @@ def test_l3_forbids_askuserquestion_and_uses_plain_text_prompt():
         )
 
 
-def test_layer_1_describes_dangerously_skip_permissions_bypass():
-    """In the single-shot SKILL.md, Layer 1 (Claude Code permission allowlist)
-    is described as BYPASSED in the dmac-assistant POC because the in-
-    container Claude runs with `--dangerously-skip-permissions`. L2 (the
-    `--confirmed-write` shim refusal) and L3 (the behavioral prompt) are the
-    load-bearing layers. This test pins that contract so a future SKILL.md
-    edit can't silently elevate L1 back to load-bearing status without
-    updating the deployment story."""
+def test_layer_1_describes_auto_mode_classifier_screening():
+    """In the single-shot SKILL.md, Layer 1 (Claude Code permission gating) is
+    described for the dmac-assistant POC under auto mode (OI-5): the
+    `container_cc` route runs `--permission-mode auto`, so every tool call —
+    including `nextseek-api-write` — is screened by the auto-mode classifier,
+    a behavioral gate rather than a hard guarantee. L2 (the `--confirmed-write`
+    shim refusal) and L3 (the behavioral prompt) remain the load-bearing
+    layers. This test pins that contract so a future SKILL.md edit can't
+    silently elevate L1 to a hard guarantee or revert the deployment story."""
     text = _read_skill()
-    # The L1 paragraph must reference --dangerously-skip-permissions.
-    assert "--dangerously-skip-permissions" in text, (
-        "Layer 1 description must reference --dangerously-skip-permissions "
-        "(the reason L1 is bypassed in the POC)"
+    # The L1 paragraph must reference the actual mode: --permission-mode auto.
+    assert "--permission-mode auto" in text, (
+        "Layer 1 description must reference --permission-mode auto "
+        "(the mode the container_cc route runs under, per OI-5)"
     )
-    # The bypass status must be explicit (not implied).
-    assert "BYPASSED" in text, (
-        "Layer 1 description must state BYPASSED for the POC"
+    # L1 must describe the classifier screening (not a blanket bypass/guarantee).
+    assert "classifier" in text, (
+        "Layer 1 must describe the auto-mode classifier screening tool calls"
     )
     # The defense-in-depth qualifier protects against future drift.
     assert "defense-in-depth" in text or "defence-in-depth" in text, (
