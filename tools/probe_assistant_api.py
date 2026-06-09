@@ -50,10 +50,37 @@ def main() -> int:
         and "username" in r["body"]
     ]
     if live:
-        print(f"\nASSISTANT_BASE_PATH={live[0]}")
+        print("\nVERDICT=LIVE")
+        print(f"ASSISTANT_BASE_PATH={live[0]}")
         return 0
+
+    transport_errors = [
+        p
+        for p, r in results.items()
+        if "error" in r and r["error"] in {"ConnectTimeout", "ConnectError", "ReadTimeout"}
+    ]
+    auth_failures = [p for p, r in results.items() if r.get("status") in {401, 403}]
+    not_found = [p for p, r in results.items() if r.get("status") == 404]
+
+    if transport_errors and len(transport_errors) == len(CANDIDATE_PREFIXES):
+        print("\nVERDICT=UNREACHABLE", file=sys.stderr)
+        print(
+            "All candidate paths failed with transport errors (ConnectTimeout/ConnectError) — "
+            "host may be VPN/firewall/DNS-gated from this machine; re-probe from dev server or with VPN.",
+            file=sys.stderr,
+        )
+        return 1
+    if auth_failures:
+        print("\nVERDICT=AUTH_FAILED", file=sys.stderr)
+        print("HTTP 401/403 on candidate paths — server reachable but credentials rejected.", file=sys.stderr)
+        return 1
+    if not_found:
+        print("\nVERDICT=NOT_DEPLOYED", file=sys.stderr)
+        print("HTTP 404 on candidate paths — assistant viewset not deployed at these URLs.", file=sys.stderr)
+        return 1
+    print("\nVERDICT=NOT_DEPLOYED", file=sys.stderr)
     print(
-        "\nNo candidate path returned a valid /me/ response — assistant viewset "
+        "No candidate path returned a valid /me/ response — assistant viewset "
         "NOT deployed on this server (or auth/permission failed; check status codes above).",
         file=sys.stderr,
     )
