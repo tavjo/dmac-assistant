@@ -48,7 +48,18 @@ import argparse  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 import sys  # noqa: E402
+from collections.abc import Sequence  # noqa: E402
 from typing import Any  # noqa: E402
+
+# httpx is imported here at module level (stage-2 import block) so the except
+# clauses in main() that reference httpx.HTTPStatusError / httpx.TransportError
+# always resolve the name from module scope. If httpx import were deferred into
+# the try block inside main(), a failure of that import would leave httpx unbound
+# as a function-local name; the first except clause would then raise
+# UnboundLocalError, escaping the BaseException catch-all and producing a
+# traceback with no ns_runner_error JSONL. httpx emits nothing to stdout on
+# import, so moving it here is safe relative to the fd-remap invariant above.
+import httpx  # noqa: E402
 
 # Path resolution: in the image, runner_ns.py is at /opt/dmac/runner_ns.py and
 # _assistant_client.py/_assistant_models.py are COPYd to /opt/dmac/ (T11).
@@ -59,7 +70,9 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_BIN_DIR = os.path.join(
     os.path.dirname(_SCRIPT_DIR), "build_context", "plugins", "nextseek", "bin"
 )
-for _p in (_SCRIPT_DIR, _REPO_BIN_DIR):
+# Insert in reverse-priority order so that after both inserts, _SCRIPT_DIR ends
+# up at a lower index (higher precedence) than _REPO_BIN_DIR.
+for _p in (_REPO_BIN_DIR, _SCRIPT_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -114,7 +127,7 @@ def _build_assistant_client() -> Any:
     )
 
 
-def main(argv: list[str] = ()) -> int:  # type: ignore[assignment]  # default to empty so tests do not bleed sys.argv
+def main(argv: Sequence[str] = ()) -> int:
     """Entry point: read query from stdin, drive run_query, emit JSONL events."""
     parser = argparse.ArgumentParser(prog="runner_ns")
     parser.add_argument("--session", default=None, help="session id (passed to AssistantClient)")
@@ -127,8 +140,6 @@ def main(argv: list[str] = ()) -> int:  # type: ignore[assignment]  # default to
         sys.exit(2)
 
     try:
-        import httpx  # noqa: PLC0415 -- deferred after remap
-
         client = _build_assistant_client()
         terminal, events = client.run_query(
             user_text,

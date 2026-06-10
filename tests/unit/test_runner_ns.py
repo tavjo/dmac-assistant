@@ -553,6 +553,193 @@ def test_transport_error_emits_failure_shaped_query_complete(
     assert qc[0]["payload"]["status"] == "error"
 
 
+# ----- Finding 1: httpx is module-level -- UnboundLocalError regression guard -----
+
+
+def test_module_not_found_in_build_client_emits_ns_runner_error(
+    fd_capture: FdCapture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finding 1 regression: _build_assistant_client raising ModuleNotFoundError must emit
+    ns_runner_error with the type name and exit 1. Before the fix, import httpx inside the
+    try block meant an httpx import failure would raise UnboundLocalError in the except
+    clauses (httpx name unbound), escaping the BaseException catch-all. After the fix
+    (module-level import), any ModuleNotFoundError from _build_assistant_client is caught
+    cleanly by the BaseException handler and emits ns_runner_error.
+    """
+    with fd_capture.active():
+        events_fd = _perform_event_channel_remap()
+        monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
+        try:
+            def _raise_module_not_found():
+                raise ModuleNotFoundError("No module named 'httpx'")
+
+            monkeypatch.setattr(runner_ns, "_build_assistant_client", _raise_module_not_found)
+            monkeypatch.setattr(sys, "stdin", _FakeStdin("find me PBMCs\n"))
+            with pytest.raises(SystemExit) as excinfo:
+                runner_ns.main(["--session", "test-sess"])
+            assert excinfo.value.code == 1, "must exit 1 on uncaught exception"
+        finally:
+            os.close(events_fd)
+            monkeypatch.setattr(runner_ns, "_EVENTS_FD", 1, raising=True)
+
+    stdout = fd_capture.stdout_bytes()
+    lines = [ln for ln in stdout.strip().split(b"\n") if ln]
+    assert len(lines) >= 1, f"expected at least 1 JSONL line on stdout; got {lines}"
+    error_lines = [json.loads(ln) for ln in lines if json.loads(ln).get("event") == "ns_runner_error"]
+    assert len(error_lines) == 1, (
+        f"expected exactly 1 ns_runner_error event; got {error_lines}. "
+        "If UnboundLocalError escaped the BaseException handler, zero ns_runner_error lines appear."
+    )
+    assert error_lines[0]["payload"] == {"error_type": "ModuleNotFoundError"}, (
+        f"ns_runner_error payload must carry only the type name; got {error_lines[0]['payload']}"
+    )
+
+
+# ---- Finding 2: ns_runner_error_type companion pinned on both error paths ----
+
+
+def test_query_error_path_emits_ns_runner_error_type_companion(
+    fd_capture: FdCapture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finding 2: genuine query_error (non-None agent) must emit an ns_runner_error_type
+    companion with event name 'ns_runner_error_type' and payload containing 'error_type'.
+    """
+    with fd_capture.active():
+        events_fd = _perform_event_channel_remap()
+        monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
+        try:
+            class FakeClient:
+                def run_query(self, q, *, mode, session_id=None, **k):
+                    return (
+                        {"__error__": "LLMFatalError: secret detail xyzzy", "agent": "entity"},
+                        [],
+                    )
+
+            monkeypatch.setattr(runner_ns, "_build_assistant_client", lambda: FakeClient())
+            monkeypatch.setattr(sys, "stdin", _FakeStdin("error turn\n"))
+            runner_ns.main(["--session", "test-sess"])
+        finally:
+            os.close(events_fd)
+            monkeypatch.setattr(runner_ns, "_EVENTS_FD", 1, raising=True)
+
+    stdout = fd_capture.stdout_bytes()
+    lines = [ln for ln in stdout.strip().split(b"\n") if ln]
+    parsed = [json.loads(ln) for ln in lines]
+    companion_lines = [e for e in parsed if e["event"] == "ns_runner_error_type"]
+    assert len(companion_lines) == 1, (
+        f"query_error path must emit exactly 1 ns_runner_error_type companion; got {companion_lines}"
+    )
+    assert "error_type" in companion_lines[0]["payload"], (
+        f"ns_runner_error_type companion must carry 'error_type' key; got {companion_lines[0]['payload']}"
+    )
+
+
+def test_failure_shaped_query_complete_emits_ns_runner_error_type_companion(
+    fd_capture: FdCapture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finding 2: failure-shaped query_complete (has_failure_signal=True, no __error__ key)
+    must emit an ns_runner_error_type companion BEFORE query_complete, carrying 'error_type'.
+    """
+    with fd_capture.active():
+        events_fd = _perform_event_channel_remap()
+        monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
+        try:
+            class FakeClient:
+                def run_query(self, q, *, mode, session_id=None, **k):
+                    return (
+                        {"reply": "partial", "status": "error", "error_type": "SomeFailure"},
+                        [],
+                    )
+
+            monkeypatch.setattr(runner_ns, "_build_assistant_client", lambda: FakeClient())
+            monkeypatch.setattr(sys, "stdin", _FakeStdin("failure turn\n"))
+            runner_ns.main(["--session", "test-sess"])
+        finally:
+            os.close(events_fd)
+            monkeypatch.setattr(runner_ns, "_EVENTS_FD", 1, raising=True)
+
+    stdout = fd_capture.stdout_bytes()
+    lines = [ln for ln in stdout.strip().split(b"\n") if ln]
+    parsed = [json.loads(ln) for ln in lines]
+    companion_lines = [e for e in parsed if e["event"] == "ns_runner_error_type"]
+    assert len(companion_lines) == 1, (
+        f"failure-shaped query_complete must emit exactly 1 ns_runner_error_type companion; "
+        f"got {companion_lines}"
+    )
+    assert "error_type" in companion_lines[0]["payload"], (
+        f"ns_runner_error_type companion must carry 'error_type' key; got {companion_lines[0]['payload']}"
+    )
+
+
+# ---- Finding 3: query_error text redaction pinned ----
+
+
+def test_query_error_error_text_is_redacted(
+    fd_capture: FdCapture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finding 3: when terminal contains __error__ with secret text, the emitted
+    query_error payload must NOT contain that text (it is replaced with '<redacted>').
+    """
+    with fd_capture.active():
+        events_fd = _perform_event_channel_remap()
+        monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
+        try:
+            class FakeClient:
+                def run_query(self, q, *, mode, session_id=None, **k):
+                    return (
+                        {"__error__": "LLMFatalError: secret detail xyzzy", "agent": "entity"},
+                        [],
+                    )
+
+            monkeypatch.setattr(runner_ns, "_build_assistant_client", lambda: FakeClient())
+            monkeypatch.setattr(sys, "stdin", _FakeStdin("error turn\n"))
+            runner_ns.main(["--session", "test-sess"])
+        finally:
+            os.close(events_fd)
+            monkeypatch.setattr(runner_ns, "_EVENTS_FD", 1, raising=True)
+
+    stdout = fd_capture.stdout_bytes()
+    lines = [ln for ln in stdout.strip().split(b"\n") if ln]
+    parsed = [json.loads(ln) for ln in lines]
+    qe_events = [e for e in parsed if e["event"] == "query_error"]
+    assert len(qe_events) == 1, f"expected exactly 1 query_error event; got {qe_events}"
+    payload = qe_events[0]["payload"]
+    # The secret token must NOT appear in the emitted payload
+    assert b"xyzzy" not in stdout, (
+        f"error text must be redacted; 'xyzzy' appeared in emitted JSONL: {stdout!r}"
+    )
+    # The error field must be the literal redacted string
+    assert payload.get("error") == "<redacted>", (
+        f"query_error 'error' field must be '<redacted>'; got {payload.get('error')!r}"
+    )
+
+
+# ---- Finding 4: sys.path insertion order ----
+
+
+def test_sys_path_precedence_script_dir_before_repo_bin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finding 4: _SCRIPT_DIR must appear earlier in sys.path than _REPO_BIN_DIR.
+    The runner inserts both at index 0 in the order (SCRIPT_DIR, REPO_BIN_DIR);
+    after both inserts, SCRIPT_DIR must have a lower index (i.e. higher precedence).
+    """
+    script_dir = runner_ns._SCRIPT_DIR
+    repo_bin_dir = runner_ns._REPO_BIN_DIR
+
+    assert script_dir in sys.path, f"_SCRIPT_DIR {script_dir!r} not found in sys.path"
+    assert repo_bin_dir in sys.path, f"_REPO_BIN_DIR {repo_bin_dir!r} not found in sys.path"
+
+    script_idx = sys.path.index(script_dir)
+    repo_idx = sys.path.index(repo_bin_dir)
+    assert script_idx < repo_idx, (
+        f"_SCRIPT_DIR must have higher precedence (lower index) than _REPO_BIN_DIR; "
+        f"got script_dir at index {script_idx}, repo_bin_dir at index {repo_idx}"
+    )
+
+
 # ---------------------------------------------------------- _FakeStdin helper
 
 
