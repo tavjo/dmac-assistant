@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 """Shared entry point for nextseek-* shims.
 
-Loads chat_nextseek's ChatConfig once, dispatches to the requested agent,
-emits one of:
+Thin WS/viewset client: dispatches to the NExtSEEK assistant viewset (query/plan)
+or to the sidecar via WebSocket (all other 7 ops). Imports NO chat_nextseek (U-11).
+
+Emits one of:
   - stdout: result JSON (one line)
   - stderr (last line): structured error JSON, exit code != 0
 
@@ -11,13 +13,15 @@ Exit codes:
   2  config / env missing
   3  validation (bad args)
   4  agent failure (LLM error, network, etc.)
-  5  write blocked (Layer-2 --confirmed-write missing OR endpoint not in
-     read_safe_endpoints.json on api-read path)
-  6  config error (read_safe_endpoints.json missing in production)
+  5  write blocked (Layer-2 --confirmed-write missing)
+  6  config error (reserved, no longer used by read_safe_endpoints)
+  7  transport error (sidecar/viewset unreachable)
+  8  auth failed (viewset 401)
+  9  staging error
 
 Dry-run mode: when NEXTSEEK_DRY_RUN=1, each dispatcher returns a minimal
 valid typed JSON response without invoking any LLM, REST, or Neo4j call.
-This is what B17.1's image dry-run test exercises to prove wiring without
+This is what the image dry-run test exercises to prove wiring without
 needing live GCP/NExtSEEK credentials.
 """
 from __future__ import annotations
@@ -27,8 +31,10 @@ import json
 import os
 import sys
 
-
-READ_SAFE_ENDPOINTS_DEFAULT = "/app/plugins/nextseek/context/read_safe_endpoints.json"
+# Ensure sibling bin modules (_ws_contract, _sidecar_client, _assistant_client)
+# are importable when invoked as a script (sys.path may only contain the cwd
+# and standard library locations, not the plugin bin directory).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 def _err(code: str, message: str, exit_code: int) -> None:
@@ -43,16 +49,11 @@ def _sanitize_env_quotes() -> None:
     `docker run --env-file` and `python-dotenv.dotenv_values()` preserve any
     surrounding `"..."` or `'...'` from .env literals, leaving values like
     `'"fairdata-dev.mit.edu"'` (the literal quote characters become part of
-    the value). chat_nextseek reads these directly via `os.getenv` without
-    de-quoting, so MySQL hosts, passwords, and Basic-auth credentials all
-    arrive at downstream libraries with garbage characters and connections /
-    HTTP auth fail.
-
-    Bash's `set -a; . .env; set +a` strips quotes implicitly, so this only
-    bites containerised / library-loaded env paths. We normalise here, in
-    one place, before importing chat_nextseek. We only strip when the first
-    and last characters are the same quote char and len >= 2 — never partial
-    quotes, never mismatched.
+    the value). Bash's `set -a; . .env; set +a` strips quotes implicitly, so
+    this only bites containerised / library-loaded env paths. We normalise
+    here, in one place, before any downstream reads. We only strip when the
+    first and last characters are the same quote char and len >= 2 — never
+    partial quotes, never mismatched.
     """
     for key, value in list(os.environ.items()):
         if (len(value) >= 2
@@ -65,105 +66,34 @@ def _dry_run() -> bool:
     return os.environ.get("NEXTSEEK_DRY_RUN") == "1"
 
 
-def _load_config():
-    try:
-        from chat_nextseek.config import ChatConfig
-    except ImportError as exc:
-        _err("IMPORT_FAILED", f"chat_nextseek not importable: {exc}", 2)
-    if not os.environ.get("API_USER") or not os.environ.get("API_PASS"):  # pragma: no cover
-        _err("CONFIG_MISSING", "API_USER / API_PASS not set", 2)  # pragma: no cover
-
-    # CHAT_NEXTSEEK_DB_ENV selects which MySQL host the reporter / context
-    # bootstrap connects to. chat_nextseek's own callers hardcode env="prod"
-    # at four sites (config.__init__, helpers reporter paths). When the
-    # deploy only has dev credentials (MYSQL_HOST_DEV / MYSQL_DEV_PASSWORD),
-    # those calls fail with `[CONFIG][DB] Host not configured for env 'prod'`.
-    # We patch the bound class methods so all internal `env="prod"` calls
-    # transparently route to dev. Default unchanged ("prod") for backward
-    # compat with existing deployments.
-    db_env = (os.environ.get("CHAT_NEXTSEEK_DB_ENV") or "prod").strip().lower()
-    if db_env not in ("dev", "prod"):  # pragma: no cover
-        _err("VALIDATION",
-             f"CHAT_NEXTSEEK_DB_ENV must be 'dev' or 'prod', got {db_env!r}", 3)
-    if db_env == "dev":  # pragma: no cover
-        _orig_connect = ChatConfig._connect_db
-        _orig_ensure = ChatConfig._ensure_context_files
-        _orig_fetch = ChatConfig._fetch_context_files_from_db
-
-        def _connect_db_dev(self, env: str = "prod"):
-            return _orig_connect(self, env="dev")
-
-        def _ensure_context_files_dev(self, env: str = "prod"):
-            return _orig_ensure(self, env="dev")
-
-        def _fetch_context_files_dev(self, env: str = "prod"):
-            return _orig_fetch(self, env="dev")
-
-        ChatConfig._connect_db = _connect_db_dev
-        ChatConfig._ensure_context_files = _ensure_context_files_dev
-        ChatConfig._fetch_context_files_from_db = _fetch_context_files_dev
-
-    return ChatConfig({})  # pragma: no cover
-
-
-def _make_session(config):  # pragma: no cover
-    from chat_nextseek.session import SQLiteSessionState
-    user = os.environ.get("API_USER", "anon")
-    return SQLiteSessionState(config.SESSION_DB_PATH, user)
-
-
-def _load_read_safe_endpoints():
-    """Return set of (endpoint, METHOD) tuples from read_safe_endpoints.json.
-
-    Path resolution:
-      - If NEXTSEEK_READ_SAFE_ENDPOINTS_PATH is set, use that (test override).
-      - Else default to /app/plugins/nextseek/context/read_safe_endpoints.json.
-
-    If the file is missing, exit with code 6 (CONFIG_ERROR) naming the path.
-    """
-    path = os.environ.get("NEXTSEEK_READ_SAFE_ENDPOINTS_PATH",
-                          READ_SAFE_ENDPOINTS_DEFAULT)
-    if not os.path.exists(path):
-        _err("CONFIG_ERROR",
-             f"read_safe_endpoints.json missing at {path}; set "
-             "NEXTSEEK_READ_SAFE_ENDPOINTS_PATH or rebuild the image",
-             6)
-    try:
-        with open(path) as fh:
-            data = json.load(fh)
-    except (OSError, json.JSONDecodeError) as exc:
-        _err("CONFIG_ERROR",
-             f"failed to load {path}: {type(exc).__name__}: {exc}",
-             6)
-    allowlist = set()
-    for entry in data:
-        ep = entry.get("endpoint")
-        for m in entry.get("methods", []):
-            allowlist.add((ep, m.upper()))
-    return allowlist
-
-
 # ---------------------------------------------------------------- dispatchers
 
 def _dispatch_entity(args, config, session):
     if _dry_run():  # pragma: no branch
         return {"sampletypes": [], "assays": [], "keywords": [], "projects": []}  # pragma: no cover
-    from chat_nextseek.agents import entity_agent
-    out = entity_agent(config, args.query)
-    return out.model_dump() if hasattr(out, "model_dump") else out
+    import _sidecar_client as sc  # pragma: no cover
+    try:  # pragma: no cover
+        return sc.call_op("entity", {"query": args.query},  # pragma: no cover
+                          ns_login=(_api_user(), _api_pass()),  # pragma: no cover
+                          sidecar_url=sc.sidecar_url_from_env())  # pragma: no cover
+    except sc.SidecarCallError as e:  # pragma: no cover
+        _err(e.code, e.message, e.exit_code)  # pragma: no cover
 
 
 def _dispatch_parse(args, config, session):
     if _dry_run():  # pragma: no branch
         return {"mode": "new_search", "target_endpoint": None}  # pragma: no cover
-    from chat_nextseek.agents import parser_agent, entity_agent
-    entity_out = entity_agent(config, args.query)
-    plan = parser_agent(session, config, args.query, entity_out)
-    return plan.model_dump() if hasattr(plan, "model_dump") else plan
+    import _sidecar_client as sc  # pragma: no cover
+    try:  # pragma: no cover
+        return sc.call_op("parse", {"query": args.query},  # pragma: no cover
+                          ns_login=(_api_user(), _api_pass()),  # pragma: no cover
+                          sidecar_url=sc.sidecar_url_from_env())  # pragma: no cover
+    except sc.SidecarCallError as e:  # pragma: no cover
+        _err(e.code, e.message, e.exit_code)  # pragma: no cover
 
 
 def _dispatch_plan(args, config, session):
-    """multi_parser + planner advisor. Read-only execution per Rev 2 D2."""
+    """multi_parser + planner advisor via the assistant viewset (plan mode)."""
     if _dry_run():  # pragma: no branch
         return {  # pragma: no cover
             "plan": [],
@@ -173,17 +103,32 @@ def _dispatch_plan(args, config, session):
             "skipped_steps": [],
             "recommended_next_actions": [],
         }
-    from chat_nextseek.agents import (
-        entity_agent, multi_parser_agent, planner_agent,
-    )
-    entity_out = entity_agent(config, args.query)
-    multi = multi_parser_agent(session, config, args.query, entity_out)
-    plan = planner_agent(session, config, args.query, entity_out, multi)
-    return plan.model_dump() if hasattr(plan, "model_dump") else plan
+    import _assistant_client as ac  # pragma: no cover
+    import httpx  # pragma: no cover
+    client = ac.AssistantClient(  # pragma: no cover
+        base_url=os.environ["NEXTSEEK_URL"],  # pragma: no cover
+        assistant_prefix=os.environ.get("NEXTSEEK_ASSISTANT_PREFIX", "nextseek_api/assistant"),  # pragma: no cover
+        auth=(_api_user(), _api_pass()),  # pragma: no cover
+    )  # pragma: no cover
+    try:  # pragma: no cover
+        terminal, _ = client.run_query(args.query, mode="plan")  # pragma: no cover
+    except httpx.HTTPStatusError as e:  # pragma: no cover
+        if e.response.status_code == 401:  # pragma: no cover
+            _err("AUTH_FAILED", "authentication failed (check NS credentials)", 8)  # pragma: no cover
+        _err("AGENT_FAILED", f"HTTP {e.response.status_code}", 4)  # pragma: no cover
+    except httpx.TransportError as e:  # pragma: no cover
+        _err("TRANSPORT_ERROR", f"viewset unreachable: {type(e).__name__}", 7)  # pragma: no cover
+    if "__error__" in terminal:  # pragma: no cover
+        _err("AGENT_FAILED", terminal["__error__"], 4)  # pragma: no cover
+    return {  # pragma: no cover
+        "reply": terminal.get("reply", ""),  # pragma: no cover
+        "debug": terminal.get("debug", {}),  # pragma: no cover
+        "bundle_id": terminal.get("bundle_id"),  # pragma: no cover
+    }  # pragma: no cover
 
 
 def _dispatch_api_read(args, config, session):
-    """Read-only API dispatch. Refuses non-allowlisted (endpoint, method) pairs."""
+    """Read-only API dispatch. Refuses --confirmed-write locally (exit-3)."""
     if not args.parser_plan:  # pragma: no cover
         _err("VALIDATION", "--parser-plan required", 3)  # pragma: no cover
     if args.confirmed_write:  # pragma: no cover
@@ -192,39 +137,13 @@ def _dispatch_api_read(args, config, session):
 
     if _dry_run():  # pragma: no branch
         return {"endpoint": "/dry-run/", "method": "GET", "response": {}}  # pragma: no cover
-
-    try:
-        plan_dict = json.loads(args.parser_plan)
-    except json.JSONDecodeError as exc:  # pragma: no cover
-        _err("VALIDATION", f"--parser-plan is not valid JSON: {exc}", 3)  # pragma: no cover
-
-    from chat_nextseek.agents import api_agent_build_request
-    api_plan = api_agent_build_request(config, plan_dict)
-    endpoint = api_plan.endpoint
-    method = api_plan.method.upper()
-
-    allowlist = _load_read_safe_endpoints()
-    if (endpoint, method) not in allowlist:  # pragma: no cover
-        _err("WRITE_BLOCKED",  # pragma: no cover
-             f"endpoint {endpoint!r} method {method!r} not in "
-             "read_safe_endpoints.json; route via nextseek-api-write if "
-             "this is an intentional write",
-             5)
-
-    from chat_nextseek import helpers
-    result = helpers.tool_nextseek_api_request(
-        config,
-        endpoint,
-        method,
-        requestBody=api_plan.requestBody,
-        queryParameters=api_plan.queryParameters,
-    )
-    return {
-        "endpoint": endpoint,
-        "method": method,
-        "api_plan": api_plan.model_dump() if hasattr(api_plan, "model_dump") else api_plan,
-        "response": result,
-    }
+    import _sidecar_client as sc  # pragma: no cover
+    try:  # pragma: no cover
+        return sc.call_op("api-read", {"parser_plan": args.parser_plan},  # pragma: no cover
+                          ns_login=(_api_user(), _api_pass()),  # pragma: no cover
+                          sidecar_url=sc.sidecar_url_from_env())  # pragma: no cover
+    except sc.SidecarCallError as e:  # pragma: no cover
+        _err(e.code, e.message, e.exit_code)  # pragma: no cover
 
 
 def _dispatch_api_write(args, config, session):
@@ -233,40 +152,31 @@ def _dispatch_api_write(args, config, session):
         _err("VALIDATION", "--parser-plan required", 3)  # pragma: no cover
     if not args.confirmed_write:
         _err("WRITE_BLOCKED",
-             "nextseek-api-write requires --confirmed-write (Layer 2)", 5)
+             "nextseek-api-write requires --confirmed-write (Layer 2; advisory — server is the hard floor)", 5)
 
     if _dry_run():  # pragma: no branch
         return {"endpoint": "/dry-run/", "method": "POST", "response": {}}  # pragma: no cover
-
-    try:
-        plan_dict = json.loads(args.parser_plan)
-    except json.JSONDecodeError as exc:  # pragma: no cover
-        _err("VALIDATION", f"--parser-plan is not valid JSON: {exc}", 3)  # pragma: no cover
-
-    from chat_nextseek.agents import api_agent_build_request
-    api_plan = api_agent_build_request(config, plan_dict)
-    from chat_nextseek import helpers
-    result = helpers.tool_nextseek_api_request(
-        config,
-        api_plan.endpoint,
-        api_plan.method,
-        requestBody=api_plan.requestBody,
-        queryParameters=api_plan.queryParameters,
-    )
-    return {
-        "endpoint": api_plan.endpoint,
-        "method": api_plan.method.upper(),
-        "api_plan": api_plan.model_dump() if hasattr(api_plan, "model_dump") else api_plan,
-        "response": result,
-    }
+    import _sidecar_client as sc  # pragma: no cover
+    try:  # pragma: no cover
+        return sc.call_op(  # pragma: no cover
+            "api-write",  # pragma: no cover
+            {"parser_plan": args.parser_plan, "confirmed_write": args.confirmed_write},  # pragma: no cover
+            ns_login=(_api_user(), _api_pass()),  # pragma: no cover
+            sidecar_url=sc.sidecar_url_from_env())  # pragma: no cover
+    except sc.SidecarCallError as e:  # pragma: no cover
+        _err(e.code, e.message, e.exit_code)  # pragma: no cover
 
 
 def _dispatch_graph(args, config, session):
     if _dry_run():  # pragma: no branch
         return {"cypher": "", "result": []}  # pragma: no cover
-    from chat_nextseek.agents import graph_agent, entity_agent
-    entity_out = entity_agent(config, args.query)
-    return graph_agent(config, args.query, entity_out)
+    import _sidecar_client as sc  # pragma: no cover
+    try:  # pragma: no cover
+        return sc.call_op("graph", {"query": args.query},  # pragma: no cover
+                          ns_login=(_api_user(), _api_pass()),  # pragma: no cover
+                          sidecar_url=sc.sidecar_url_from_env())  # pragma: no cover
+    except sc.SidecarCallError as e:  # pragma: no cover
+        _err(e.code, e.message, e.exit_code)  # pragma: no cover
 
 
 def _dispatch_report(args, config, session):
@@ -279,15 +189,13 @@ def _dispatch_report(args, config, session):
 
     if _dry_run():  # pragma: no branch
         return {"summary": "", "saved_files": [], "rows": []}  # pragma: no cover
-
-    from chat_nextseek import helpers
-    from chat_nextseek.schemas.chat import ReporterPlan
-    summary_mode = "RPPR" if args.mode == "rppr" else args.mode
-    rp = ReporterPlan(project=args.project, reporter_mode="summary",
-                      summary_mode=summary_mode)
-    log_dir = os.environ.get("NEXTSEEK_OUTPUTS_DIR", "/tmp/nextseek")
-    result, saved, summary = helpers.run_reporter_summary(config, rp, log_dir)
-    return {"summary": summary, "saved_files": saved, "rows": result}
+    import _sidecar_client as sc  # pragma: no cover
+    try:  # pragma: no cover
+        return sc.call_op("report", {"mode": args.mode, "project": args.project},  # pragma: no cover
+                          ns_login=(_api_user(), _api_pass()),  # pragma: no cover
+                          sidecar_url=sc.sidecar_url_from_env())  # pragma: no cover
+    except sc.SidecarCallError as e:  # pragma: no cover
+        _err(e.code, e.message, e.exit_code)  # pragma: no cover
 
 
 def _dispatch_generate_submission(args, config, session):
@@ -298,48 +206,58 @@ def _dispatch_generate_submission(args, config, session):
 
     if _dry_run():  # pragma: no branch
         return {"report": "", "type": args.type}  # pragma: no cover
-
-    from chat_nextseek.agents import report_writer_agent
-    from chat_nextseek.schemas.chat import ReportWriterPlan
-    uids = [u.strip() for u in args.uids.split(",") if u.strip()]
-    plan = ReportWriterPlan(report_type=args.type, reporter_context={"uids": uids})
-    out = report_writer_agent(config, args.query or "", plan)
-    # Match the hasattr-guard pattern used by every other dispatcher; report_writer_agent
-    # may return a Pydantic model OR a plain dict depending on the chat_nextseek version
-    # (Phase 4 review HIGH-2 — consistency with _dispatch_entity / _dispatch_parse / etc).
-    return out.model_dump() if hasattr(out, "model_dump") else out
+    import _sidecar_client as sc  # pragma: no cover
+    try:  # pragma: no cover
+        return sc.call_op(  # pragma: no cover
+            "generate-submission",  # pragma: no cover
+            {"type": args.type, "uids": args.uids, "query": args.query},  # pragma: no cover
+            ns_login=(_api_user(), _api_pass()),  # pragma: no cover
+            sidecar_url=sc.sidecar_url_from_env())  # pragma: no cover
+    except sc.SidecarCallError as e:  # pragma: no cover
+        _err(e.code, e.message, e.exit_code)  # pragma: no cover
 
 
 def _dispatch_query(args, config, session):
-    """Single-shot orchestrator: runs the entire chat_nextseek pipeline
-    (entity -> parser -> api/memory/reporter/graph/system -> chatter) in one call.
+    """Single-shot orchestrator via the NExtSEEK assistant viewset.
 
-    This is the default fast path. Returns the final dict shaped as
-    `{"reply": str, "debug": {...}, "bundle_id": int|None, "artifacts"?, "files"?}`.
-    Avoids the multi-turn agentic loop that the fine-grained tools force on
-    Container-Claude.
-
-    chat_nextseek's orchestrator prints debug events (`[CHATTER]`,
-    `[ENTITY]`, etc.) to stdout during the run; if we let those land on our
-    own stdout they corrupt the runner's final JSON line. We redirect FD 1
-    to FD 2 for the duration of the run_query call so debug noise lands on
-    stderr (the agent and any wrapper script can ignore it) and only
-    main()'s `json.dumps(result)` writes to the real stdout.
+    Routes to run_query (standard) or run_query_plan (--planner flag).
+    Returns the terminal payload shaped as {"reply": str, "debug": {...},
+    "bundle_id": int|None}. Preserves the .reply extraction contract used
+    by the nextseek-query shim (recon:runner §2b).
     """
     if _dry_run():  # pragma: no branch
         return {"reply": "[dry-run]", "debug": {}, "bundle_id": None}  # pragma: no cover
-    from chat_nextseek.orchestrator import run_query, run_query_plan  # pragma: no cover
-    runner = run_query_plan if args.planner else run_query  # pragma: no cover
-    saved_fd = os.dup(1)  # pragma: no cover
+    import _assistant_client as ac  # pragma: no cover
+    import httpx  # pragma: no cover
+    client = ac.AssistantClient(  # pragma: no cover
+        base_url=os.environ["NEXTSEEK_URL"],  # pragma: no cover
+        assistant_prefix=os.environ.get("NEXTSEEK_ASSISTANT_PREFIX", "nextseek_api/assistant"),  # pragma: no cover
+        auth=(_api_user(), _api_pass()),  # pragma: no cover
+    )  # pragma: no cover
+    mode = "plan" if args.planner else "standard"  # pragma: no cover
     try:  # pragma: no cover
-        sys.stdout.flush()  # pragma: no cover
-        os.dup2(2, 1)  # stdout -> stderr  # pragma: no cover
-        result = runner(session, config, args.query)  # pragma: no cover
-    finally:  # pragma: no cover
-        sys.stdout.flush()  # pragma: no cover
-        os.dup2(saved_fd, 1)  # pragma: no cover
-        os.close(saved_fd)  # pragma: no cover
-    return result  # pragma: no cover
+        terminal, _ = client.run_query(args.query, mode=mode)  # pragma: no cover
+    except httpx.HTTPStatusError as e:  # pragma: no cover
+        if e.response.status_code == 401:  # pragma: no cover
+            _err("AUTH_FAILED", "authentication failed (check NS credentials)", 8)  # pragma: no cover
+        _err("AGENT_FAILED", f"HTTP {e.response.status_code}", 4)  # pragma: no cover
+    except httpx.TransportError as e:  # pragma: no cover
+        _err("TRANSPORT_ERROR", f"viewset unreachable: {type(e).__name__}", 7)  # pragma: no cover
+    if "__error__" in terminal:  # pragma: no cover
+        _err("AGENT_FAILED", terminal["__error__"], 4)  # pragma: no cover
+    return {  # pragma: no cover
+        "reply": terminal.get("reply", ""),  # pragma: no cover
+        "debug": terminal.get("debug", {}),  # pragma: no cover
+        "bundle_id": terminal.get("bundle_id"),  # pragma: no cover
+    }  # pragma: no cover
+
+
+def _api_user() -> str:  # pragma: no cover
+    return os.environ.get("API_USER", "")  # pragma: no cover
+
+
+def _api_pass() -> str:  # pragma: no cover
+    return os.environ.get("API_PASS", "")  # pragma: no cover
 
 
 _DISPATCH = {
@@ -369,17 +287,16 @@ def main() -> None:
                    help="Use run_query_plan instead of run_query (multi-step capable)")
     args = p.parse_args()
 
-    # Normalise env once, before chat_nextseek's config reads any of it.
+    # Normalise env once, before any downstream read.
     # See _sanitize_env_quotes docstring for the rationale (docker --env-file
     # / dotenv_values preserve surrounding quotes from .env literals).
     _sanitize_env_quotes()
 
-    if _dry_run():
-        config = None
-        session = None
-    else:  # pragma: no cover
-        config = _load_config()  # pragma: no cover
-        session = _make_session(config)  # pragma: no cover
+    # config/session are no longer used (thin-client model — no chat_nextseek).
+    # They are kept as positional params in dispatcher signatures for compat with
+    # the in-image coverage tests that monkeypatch _load_config / _make_session.
+    config = None
+    session = None
 
     try:
         result = _DISPATCH[args.agent](args, config, session)
