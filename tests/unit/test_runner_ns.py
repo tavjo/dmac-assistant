@@ -723,21 +723,70 @@ def test_query_error_error_text_is_redacted(
 
 def test_sys_path_precedence_script_dir_before_repo_bin(monkeypatch: pytest.MonkeyPatch) -> None:
     """Finding 4: _SCRIPT_DIR must appear earlier in sys.path than _REPO_BIN_DIR.
-    The runner inserts both at index 0 in the order (REPO_BIN_DIR, SCRIPT_DIR);
-    after both inserts, SCRIPT_DIR must have a lower index (i.e. higher precedence).
+
+    The runner's insert block (runner_ns.py lines 73-77) runs:
+
+        for _p in (_REPO_BIN_DIR, _SCRIPT_DIR):
+            if _p not in sys.path:
+                sys.path.insert(0, _p)
+
+    When both dirs are absent this leaves _SCRIPT_DIR at a lower index (higher
+    precedence) than _REPO_BIN_DIR.  The old test read the live sys.path
+    directly, which is order-dependent: a prior test module (test_sidecar_client)
+    inserts _REPO_BIN_DIR at module-top before runner_ns is imported, so the
+    guard skips it and the ordering is not established.
+
+    This rewrite is order-independent: it snapshots sys.path, strips both dirs,
+    pops the cached runner_ns module, reloads runner_ns from source (exercising
+    the runner's own insert block, not a copy of it) in a subprocess-style
+    re-exec via importlib, then asserts _SCRIPT_DIR precedes _REPO_BIN_DIR in
+    the resulting path.  sys.path and sys.modules are fully restored in finally.
     """
+    import importlib.util
+
     script_dir = runner_ns._SCRIPT_DIR
     repo_bin_dir = runner_ns._REPO_BIN_DIR
+    runner_ns_file = runner_ns.__file__
 
-    assert script_dir in sys.path, f"_SCRIPT_DIR {script_dir!r} not found in sys.path"
-    assert repo_bin_dir in sys.path, f"_REPO_BIN_DIR {repo_bin_dir!r} not found in sys.path"
+    # Snapshot
+    original_path = sys.path[:]
+    original_modules = dict(sys.modules)
 
-    script_idx = sys.path.index(script_dir)
-    repo_idx = sys.path.index(repo_bin_dir)
-    assert script_idx < repo_idx, (
-        f"_SCRIPT_DIR must have higher precedence (lower index) than _REPO_BIN_DIR; "
-        f"got script_dir at index {script_idx}, repo_bin_dir at index {repo_idx}"
-    )
+    try:
+        # Strip both dirs so the insert block sees a clean state.
+        monkeypatch.setattr(sys, "path", [p for p in sys.path if p not in (script_dir, repo_bin_dir)])
+
+        # Remove any cached runner_ns (and its container package) so a fresh
+        # exec_module call will re-execute the module-level insert block.
+        for key in [k for k in sys.modules if k in ("container.runner_ns", "runner_ns")]:
+            del sys.modules[key]
+
+        # Reload via importlib -- exercises the runner's OWN insert block, not a copy.
+        spec = importlib.util.spec_from_file_location("runner_ns_probe", runner_ns_file)
+        assert spec is not None and spec.loader is not None
+        fresh_module = importlib.util.module_from_spec(spec)
+        # exec_module runs the module body including the sys.path insert loop.
+        spec.loader.exec_module(fresh_module)  # type: ignore[union-attr]
+
+        # Assert ordering in the mutated sys.path (monkeypatched list was mutated in-place).
+        assert script_dir in sys.path, f"_SCRIPT_DIR {script_dir!r} not inserted by runner_ns"
+        assert repo_bin_dir in sys.path, f"_REPO_BIN_DIR {repo_bin_dir!r} not inserted by runner_ns"
+
+        script_idx = sys.path.index(script_dir)
+        repo_idx = sys.path.index(repo_bin_dir)
+        assert script_idx < repo_idx, (
+            f"_SCRIPT_DIR must have higher precedence (lower index) than _REPO_BIN_DIR "
+            f"on a clean path; got script_dir at index {script_idx}, "
+            f"repo_bin_dir at index {repo_idx}"
+        )
+    finally:
+        # Restore sys.path and sys.modules unconditionally.
+        sys.path[:] = original_path
+        # Remove any keys added during the probe, then restore originals.
+        for key in list(sys.modules.keys()):
+            if key not in original_modules:
+                del sys.modules[key]
+        sys.modules.update(original_modules)
 
 
 # ---------------------------------------------------------- _FakeStdin helper
