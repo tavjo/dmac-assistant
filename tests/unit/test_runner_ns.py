@@ -723,7 +723,7 @@ def test_query_error_error_text_is_redacted(
 
 def test_sys_path_precedence_script_dir_before_repo_bin(monkeypatch: pytest.MonkeyPatch) -> None:
     """Finding 4: _SCRIPT_DIR must appear earlier in sys.path than _REPO_BIN_DIR.
-    The runner inserts both at index 0 in the order (SCRIPT_DIR, REPO_BIN_DIR);
+    The runner inserts both at index 0 in the order (REPO_BIN_DIR, SCRIPT_DIR);
     after both inserts, SCRIPT_DIR must have a lower index (i.e. higher precedence).
     """
     script_dir = runner_ns._SCRIPT_DIR
@@ -737,6 +737,162 @@ def test_sys_path_precedence_script_dir_before_repo_bin(monkeypatch: pytest.Monk
     assert script_idx < repo_idx, (
         f"_SCRIPT_DIR must have higher precedence (lower index) than _REPO_BIN_DIR; "
         f"got script_dir at index {script_idx}, repo_bin_dir at index {repo_idx}"
+    )
+
+
+# ---------------------------------------------------------- _FakeStdin helper
+
+
+# ---- Item A: direct unit tests for extracted pure helpers ----
+
+
+def test_translate_terminal_genuine_query_error() -> None:
+    """Genuine __error__ (non-sentinel agent) -> query_error + ns_runner_error_type companion."""
+    result = runner_ns._translate_terminal({"__error__": "boom", "agent": "entity"})
+    assert len(result) == 2
+    assert result[0][0] == "query_error"
+    assert result[0][1]["error"] == "<redacted>"
+    assert result[0][1]["agent"] == "entity"
+    assert result[1][0] == "ns_runner_error_type"
+    assert result[1][1]["error_type"] == "RedactedByRunner"
+
+
+def test_translate_terminal_stream_ended_sentinel() -> None:
+    """Stream-ended sentinel -> synthetic failure-shaped query_complete (single event, no companion)."""
+    terminal = {"__error__": "stream ended without terminal event", "agent": None}
+    result = runner_ns._translate_terminal(terminal)
+    assert len(result) == 1
+    assert result[0][0] == "query_complete"
+    payload = result[0][1]
+    assert payload["error_type"] == "RunnerSyntheticTerminal"
+    assert payload["status"] == "error"
+
+
+def test_translate_terminal_failure_signal() -> None:
+    """Failure-signal terminal -> ns_runner_error_type companion + failure-shaped query_complete."""
+    terminal = {"reply": "partial", "status": "error", "error_type": "SomeFailure", "debug": {"error": "x"}}
+    result = runner_ns._translate_terminal(terminal)
+    assert len(result) == 2
+    assert result[0][0] == "ns_runner_error_type"
+    assert result[0][1]["error_type"] == "SomeFailure"
+    assert result[1][0] == "query_complete"
+    payload = result[1][1]
+    assert payload["status"] == "error"
+    assert payload["debug"] == {"error": "x"}
+
+
+def test_translate_terminal_failure_signal_unknown_error_type() -> None:
+    """Failure signal with no error_type -> UnknownFailure fallback."""
+    terminal = {"status": "error"}
+    result = runner_ns._translate_terminal(terminal)
+    companion = [r for r in result if r[0] == "ns_runner_error_type"]
+    assert companion[0][1]["error_type"] == "UnknownFailure"
+
+
+def test_translate_terminal_clean_success() -> None:
+    """Clean success terminal -> single query_complete with reply propagated."""
+    terminal = {"reply": "42 samples found", "bundle_id": 7, "session_id": "s1", "debug": None}
+    result = runner_ns._translate_terminal(terminal)
+    assert len(result) == 1
+    assert result[0][0] == "query_complete"
+    payload = result[0][1]
+    assert payload["reply"] == "42 samples found"
+    assert payload["bundle_id"] == 7
+    assert payload["session_id"] == "s1"
+
+
+def test_typed_failure_events_structure() -> None:
+    """_typed_failure_events returns the two-event failure shape with the given error_type."""
+    result = runner_ns._typed_failure_events("AUTH_FAILED")
+    assert len(result) == 2
+    assert result[0][0] == "ns_runner_error_type"
+    assert result[0][1] == {"agent": None, "error_type": "AUTH_FAILED"}
+    assert result[1][0] == "query_complete"
+    assert result[1][1]["error_type"] == "AUTH_FAILED"
+    assert result[1][1]["status"] == "error"
+
+
+# ---- Item C: branch pins for previously uncovered paths ----
+
+
+def test_non_401_http_status_error_emits_failure_shaped_query_complete(
+    fd_capture: FdCapture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Item C-1: non-401 HTTPStatusError (e.g. 500) -> failure-shaped query_complete
+    with error_type 'HTTPStatusError' and status 'error'.
+    """
+    import httpx
+
+    with fd_capture.active():
+        events_fd = _perform_event_channel_remap()
+        monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
+        try:
+            class FakeClient:
+                def run_query(self, q, *, mode, session_id=None, **k):
+                    resp = httpx.Response(500, request=httpx.Request("POST", "https://ns.example/query/"))
+                    raise httpx.HTTPStatusError("500 Internal Server Error", request=resp.request, response=resp)
+
+            monkeypatch.setattr(runner_ns, "_build_assistant_client", lambda: FakeClient())
+            monkeypatch.setattr(sys, "stdin", _FakeStdin("find samples\n"))
+            with pytest.raises(SystemExit) as excinfo:
+                runner_ns.main(["--session", "test-sess"])
+            assert excinfo.value.code == 1
+        finally:
+            os.close(events_fd)
+            monkeypatch.setattr(runner_ns, "_EVENTS_FD", 1, raising=True)
+
+    stdout = fd_capture.stdout_bytes()
+    lines = [ln for ln in stdout.strip().split(b"\n") if ln]
+    parsed = [json.loads(ln) for ln in lines]
+    qc = [e for e in parsed if e["event"] == "query_complete"]
+    assert qc, "must emit query_complete on non-401 HTTPStatusError"
+    assert qc[0]["payload"]["error_type"] == "HTTPStatusError"
+    assert qc[0]["payload"]["status"] == "error"
+    # Must also emit companion
+    companion = [e for e in parsed if e["event"] == "ns_runner_error_type"]
+    assert companion, "must emit ns_runner_error_type companion on non-401 HTTPStatusError"
+    assert companion[0]["payload"]["error_type"] == "HTTPStatusError"
+
+
+def test_clean_success_terminal_missing_reply_key_raises_and_emits_ns_runner_error(
+    fd_capture: FdCapture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Item C-2: a clean-success terminal (no failure signals, no __error__) that
+    is missing the 'reply' key causes a KeyError inside _translate_terminal, which
+    propagates through main()'s BaseException handler as type name 'KeyError'.
+    This documents the accidental-but-acceptable fallback: the bridge will see an
+    ns_runner_error event and route to the error path rather than hanging.
+    """
+    with fd_capture.active():
+        events_fd = _perform_event_channel_remap()
+        monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
+        try:
+            class FakeClient:
+                def run_query(self, q, *, mode, session_id=None, **k):
+                    # Viewset returned a terminal with no failure signals but
+                    # also missing the required 'reply' key.
+                    return ({"bundle_id": 42}, [])
+
+            monkeypatch.setattr(runner_ns, "_build_assistant_client", lambda: FakeClient())
+            monkeypatch.setattr(sys, "stdin", _FakeStdin("find samples\n"))
+            with pytest.raises(SystemExit) as excinfo:
+                runner_ns.main(["--session", "test-sess"])
+            assert excinfo.value.code == 1
+        finally:
+            os.close(events_fd)
+            monkeypatch.setattr(runner_ns, "_EVENTS_FD", 1, raising=True)
+
+    stdout = fd_capture.stdout_bytes()
+    lines = [ln for ln in stdout.strip().split(b"\n") if ln]
+    parsed = [json.loads(ln) for ln in lines]
+    error_events = [e for e in parsed if e["event"] == "ns_runner_error"]
+    assert len(error_events) == 1, (
+        f"missing 'reply' key must produce exactly 1 ns_runner_error; got {error_events}"
+    )
+    assert error_events[0]["payload"] == {"error_type": "KeyError"}, (
+        f"ns_runner_error payload must be type name only; got {error_events[0]['payload']}"
     )
 
 

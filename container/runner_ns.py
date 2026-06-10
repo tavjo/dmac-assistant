@@ -127,6 +127,141 @@ def _build_assistant_client() -> Any:
     )
 
 
+def _typed_failure_events(
+    error_type: str, *, debug: Any = None
+) -> list[tuple[str, dict[str, Any]]]:
+    """Return the ordered (event_name, payload) pairs for a typed failure.
+
+    Used by the AUTH_FAILED, non-401 HTTPStatusError, and TRANSPORT_ERROR
+    exception branches, which all share the same two-event shape:
+      1. ns_runner_error_type companion (carries error_type for bridge debug log)
+      2. failure-shaped query_complete (carries reply, status, error_type)
+
+    The debug parameter is intentionally not wired here because the HTTP-error
+    branches have no terminal dict to propagate debug from; the terminal-
+    translation path uses _translate_terminal instead.
+    """
+    return [
+        (
+            "ns_runner_error_type",
+            {"agent": None, "error_type": error_type},
+        ),
+        (
+            "query_complete",
+            {
+                "reply": "<redacted; see ns_query_complete_with_error frame>",
+                "status": "error",
+                "error_type": error_type,
+            },
+        ),
+    ]
+
+
+def _translate_terminal(terminal: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Translate a terminal dict from AssistantClient into ordered (event_name, payload) pairs.
+
+    Covers four cases:
+      1. Genuine __error__ (non-sentinel) -> query_error + ns_runner_error_type companion
+      2. Stream-ended sentinel (__error__ == _STREAM_ENDED_WITHOUT_TERMINAL, agent is None)
+         -> synthetic failure-shaped query_complete (no companion)
+      3. Failure-signal terminal (no __error__, but _has_failure_signal) ->
+         ns_runner_error_type companion + failure-shaped query_complete
+      4. Clean success -> query_complete with reply/bundle_id/session_id/debug
+
+    Callers must emit the returned list in order via _emit_jsonl.
+    """
+    if "__error__" in terminal:
+        # Distinguish the stream-ended-without-terminal sentinel from a
+        # genuine query_error. The T3 client represents the sentinel as
+        # {"__error__": "stream ended without terminal event", "agent": None}
+        # (see _assistant_client.py:57-58). A genuine query_error carries a
+        # non-None agent or a different error string.
+        sentinel_error = terminal.get("__error__", "")
+        agent = terminal.get("agent")
+        is_synthetic_sentinel = (
+            sentinel_error == _STREAM_ENDED_WITHOUT_TERMINAL and agent is None
+        )
+
+        if is_synthetic_sentinel:
+            # Match the old runner's synthetic-terminal shape so the bridge's
+            # _detect_query_complete_failure fires and routes to
+            # ns_query_complete_with_error (not bare ns_exec_truncated).
+            return [
+                (
+                    "query_complete",
+                    {
+                        "reply": (
+                            "<runner synthetic terminal: assistant viewset "
+                            "stream ended without query_complete or query_error>"
+                        ),
+                        "status": "error",
+                        "error_type": "RunnerSyntheticTerminal",
+                    },
+                )
+            ]
+        else:
+            # Genuine query_error from the viewset. Redact the error text;
+            # emit ns_runner_error_type companion for the bridge's debug log.
+            return [
+                (
+                    "query_error",
+                    {"error": "<redacted>", "agent": agent},
+                ),
+                (
+                    "ns_runner_error_type",
+                    {"agent": agent, "error_type": "RedactedByRunner"},
+                ),
+            ]
+
+    elif _has_failure_signal(terminal):
+        # query_complete with a failure signal -- redact the reply so the
+        # bridge's _detect_query_complete_failure routes to
+        # ns_query_complete_with_error (vet findings 11/13/19).
+        #
+        # The plan deliberately propagates `debug` unredacted here (vet
+        # finding 19: a soft-failure signal the detection misses must still
+        # reach the bridge unchanged; error text now originates from the
+        # NExtSEEK viewset, not a creds-holding in-container library), while
+        # query_error.error stays the redacted literal above.
+        return [
+            (
+                "ns_runner_error_type",
+                {
+                    "agent": None,
+                    "error_type": terminal.get("error_type") or "UnknownFailure",
+                },
+            ),
+            (
+                "query_complete",
+                {
+                    "reply": "<redacted; see ns_query_complete_with_error frame>",
+                    "status": "error",
+                    "debug": terminal.get("debug"),
+                },
+            ),
+        ]
+
+    else:
+        # Clean success -- propagate reply, bundle_id, session_id, debug.
+        #
+        # The plan deliberately propagates `debug` unredacted (vet finding 19:
+        # a soft-failure signal the detection misses must still reach the bridge
+        # unchanged; error text now originates from the NExtSEEK viewset, not a
+        # creds-holding in-container library), while query_error.error stays the
+        # redacted literal.
+        return [
+            (
+                "query_complete",
+                {
+                    "reply": terminal["reply"],
+                    "bundle_id": terminal.get("bundle_id"),
+                    "session_id": terminal.get("session_id"),
+                    "debug": terminal.get("debug"),
+                },
+            )
+        ]
+
+
 def main(argv: Sequence[str] = ()) -> int:
     """Entry point: read query from stdin, drive run_query, emit JSONL events."""
     parser = argparse.ArgumentParser(prog="runner_ns")
@@ -134,6 +269,7 @@ def main(argv: Sequence[str] = ()) -> int:
     args = parser.parse_args(argv)
 
     # Read the single-line query from stdin (spec line 90).
+    # Blocks until the bridge writes the query line; the bridge's turn deadline is the backstop.
     user_text = sys.stdin.readline().rstrip("\n")
     if not user_text:
         _emit_jsonl("ns_runner_error", {"error_type": "EmptyQuery"})
@@ -141,6 +277,8 @@ def main(argv: Sequence[str] = ()) -> int:
 
     try:
         client = _build_assistant_client()
+        # httpx timeout=300 is per-read; a slow-but-alive SSE stream is bounded by the bridge
+        # turn deadline, not here.
         terminal, events = client.run_query(
             user_text,
             mode="standard",
@@ -156,123 +294,25 @@ def main(argv: Sequence[str] = ()) -> int:
                 _emit_jsonl(event_name, data)
 
         # -- Translate the terminal dict --
-        if "__error__" in terminal:
-            # Distinguish the stream-ended-without-terminal sentinel from a
-            # genuine query_error. The T3 client represents the sentinel as
-            # {"__error__": "stream ended without terminal event", "agent": None}
-            # (see _assistant_client.py:57-58). A genuine query_error carries a
-            # non-None agent or a different error string.
-            sentinel_error = terminal.get("__error__", "")
-            agent = terminal.get("agent")
-            is_synthetic_sentinel = (
-                sentinel_error == _STREAM_ENDED_WITHOUT_TERMINAL and agent is None
-            )
-
-            if is_synthetic_sentinel:
-                # Match the old runner's synthetic-terminal shape so the bridge's
-                # _detect_query_complete_failure fires and routes to
-                # ns_query_complete_with_error (not bare ns_exec_truncated).
-                _emit_jsonl(
-                    "query_complete",
-                    {
-                        "reply": (
-                            "<runner synthetic terminal: assistant viewset "
-                            "stream ended without query_complete or query_error>"
-                        ),
-                        "status": "error",
-                        "error_type": "RunnerSyntheticTerminal",
-                    },
-                )
-            else:
-                # Genuine query_error from the viewset. Redact the error text;
-                # emit ns_runner_error_type companion for the bridge's debug log.
-                _emit_jsonl(
-                    "query_error",
-                    {"error": "<redacted>", "agent": agent},
-                )
-                _emit_jsonl(
-                    "ns_runner_error_type",
-                    {"agent": agent, "error_type": "RedactedByRunner"},
-                )
-
-        elif _has_failure_signal(terminal):
-            # query_complete with a failure signal -- redact the reply so the
-            # bridge's _detect_query_complete_failure routes to
-            # ns_query_complete_with_error (vet findings 11/13/19).
-            _emit_jsonl(
-                "ns_runner_error_type",
-                {
-                    "agent": None,
-                    "error_type": terminal.get("error_type") or "UnknownFailure",
-                },
-            )
-            _emit_jsonl(
-                "query_complete",
-                {
-                    "reply": "<redacted; see ns_query_complete_with_error frame>",
-                    "status": "error",
-                    "debug": terminal.get("debug"),
-                },
-            )
-
-        else:
-            # Clean success -- propagate reply, bundle_id, session_id, debug.
-            _emit_jsonl(
-                "query_complete",
-                {
-                    "reply": terminal["reply"],
-                    "bundle_id": terminal.get("bundle_id"),
-                    "session_id": terminal.get("session_id"),
-                    "debug": terminal.get("debug"),
-                },
-            )
+        for event_name, payload in _translate_terminal(terminal):
+            _emit_jsonl(event_name, payload)
 
         return 0
 
-    except httpx.HTTPStatusError as exc:  # noqa: BLE001
+    except httpx.HTTPStatusError as exc:
         # 401 from the viewset -> AUTH_FAILED typed failure. Never echo creds.
         if exc.response.status_code == 401:
-            _emit_jsonl(
-                "ns_runner_error_type",
-                {"agent": None, "error_type": "AUTH_FAILED"},
-            )
-            _emit_jsonl(
-                "query_complete",
-                {
-                    "reply": "<redacted; see ns_query_complete_with_error frame>",
-                    "status": "error",
-                    "error_type": "AUTH_FAILED",
-                },
-            )
+            for event_name, payload in _typed_failure_events("AUTH_FAILED"):
+                _emit_jsonl(event_name, payload)
         else:
-            _emit_jsonl(
-                "ns_runner_error_type",
-                {"agent": None, "error_type": "HTTPStatusError"},
-            )
-            _emit_jsonl(
-                "query_complete",
-                {
-                    "reply": "<redacted; see ns_query_complete_with_error frame>",
-                    "status": "error",
-                    "error_type": "HTTPStatusError",
-                },
-            )
+            for event_name, payload in _typed_failure_events("HTTPStatusError"):
+                _emit_jsonl(event_name, payload)
         sys.exit(1)
 
     except httpx.TransportError:
         # Viewset unreachable (DNS failure, connection refused, etc.)
-        _emit_jsonl(
-            "ns_runner_error_type",
-            {"agent": None, "error_type": "TRANSPORT_ERROR"},
-        )
-        _emit_jsonl(
-            "query_complete",
-            {
-                "reply": "<redacted; see ns_query_complete_with_error frame>",
-                "status": "error",
-                "error_type": "TRANSPORT_ERROR",
-            },
-        )
+        for event_name, payload in _typed_failure_events("TRANSPORT_ERROR"):
+            _emit_jsonl(event_name, payload)
         sys.exit(1)
 
     except BaseException as exc:  # noqa: BLE001 -- R-03 demands BaseException catch
