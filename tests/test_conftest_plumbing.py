@@ -7,8 +7,25 @@ from pathlib import Path
 import pytest
 import tests.harness  # noqa: F401
 
+from build_tools.verify_env import REQUIRED_VARS
+
 
 pytest_plugins = ("pytester",)
+
+
+@pytest.fixture(autouse=True)
+def _scrub_live_env_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the in-process pytester children hermetic against env pollution.
+
+    ``live_env`` merges ``{**file_values, **os.environ}`` — os.environ wins.
+    Earlier tests in the full suite call ``load_config()``, whose
+    ``load_dotenv(_REPO_ROOT / ".env", override=False)`` loads the REAL repo
+    .env into this process's os.environ; the pytester child inherits it and
+    the real values shadow the fake .env these tests write (task-0R4: solo
+    pass / full-suite fail, plus real secret values in failure output).
+    """
+    for key in REQUIRED_VARS:
+        monkeypatch.delenv(key, raising=False)
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
