@@ -79,6 +79,19 @@ image-check-docker:
 sync-vendor-deps:
 	@./scripts/sync-vendor-deps.sh
 
+# --- NS shared-cred sidecar (plan nextseek-sidecar-build-2026-06-09, R-6) ---
+SIDECAR_STAGING_ROOT ?= $(HOME)/dmac-dev/nextseek-sidecar-staging
+
+sidecar-build: image-check-docker sync-vendor-deps
+	@DMAC_SIDECAR_STAGING_ROOT="$(SIDECAR_STAGING_ROOT)" docker compose -f sidecar/docker-compose.yml build
+
+sidecar-up: image-check-docker
+	@mkdir -p "$(SIDECAR_STAGING_ROOT)"
+	@DMAC_SIDECAR_STAGING_ROOT="$(SIDECAR_STAGING_ROOT)" docker compose -f sidecar/docker-compose.yml up -d --wait
+
+sidecar-down:
+	@DMAC_SIDECAR_STAGING_ROOT="$(SIDECAR_STAGING_ROOT)" docker compose -f sidecar/docker-compose.yml down
+
 image-build: image-check-docker image-preflight sync-vendor-deps
 	@if docker image inspect dmac-assistant:poc >/dev/null 2>&1; then \
 	  echo "Retagging prior dmac-assistant:poc -> dmac-assistant:poc-prev"; \
