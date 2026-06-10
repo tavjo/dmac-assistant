@@ -15,6 +15,9 @@ def base_env(tmp_path, monkeypatch):
     monkeypatch.setenv("DMAC_CLAUDE_USERS_ROOT", str(tmp_path / "claude"))
     monkeypatch.setenv("DMAC_SCRATCH_ROOT", str(tmp_path / "scratch"))
     monkeypatch.setenv("DMAC_DROPBOX_ROOT", str(tmp_path / "dropbox"))
+    sidecar_staging = tmp_path / "sidecar-staging"
+    sidecar_staging.mkdir()
+    monkeypatch.setenv("DMAC_SIDECAR_STAGING_ROOT", str(sidecar_staging))
     monkeypatch.delenv("DMAC_OUTPUT_ROOT", raising=False)
     monkeypatch.delenv("DMAC_DEV_MODE", raising=False)
     # B17c: catalog_file is now a required BridgeConfig field; set a valid path

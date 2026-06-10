@@ -39,6 +39,8 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> pytest.MonkeyP
         "DMAC_CATALOG_FILE_HOST_PATH",
         "DMAC_BRIDGE_HOST",
         "DMAC_BRIDGE_PORT",
+        "DMAC_SIDECAR_NETWORK",
+        "DMAC_SIDECAR_STAGING_ROOT",
     ):
         monkeypatch.delenv(var, raising=False)
     # Avoid loading the developer's real repo `.env` into tests (would defeat delenv).
@@ -64,6 +66,7 @@ def _set_good_env(
     scratch_root: str = "./var/scratch",
     dropbox_root: str = "/tmp/dropbox-fake",
     output_root: str = "/tmp/output-fake",
+    sidecar_staging_root: str = "/tmp/sidecar-staging-fake",
     catalog_file: str | None = None,
     bridge_host: str = "127.0.0.1",
     bridge_port: str = "8000",
@@ -73,6 +76,7 @@ def _set_good_env(
     monkeypatch.setenv("DMAC_SCRATCH_ROOT", scratch_root)
     monkeypatch.setenv("DMAC_DROPBOX_ROOT", dropbox_root)
     monkeypatch.setenv("DMAC_OUTPUT_ROOT", output_root)
+    monkeypatch.setenv("DMAC_SIDECAR_STAGING_ROOT", sidecar_staging_root)
     if catalog_file is not None:
         monkeypatch.setenv("DMAC_CATALOG_FILE_HOST_PATH", catalog_file)
     monkeypatch.setenv("DMAC_BRIDGE_HOST", bridge_host)
@@ -355,6 +359,8 @@ def test_load_config_reads_env_from_repo_root_dotenv(
         "DMAC_DROPBOX_ROOT",
         "DMAC_BRIDGE_HOST",
         "DMAC_BRIDGE_PORT",
+        "DMAC_SIDECAR_NETWORK",
+        "DMAC_SIDECAR_STAGING_ROOT",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -475,6 +481,7 @@ def test_missing_users_still_raises_with_dotenv_miss(
 #   users (DMAC_USERS), claude_users_root (DMAC_CLAUDE_USERS_ROOT),
 #   scratch_root (DMAC_SCRATCH_ROOT), dropbox_root (DMAC_DROPBOX_ROOT),
 #   output_root (DMAC_OUTPUT_ROOT), catalog_file (DMAC_CATALOG_FILE_HOST_PATH),
+#   sidecar_staging_root (DMAC_SIDECAR_STAGING_ROOT),
 #   plus optional bridge_host / bridge_port.
 # ---------------------------------------------------------------------------
 
@@ -485,6 +492,7 @@ _BRIDGE_REQUIRED = {
     "DMAC_SCRATCH_ROOT": "/tmp/scratch-fake",
     "DMAC_DROPBOX_ROOT": "/tmp/dropbox-fake",
     "DMAC_OUTPUT_ROOT": "/tmp/output-fake",
+    "DMAC_SIDECAR_STAGING_ROOT": "/tmp/sidecar-staging-fake",
 }
 
 
@@ -522,6 +530,8 @@ def b17c_clean_env(
         "DMAC_CATALOG_FILE_HOST_PATH",
         "DMAC_BRIDGE_HOST",
         "DMAC_BRIDGE_PORT",
+        "DMAC_SIDECAR_NETWORK",
+        "DMAC_SIDECAR_STAGING_ROOT",
     ):
         monkeypatch.delenv(var, raising=False)
 
