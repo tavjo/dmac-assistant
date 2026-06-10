@@ -1,5 +1,15 @@
+"""Tests for _assistant_client.AssistantClient -- async polling transport (A-3).
+
+Transport: POST query/async/ -> 202 AsyncQueryResponse, then
+GET tasks/{task_id}/progress/ polling until a terminal event appears.
+Public contract (run_query signature + (terminal, events) return shapes) is
+unchanged so T8 plugin runner is unaffected.
+"""
 import pathlib
 import sys
+import time
+from typing import Any
+from uuid import UUID
 
 import httpx
 import pytest
@@ -8,57 +18,244 @@ _BIN = pathlib.Path(__file__).resolve().parents[2] / "build_context/plugins/next
 sys.path.insert(0, str(_BIN))
 import _assistant_client as c
 
-SSE = (
-    b"event: agent_started\ndata: {\"agent\": \"entity\", \"mode\": \"\"}\n\n"
-    b"event: query_complete\ndata: {\"reply\": \"hello\", \"session_id\": \"s1\"}\n\n"
-)
+# ---------------------------------------------------------------------------
+# Helpers for building mock HTTP responses
+# ---------------------------------------------------------------------------
+
+_TASK_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+_SESSION_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
 
-def test_run_query_parses_sse_terminal():
-    def handler(request):
-        assert request.url.path.endswith("/assistant/query/")
-        return httpx.Response(200, content=SSE, headers={"content-type": "text/event-stream"})
+def _async_202() -> httpx.Response:
+    return httpx.Response(202, json={"task_id": _TASK_ID, "session_id": _SESSION_ID})
 
-    client = c.AssistantClient(base_url="https://ns.example", assistant_prefix="nextseek_api/assistant",
-                               auth=("u", "p"), transport=httpx.MockTransport(handler))
-    terminal, events = client.run_query("find samples", mode="standard")
+
+def _progress(status: str, events: list[dict], result: dict | None = None) -> httpx.Response:
+    return httpx.Response(200, json={
+        "task_id": _TASK_ID,
+        "session_id": _SESSION_ID,
+        "status": status,
+        "progress": events,
+        "result": result,
+    })
+
+
+def _make_seq_transport(responses: list[httpx.Response]) -> httpx.MockTransport:
+    """Return a MockTransport that serves responses in order: first call -> responses[0], etc."""
+    it = iter(responses)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return next(it)
+
+    return httpx.MockTransport(handler)
+
+
+def _client(transport: httpx.BaseTransport, timeout: float = 300.0, poll_interval: float = 0.0) -> c.AssistantClient:
+    return c.AssistantClient(
+        base_url="https://ns.example",
+        assistant_prefix="nextseek_api/assistant",
+        auth=("u", "p"),
+        transport=transport,
+        timeout=timeout,
+        poll_interval=poll_interval,
+    )
+
+
+# ---------------------------------------------------------------------------
+# (a) on_event fires incrementally in order with no duplicates across polls
+# ---------------------------------------------------------------------------
+
+def test_on_event_fires_incrementally_no_duplicates():
+    """Three polls: poll1 delivers agent_started; poll2 delivers +agent_complete;
+    poll3 delivers +query_complete.  on_event must fire exactly once per event,
+    in order, with no duplicates.
+    """
+    responses = [
+        _async_202(),
+        _progress("running", [
+            {"event": "agent_started", "data": {"agent": "entity", "mode": ""}},
+        ]),
+        _progress("running", [
+            {"event": "agent_started", "data": {"agent": "entity", "mode": ""}},
+            {"event": "agent_complete", "data": {"agent": "entity"}},
+        ]),
+        _progress("completed", [
+            {"event": "agent_started", "data": {"agent": "entity", "mode": ""}},
+            {"event": "agent_complete", "data": {"agent": "entity"}},
+            {"event": "query_complete", "data": {"reply": "hello", "session_id": _SESSION_ID}},
+        ]),
+    ]
+    fired: list[tuple[str, dict]] = []
+    terminal, events = _client(_make_seq_transport(responses)).run_query(
+        "find samples", mode="standard", on_event=lambda n, d: fired.append((n, d))
+    )
+    assert [name for name, _ in fired] == ["agent_started", "agent_complete", "query_complete"]
+    assert fired[0][1]["agent"] == "entity"
+    assert fired[2][1]["reply"] == "hello"
+    assert len(events) == 3
+
+
+# ---------------------------------------------------------------------------
+# (b) (terminal, events) matches the old SSE shapes exactly
+# ---------------------------------------------------------------------------
+
+def test_run_query_terminal_and_events_shapes():
+    """Terminal dict and events list must match the shapes the SSE version produced."""
+    responses = [
+        _async_202(),
+        _progress("completed", [
+            {"event": "agent_started", "data": {"agent": "entity", "mode": ""}},
+            {"event": "query_complete", "data": {"reply": "hello", "session_id": "s1"}},
+        ]),
+    ]
+    terminal, events = _client(_make_seq_transport(responses)).run_query(
+        "find samples", mode="standard"
+    )
     assert terminal["reply"] == "hello"
     assert any(e[0] == "agent_started" for e in events)
+    assert any(e[0] == "query_complete" for e in events)
 
+
+# ---------------------------------------------------------------------------
+# (c) query_error path
+# ---------------------------------------------------------------------------
 
 def test_run_query_error_event_terminal():
-    sse = b"event: query_error\ndata: {\"error\": \"boom\", \"agent\": \"entity\"}\n\n"
-    client = c.AssistantClient(base_url="https://ns.example", assistant_prefix="nextseek_api/assistant",
-                               auth=("u", "p"), transport=httpx.MockTransport(lambda r: httpx.Response(200, content=sse, headers={"content-type": "text/event-stream"})))
-    terminal, _ = client.run_query("x", mode="standard")
-    assert terminal["__error__"] == "boom" and terminal["agent"] == "entity"
+    """query_error in progress -> terminal with __error__ key matching old SSE shape."""
+    responses = [
+        _async_202(),
+        _progress("error", [
+            {"event": "query_error", "data": {"error": "boom", "agent": "entity", "session_id": "s1"}},
+        ], result={"error": "boom", "agent": "entity", "session_id": "s1"}),
+    ]
+    terminal, _ = _client(_make_seq_transport(responses)).run_query("x", mode="standard")
+    assert terminal["__error__"] == "boom"
+    assert terminal["agent"] == "entity"
 
 
-def test_inbound_validation_rejects_drifted_event():
-    sse = b"event: query_complete\ndata: {\"reply\": \"r\", \"unexpected_field\": 1}\n\n"
-    client = c.AssistantClient(base_url="https://ns.example", assistant_prefix="nextseek_api/assistant",
-                               auth=("u", "p"), transport=httpx.MockTransport(lambda r: httpx.Response(200, content=sse, headers={"content-type": "text/event-stream"})))
-    with pytest.raises(Exception):
-        client.run_query("x", mode="standard")
+# ---------------------------------------------------------------------------
+# (d) 401 on the async POST raises httpx.HTTPStatusError
+# ---------------------------------------------------------------------------
+
+def test_run_query_401_raises_http_status_error():
+    """A 401 on the POST query/async/ must raise httpx.HTTPStatusError (T8/T9 AUTH_FAILED mapping)."""
+    transport = httpx.MockTransport(
+        lambda r: httpx.Response(401, request=r)
+    )
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        _client(transport).run_query("x", mode="standard")
+    assert exc_info.value.response.status_code == 401
 
 
-def test_run_query_preserves_debug_in_terminal():
-    sse = b"event: query_complete\ndata: {\"reply\": \"r\", \"debug\": {\"error\": \"soft fail\"}}\n\n"
-    client = c.AssistantClient(base_url="https://ns.example", assistant_prefix="nextseek_api/assistant",
-                               auth=("u", "p"), transport=httpx.MockTransport(lambda r: httpx.Response(200, content=sse, headers={"content-type": "text/event-stream"})))
-    terminal, _ = client.run_query("x", mode="standard")
-    assert terminal["debug"]["error"] == "soft fail"
+# ---------------------------------------------------------------------------
+# (e) status=completed with result but NO terminal event in progress -> fallback
+# ---------------------------------------------------------------------------
+
+def test_status_completed_result_fallback_no_terminal_event():
+    """If status becomes 'completed' but no terminal event in progress, fall back to result."""
+    result_data = {"reply": "fallback reply", "session_id": "s1"}
+    responses = [
+        _async_202(),
+        _progress("completed", [], result=result_data),
+    ]
+    terminal, events = _client(_make_seq_transport(responses)).run_query("x", mode="standard")
+    assert terminal["reply"] == "fallback reply"
+    assert events == []
 
 
-def test_run_query_stream_without_terminal():
-    client = c.AssistantClient(base_url="https://ns.example", assistant_prefix="nextseek_api/assistant",
-                               auth=("u", "p"), transport=httpx.MockTransport(lambda r: httpx.Response(200, content=b"", headers={"content-type": "text/event-stream"})))
+# ---------------------------------------------------------------------------
+# (f) status=error with result -> query_error-shaped terminal
+# ---------------------------------------------------------------------------
+
+def test_status_error_result_fallback():
+    """status=error + result dict (but no progress events) -> __error__ terminal shape."""
+    result_data = {"error": "task error", "agent": "entity", "session_id": "s1"}
+    responses = [
+        _async_202(),
+        _progress("error", [], result=result_data),
+    ]
+    terminal, _ = _client(_make_seq_transport(responses)).run_query("x", mode="standard")
+    assert "__error__" in terminal
+    assert terminal["agent"] == "entity"
+
+
+# ---------------------------------------------------------------------------
+# (g) deadline exceeded -> sentinel terminal (monkeypatched sleep/clock)
+# ---------------------------------------------------------------------------
+
+def test_deadline_exceeded_returns_sentinel(monkeypatch):
+    """When total elapsed time exceeds timeout, stop polling and return the sentinel terminal."""
+    # Use a fake clock that jumps past the timeout on the first poll
+    _time = [0.0]
+
+    def fake_monotonic():
+        return _time[0]
+
+    def fake_sleep(s):
+        _time[0] += 400.0  # jump past any realistic timeout
+
+    monkeypatch.setattr(c, "_monotonic", fake_monotonic)
+    monkeypatch.setattr(c, "_sleep", fake_sleep)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return _async_202()
+        # progress endpoint never delivers a terminal -- but the deadline fires first
+        return _progress("running", [])
+
+    client = _client(httpx.MockTransport(handler), timeout=1.0, poll_interval=0.0)
     terminal, _ = client.run_query("x", mode="standard")
     assert "stream ended without terminal event" in terminal["__error__"]
+    assert terminal["agent"] is None
 
 
-def test_session_detail_downloads():
-    def handler(request):
+# ---------------------------------------------------------------------------
+# (h) omitting on_event works (no callback)
+# ---------------------------------------------------------------------------
+
+def test_on_event_omitted_works():
+    """run_query must work correctly when on_event is not supplied."""
+    responses = [
+        _async_202(),
+        _progress("completed", [
+            {"event": "query_complete", "data": {"reply": "ok", "session_id": "s1"}},
+        ]),
+    ]
+    terminal, events = _client(_make_seq_transport(responses)).run_query(
+        "find samples", mode="standard"
+    )
+    assert terminal["reply"] == "ok"
+    assert len(events) == 1
+
+
+# ---------------------------------------------------------------------------
+# (i) on_event callback exception propagates (not swallowed)
+# ---------------------------------------------------------------------------
+
+def test_on_event_exception_propagates():
+    """Exceptions from the on_event callback must propagate, not be swallowed."""
+    responses = [
+        _async_202(),
+        _progress("completed", [
+            {"event": "query_complete", "data": {"reply": "ok"}},
+        ]),
+    ]
+
+    def bad_callback(name, data):
+        raise ValueError("callback failure")
+
+    with pytest.raises(ValueError, match="callback failure"):
+        _client(_make_seq_transport(responses)).run_query(
+            "x", mode="standard", on_event=bad_callback
+        )
+
+
+# ---------------------------------------------------------------------------
+# (j) session_detail, download_bundle, download_artifact still work
+# ---------------------------------------------------------------------------
+
+def test_session_detail_and_downloads():
+    def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/sessions/s1/"):
             return httpx.Response(200, json={
                 "session_id": "11111111-1111-4111-8111-111111111111",
@@ -72,18 +269,87 @@ def test_session_detail_downloads():
             return httpx.Response(200, content=b"payload")
         raise AssertionError(f"unexpected path {request.url.path}")
 
-    client = c.AssistantClient(base_url="https://ns.example", assistant_prefix="nextseek_api/assistant",
-                               auth=("u", "p"), transport=httpx.MockTransport(handler))
+    client = _client(httpx.MockTransport(handler))
     detail = client.session_detail("s1", include_turns=False)
     assert detail["query_count"] == 1
     assert client.download_bundle("s1", 2)["bundle_id"] == 2
     assert client.download_artifact("s1", 2, "key") == b"payload"
 
 
-def test_iter_sse_skips_invalid_json():
-    sse = b"event: ping\ndata: not-json\n\n"
-    client = c.AssistantClient(base_url="https://ns.example", assistant_prefix="nextseek_api/assistant",
-                               auth=("u", "p"), transport=httpx.MockTransport(lambda r: httpx.Response(200, content=sse, headers={"content-type": "text/event-stream"})))
-    terminal, events = client.run_query("x", mode="standard")
-    assert events == []
+# ---------------------------------------------------------------------------
+# (k) _iter_sse deleted -- no reference to dead function
+# ---------------------------------------------------------------------------
+
+def test_iter_sse_deleted():
+    """_iter_sse must not exist on the module after the SSE transport is gone."""
+    assert not hasattr(c, "_iter_sse"), "_iter_sse is dead code and must be removed"
+
+
+# ---------------------------------------------------------------------------
+# (l) session_id and force_new pass through to the async POST body
+# ---------------------------------------------------------------------------
+
+def test_run_query_passes_session_id_and_force_new():
+    """session_id and force_new must appear in the POST query/async/ body."""
+    captured_body: dict[str, Any] = {}
+    calls = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls[0] += 1
+        if request.method == "POST":
+            import json as _json
+            captured_body.update(_json.loads(request.content))
+            return _async_202()
+        return _progress("completed", [
+            {"event": "query_complete", "data": {"reply": "ok"}},
+        ])
+
+    _client(httpx.MockTransport(handler)).run_query(
+        "test q", mode="plan", session_id=_SESSION_ID, force_new=True
+    )
+    assert captured_body["mode"] == "plan"
+    assert captured_body["session_id"] == _SESSION_ID
+    assert captured_body["force_new"] is True
+
+
+# ---------------------------------------------------------------------------
+# (m) non-terminal events do not stop polling
+# ---------------------------------------------------------------------------
+
+def test_non_terminal_events_do_not_stop_polling():
+    """Polling must continue until a terminal event is seen even if other events arrive."""
+    responses = [
+        _async_202(),
+        _progress("running", [
+            {"event": "agent_started", "data": {"agent": "entity", "mode": ""}},
+        ]),
+        _progress("running", [
+            {"event": "agent_started", "data": {"agent": "entity", "mode": ""}},
+            {"event": "agent_complete", "data": {"agent": "entity"}},
+        ]),
+        _progress("completed", [
+            {"event": "agent_started", "data": {"agent": "entity", "mode": ""}},
+            {"event": "agent_complete", "data": {"agent": "entity"}},
+            {"event": "query_complete", "data": {"reply": "done"}},
+        ]),
+    ]
+    terminal, events = _client(_make_seq_transport(responses)).run_query(
+        "find samples", mode="standard"
+    )
+    assert terminal["reply"] == "done"
+    assert len(events) == 3
+
+
+# ---------------------------------------------------------------------------
+# (n) result=None/empty on terminal status -> sentinel
+# ---------------------------------------------------------------------------
+
+def test_status_completed_no_result_returns_sentinel():
+    """status=completed, no terminal events, result=None -> stream-ended sentinel."""
+    responses = [
+        _async_202(),
+        _progress("completed", [], result=None),
+    ]
+    terminal, _ = _client(_make_seq_transport(responses)).run_query("x", mode="standard")
     assert "stream ended without terminal event" in terminal["__error__"]
+    assert terminal["agent"] is None

@@ -275,23 +275,19 @@ def main(argv: Sequence[str] = ()) -> int:
         _emit_jsonl("ns_runner_error", {"error_type": "EmptyQuery"})
         sys.exit(2)
 
+    def _forward_progress(name: str, data: dict[str, Any]) -> None:
+        """on_event callback: forward only the names the bridge recognises."""
+        if name in ("agent_started", "agent_complete"):
+            _emit_jsonl(name, dict(data))
+
     try:
         client = _build_assistant_client()
-        # httpx timeout=300 is per-read; a slow-but-alive SSE stream is bounded by the bridge
-        # turn deadline, not here.
         terminal, events = client.run_query(
             user_text,
             mode="standard",
             session_id=args.session,
+            on_event=_forward_progress,
         )
-
-        # -- Forward progress events (only names the bridge recognises) --
-        # Do NOT invent search_started/search_complete -- the viewset never
-        # emits them (recon:nsApi section 2; vet finding 13). Forward only
-        # names that are actually present in events.
-        for event_name, data in events:
-            if event_name in ("agent_started", "agent_complete"):
-                _emit_jsonl(event_name, data)
 
         # -- Translate the terminal dict --
         for event_name, payload in _translate_terminal(terminal):

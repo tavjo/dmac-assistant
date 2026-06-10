@@ -223,20 +223,25 @@ def test_no_diagnostic_interleave_with_stubbed_client(
     fd_capture: FdCapture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Stubbed _build_assistant_client whose run_query prints diagnostics + returns events.
+    """Stubbed _build_assistant_client whose run_query prints diagnostics + invokes on_event.
 
     The captured stdout MUST be byte-equal to the JSONL the runner intends --
     diagnostic prints / writes MUST land on stderr (unchanged from original test).
+    After A-3, progress forwarding is driven by the on_event callback, not by
+    iterating the returned events list.
     """
     with fd_capture.active():
         events_fd = _perform_event_channel_remap()
         monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
         try:
             class FakeClient:
-                def run_query(self, q, *, mode, session_id=None, **k):
+                def run_query(self, q, *, mode, session_id=None, on_event=None, **k):
                     print("[DEBUG][PARSER] starting", flush=True)
                     sys.stdout.write("[GRAPH] traversing\n")
                     sys.stdout.flush()
+                    # Invoke on_event callback to simulate progress forwarding
+                    if on_event is not None:
+                        on_event("agent_started", {"agent": "entity"})
                     return (
                         {"reply": "done", "debug": {"agent": "reporter"}, "bundle_id": None},
                         [("agent_started", {"agent": "entity"})],
@@ -357,8 +362,11 @@ def test_main_emits_synthetic_query_complete_when_stream_ends_without_terminal(
         monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
         try:
             class FakeClient:
-                def run_query(self, q, *, mode, session_id=None, **k):
+                def run_query(self, q, *, mode, session_id=None, on_event=None, **k):
                     # Exactly the sentinel the real AssistantClient emits on stream close
+                    # After A-3, progress is forwarded via the on_event callback
+                    if on_event is not None:
+                        on_event("agent_started", {"agent": "entity"})
                     return (
                         {"__error__": "stream ended without terminal event", "agent": None},
                         [("agent_started", {"agent": "entity"})],
@@ -942,6 +950,106 @@ def test_clean_success_terminal_missing_reply_key_raises_and_emits_ns_runner_err
     )
     assert error_events[0]["payload"] == {"error_type": "KeyError"}, (
         f"ns_runner_error payload must be type name only; got {error_events[0]['payload']}"
+    )
+
+
+# -------------------------------- A-3 callback forwarding tests ----
+
+
+def test_on_event_only_forwards_agent_started_and_agent_complete(
+    fd_capture: FdCapture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A-3 filter: on_event callback must emit only agent_started and agent_complete.
+
+    A fake emitting search_started (not in the allow-list) via the callback must
+    NOT cause a JSONL line on stdout.
+    """
+    with fd_capture.active():
+        events_fd = _perform_event_channel_remap()
+        monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
+        try:
+            class FakeClient:
+                def run_query(self, q, *, mode, session_id=None, on_event=None, **k):
+                    if on_event is not None:
+                        on_event("search_started", {"query": "mice"})   # NOT in allow-list
+                        on_event("agent_started", {"agent": "entity"})   # allowed
+                        on_event("search_complete", {"results": []})     # NOT in allow-list
+                        on_event("agent_complete", {"agent": "entity"})  # allowed
+                    return (
+                        {"reply": "done", "bundle_id": None, "session_id": None, "debug": None},
+                        [],
+                    )
+
+            monkeypatch.setattr(runner_ns, "_build_assistant_client", lambda: FakeClient())
+            monkeypatch.setattr(sys, "stdin", _FakeStdin("find samples\n"))
+            runner_ns.main(["--session", "test-sess"])
+        finally:
+            os.close(events_fd)
+            monkeypatch.setattr(runner_ns, "_EVENTS_FD", 1, raising=True)
+
+    stdout = fd_capture.stdout_bytes()
+    lines = [ln for ln in stdout.strip().split(b"\n") if ln]
+    parsed = [json.loads(ln) for ln in lines]
+    event_names = [e["event"] for e in parsed]
+
+    assert "search_started" not in event_names, (
+        "search_started is not in the allow-list and must NOT be forwarded"
+    )
+    assert "search_complete" not in event_names, (
+        "search_complete is not in the allow-list and must NOT be forwarded"
+    )
+    assert "agent_started" in event_names, "agent_started must be forwarded"
+    assert "agent_complete" in event_names, "agent_complete must be forwarded"
+
+
+def test_progress_frames_emitted_before_terminal_frame(
+    fd_capture: FdCapture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A-3 ordering: progress events (agent_started, agent_complete) must appear
+    BEFORE the terminal frame (query_complete) in the emitted JSONL output.
+    """
+    with fd_capture.active():
+        events_fd = _perform_event_channel_remap()
+        monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
+        try:
+            class FakeClient:
+                def run_query(self, q, *, mode, session_id=None, on_event=None, **k):
+                    if on_event is not None:
+                        on_event("agent_started", {"agent": "entity"})
+                        on_event("agent_complete", {"agent": "entity"})
+                    return (
+                        {"reply": "42 samples found", "bundle_id": 7, "session_id": "s1", "debug": None},
+                        [],
+                    )
+
+            monkeypatch.setattr(runner_ns, "_build_assistant_client", lambda: FakeClient())
+            monkeypatch.setattr(sys, "stdin", _FakeStdin("find samples\n"))
+            runner_ns.main(["--session", "test-sess"])
+        finally:
+            os.close(events_fd)
+            monkeypatch.setattr(runner_ns, "_EVENTS_FD", 1, raising=True)
+
+    stdout = fd_capture.stdout_bytes()
+    lines = [ln for ln in stdout.strip().split(b"\n") if ln]
+    parsed = [json.loads(ln) for ln in lines]
+    event_names = [e["event"] for e in parsed]
+
+    # Order: agent_started, agent_complete, query_complete
+    assert "agent_started" in event_names
+    assert "agent_complete" in event_names
+    assert "query_complete" in event_names
+
+    agent_started_idx = event_names.index("agent_started")
+    agent_complete_idx = event_names.index("agent_complete")
+    qc_idx = event_names.index("query_complete")
+
+    assert agent_started_idx < qc_idx, (
+        "agent_started must appear BEFORE query_complete in the emitted output"
+    )
+    assert agent_complete_idx < qc_idx, (
+        "agent_complete must appear BEFORE query_complete in the emitted output"
     )
 
 
