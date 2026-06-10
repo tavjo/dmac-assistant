@@ -34,6 +34,16 @@ def _dump(obj: Any) -> Any:
     return obj.model_dump() if hasattr(obj, "model_dump") else obj
 
 
+def _load_parser_plan(args: dict) -> Any:
+    """Parse args["parser_plan"] as JSON; malformed input → OpValidationError so the
+    server maps it to VALIDATION/exit 3 (pre-sidecar runner parity, recon:runner §1j:
+    `_err("VALIDATION", "--parser-plan is not valid JSON: ...", 3)`), not AGENT_FAILED."""
+    try:
+        return json.loads(args["parser_plan"])
+    except ValueError as exc:  # json.JSONDecodeError is a ValueError subclass
+        raise OpValidationError(f"parser_plan is not valid JSON: {exc}") from exc
+
+
 def run_op(op: str, args: dict, *, config: Any, session: Any,
            write_gate: Callable, stage: Callable) -> dict:
     if op not in SIDECAR_OPS:
@@ -62,7 +72,7 @@ def _graph(args, config, session, write_gate, stage):
 def _api_read(args, config, session, write_gate, stage):
     from chat_nextseek import helpers
     from chat_nextseek.portable import api_agent_build_request
-    plan = api_agent_build_request(config, json.loads(args["parser_plan"]))
+    plan = api_agent_build_request(config, _load_parser_plan(args))
     endpoint, method = plan.endpoint, plan.method.upper()
     write_gate("api-read", endpoint, method, False)  # raises WriteBlocked if not read-safe
     result = helpers.tool_nextseek_api_request(config, endpoint, method,
@@ -76,7 +86,7 @@ def _api_write(args, config, session, write_gate, stage):
     from chat_nextseek.portable import api_agent_build_request
     confirmed = args.get("confirmed_write", False)
     write_gate("api-write", None, None, confirmed)  # raises WriteBlocked if confirmed is not True
-    plan = api_agent_build_request(config, json.loads(args["parser_plan"]))
+    plan = api_agent_build_request(config, _load_parser_plan(args))
     result = helpers.tool_nextseek_api_request(config, plan.endpoint, plan.method,
                                                requestBody=plan.requestBody,
                                                queryParameters=plan.queryParameters)

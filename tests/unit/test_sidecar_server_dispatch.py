@@ -78,6 +78,38 @@ async def test_malformed_json_is_transport_error(patched):
 
 
 @pytest.mark.asyncio
+async def test_int_request_id_returns_typed_validation(patched):
+    # T4 review fix 1a: a non-str request_id must NOT escape handle_message as a
+    # ValidationError from _err_response (SidecarResponse won't coerce int→str),
+    # which would kill the WS connection (1011) instead of replying VALIDATION.
+    raw = json.dumps({"op": "entity", "args": {"query": "x"},
+                      "ns_login": {"api_user": "u", "api_pass": "p"},
+                      "request_id": 123})
+    resp = json.loads(await server.handle_message(raw))  # must RETURN, not raise
+    assert resp["status"] == "error" and resp["error"]["code"] == "VALIDATION"
+    assert isinstance(resp["request_id"], str)
+
+
+@pytest.mark.asyncio
+async def test_null_request_id_returns_typed_validation(patched):
+    raw = json.dumps({"op": "entity", "args": {"query": "x"},
+                      "ns_login": {"api_user": "u", "api_pass": "p"},
+                      "request_id": None})
+    resp = json.loads(await server.handle_message(raw))  # must RETURN, not raise
+    assert resp["status"] == "error" and resp["error"]["code"] == "VALIDATION"
+    assert isinstance(resp["request_id"], str)
+
+
+@pytest.mark.asyncio
+async def test_top_level_array_returns_typed_validation(patched):
+    # T4 review fix 1b: SidecarRequest(**list) raises TypeError, not ValidationError;
+    # uncaught it kills the connection instead of replying VALIDATION.
+    resp = json.loads(await server.handle_message('["not", "a", "dict"]'))
+    assert resp["status"] == "error" and resp["error"]["code"] == "VALIDATION"
+    assert isinstance(resp["request_id"], str)
+
+
+@pytest.mark.asyncio
 async def test_config_error_on_setup_failure(patched, monkeypatch):
     def boom(login):
         raise RuntimeError("db down")
@@ -93,6 +125,31 @@ async def test_run_op_validation_maps_to_validation(patched, monkeypatch):
     monkeypatch.setattr(server.ops, "run_op", raise_val)
     resp = json.loads(await server.handle_message(_msg("entity", {"query": "x"})))
     assert resp["status"] == "error" and resp["error"]["code"] == "VALIDATION"
+
+
+@pytest.mark.asyncio
+async def test_invalid_parser_plan_maps_to_validation(allow_unix_socket_only, monkeypatch):
+    # T4 review fix 2 (server level): malformed parser_plan JSON → VALIDATION (exit-3
+    # parity with the pre-sidecar runner), NOT AGENT_FAILED. Builders are stubbed as in
+    # `patched`, but ops.run_op is left REAL so the ops._api_read fix is exercised;
+    # chat_nextseek is faked via sys.modules (image-only) just enough for the handler's
+    # imports — json.loads raises before api_agent_build_request is ever called.
+    monkeypatch.setattr(server, "_build_user_config", lambda login: object())
+    monkeypatch.setattr(server, "_build_user_session", lambda login, cfg: object())
+    monkeypatch.setattr(server, "_build_write_gate", lambda: server.ops.ALLOW_ALL)
+    monkeypatch.setattr(server, "_build_stage", lambda rid, login: server.ops.NO_STAGE)
+    pkg = types.ModuleType("chat_nextseek")
+    portable = types.ModuleType("chat_nextseek.portable")
+    helpers = types.ModuleType("chat_nextseek.helpers")
+    portable.api_agent_build_request = lambda *a, **k: pytest.fail("must not be reached")
+    pkg.portable = portable
+    pkg.helpers = helpers
+    monkeypatch.setitem(sys.modules, "chat_nextseek", pkg)
+    monkeypatch.setitem(sys.modules, "chat_nextseek.portable", portable)
+    monkeypatch.setitem(sys.modules, "chat_nextseek.helpers", helpers)
+    resp = json.loads(await server.handle_message(_msg("api-read", {"parser_plan": "{not json"})))
+    assert resp["status"] == "error" and resp["error"]["code"] == "VALIDATION"
+    assert "parser_plan" in resp["error"]["message"]
 
 
 @pytest.mark.asyncio
@@ -120,7 +177,13 @@ def test_build_user_config_binds_login_and_returns_chatconfig(monkeypatch):
 
     class ChatConfig:
         def __init__(self, d):
+            import os
             captured["d"] = d
+            # T4 review fix 3: snapshot env AT CONSTRUCTION TIME. The real ChatConfig
+            # captures API_USER/API_PASS when constructed, so the production code MUST
+            # set env BEFORE ChatConfig({}) — reordering (construct first, set after)
+            # reintroduces the cross-user credential bleed and must fail this test.
+            captured["env_at_init"] = (os.environ.get("API_USER"), os.environ.get("API_PASS"))
 
     cfgmod.ChatConfig = ChatConfig
     monkeypatch.setitem(sys.modules, "chat_nextseek.config", cfgmod)
@@ -131,6 +194,7 @@ def test_build_user_config_binds_login_and_returns_chatconfig(monkeypatch):
     out = server._build_user_config(NsLogin(api_user="alice", api_pass="pw"))
     assert isinstance(out, ChatConfig)
     assert os.environ["API_USER"] == "alice"  # per-call user login bound (U-2)
+    assert captured["env_at_init"] == ("alice", "pw")  # env was set BEFORE capture
     assert captured["d"] == {}
 
 

@@ -215,6 +215,21 @@ def test_api_write_confirmed_defaults_false(fake_full):
     assert gate_calls == [("api-write", None, None, False)]
 
 
+def test_api_read_invalid_parser_plan_raises_op_validation(fake_full):
+    # T4 review fix 2: malformed parser_plan JSON must surface as OpValidationError
+    # (→ VALIDATION / exit 3, matching the pre-sidecar runner), NOT a bare
+    # JSONDecodeError that the server's generic handler maps to AGENT_FAILED.
+    with pytest.raises(ops.OpValidationError):
+        ops.run_op("api-read", {"parser_plan": "{not json"}, config=object(), session=None,
+                   write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
+
+
+def test_api_write_invalid_parser_plan_raises_op_validation(fake_full):
+    with pytest.raises(ops.OpValidationError):
+        ops.run_op("api-write", {"parser_plan": "{not json", "confirmed_write": True},
+                   config=object(), session=None, write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
+
+
 def test_report_op_samples_mode(fake_full):
     cfg = object()
     out = ops.run_op("report", {"mode": "samples", "project": "P1"},

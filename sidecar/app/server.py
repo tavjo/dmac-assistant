@@ -29,8 +29,13 @@ def _build_user_config(login: NsLogin) -> Any:
     the user's NS REST login is injected per call so portable ops act as that user.
     """
     import os
+    # CREDENTIAL-SAFETY INVARIANT (vet-verified): this function MUST stay synchronous on
+    # the event-loop thread. The env mutation + eager ChatConfig({}) capture below, with
+    # NO await between them, is what prevents cross-user credential bleed. Do NOT wrap
+    # this function or the setup block in asyncio.to_thread / an executor to "fix" the
+    # loop-blocking cost — that reintroduces the race.
     os.environ["API_USER"] = login.api_user   # process-local; chat_nextseek reads these
-    os.environ["API_PASS"] = login.api_pass    # (recon:chatNs §4). Single-flight per request.
+    os.environ["API_PASS"] = login.api_pass    # (recon:chatNs §4)
     from chat_nextseek.config import ChatConfig
     return ChatConfig({})
 
@@ -56,11 +61,17 @@ async def handle_message(raw: str) -> str:
         data = json.loads(raw)
     except (TypeError, ValueError):
         return _err_response(request_id, "TRANSPORT_ERROR", "malformed JSON frame")
-    request_id = data.get("request_id", request_id) if isinstance(data, dict) else request_id
+    # Adopt the client's request_id only when it is a str: SidecarResponse(request_id=int)
+    # would itself raise ValidationError inside the except handler below, escaping
+    # handle_message and killing the connection (1011) instead of replying VALIDATION.
+    if isinstance(data, dict) and isinstance(data.get("request_id"), str):
+        request_id = data["request_id"]
     try:
         req = SidecarRequest(**data)
     except ValidationError as exc:
         return _err_response(request_id, "VALIDATION", f"bad request: {exc.error_count()} errors")
+    except TypeError:  # e.g. top-level JSON array: SidecarRequest(**list) is a TypeError
+        return _err_response(request_id, "VALIDATION", "bad request: envelope must be a JSON object")
 
     # §12: reject malformed per-op args BEFORE touching shared resources (vet finding 15).
     try:
