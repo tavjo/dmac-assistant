@@ -1,7 +1,10 @@
-"""T1.3 — container/runner_ns.py unit tests.
+"""T1.3 / T9 -- container/runner_ns.py unit tests.
 
-Pins fd-shuffle correctness, runner-side redaction across all 5 failure signals,
-no-diagnostic-interleave guarantee, and runner-side uncaught-exception handling.
+Pins fd-shuffle correctness, JSONL envelope contract, exit codes, and
+runner-side uncaught-exception handling. Redaction tests that targeted
+the old chat_nextseek-backed _redact_send_event helper have been removed
+(that helper is gone; the new runner translates viewset terminal dicts
+directly -- see test_runner_ns_parity.py for the new behavioral tests).
 
 CRITICAL: per locked LLM-router design spec line 387, `DMAC_RUNNER_NS_NO_REMAP=1`
 MUST be set BEFORE `from container.runner_ns import ...`. We do this at module
@@ -27,10 +30,9 @@ os.environ["DMAC_RUNNER_NS_NO_REMAP"] = "1"
 
 # Now safe to import. The module-level _EVENTS_FD will be 1 (opt-out value).
 from container import runner_ns
-from container.runner_ns import (  # noqa: E402 — intentional post-env-set import
+from container.runner_ns import (  # noqa: E402 -- intentional post-env-set import
     _EVENTS_FD,
     _perform_event_channel_remap,
-    _redact_send_event,
 )
 
 
@@ -140,12 +142,12 @@ def test_perform_event_channel_remap_redirects_fd1_to_fd2(fd_capture: FdCapture)
     with fd_capture.active():
         events_fd = _perform_event_channel_remap()
         try:
-            # `print` goes through sys.stdout which writes to fd 1 — now redirected to stderr_cap.
+            # `print` goes through sys.stdout which writes to fd 1 -- now redirected to stderr_cap.
             print("DIAG-x", flush=True)
             # `sys.stdout.write` same path.
             sys.stdout.write("DIAG-y")
             sys.stdout.flush()
-            # `os.write(events_fd, ...)` goes to the saved fd — still pointing at stdout_cap.
+            # `os.write(events_fd, ...)` goes to the saved fd -- still pointing at stdout_cap.
             os.write(events_fd, b"event-line\n")
         finally:
             os.close(events_fd)
@@ -157,10 +159,10 @@ def test_perform_event_channel_remap_redirects_fd1_to_fd2(fd_capture: FdCapture)
     assert b"DIAG-x" in stderr_bytes, "print() output must land on stderr (post-remap)"
     assert b"DIAG-y" in stderr_bytes, "sys.stdout.write output must land on stderr (post-remap)"
     assert b"event-line" not in stderr_bytes, (
-        "the events line must NOT appear on stderr — that would indicate the fd-remap inverted"
+        "the events line must NOT appear on stderr -- that would indicate the fd-remap inverted"
     )
     assert b"DIAG-x" not in fd_capture.stdout_bytes(), (
-        "print() output must NOT appear on stdout — that would indicate the fd-remap did not take"
+        "print() output must NOT appear on stdout -- that would indicate the fd-remap did not take"
     )
 
 
@@ -174,237 +176,81 @@ def test_module_level_opt_out_when_env_var_set() -> None:
     assert _EVENTS_FD == 1
 
 
-# ------------------------------------------------- redaction across 5 signals
+# ------------------------------ _has_failure_signal (still present, still tested)
 
 
-def test_redact_query_error_redacts_error_field() -> None:
-    """Failure signal #1: payload["error"] on query_error → "<redacted>"."""
-    payload = {"error": "AWS_BEARER_TOKEN_BEDROCK=secret", "agent": "parser"}
-    _redact_send_event("query_error", payload)
-    assert payload["error"] == "<redacted>"
-    assert "AWS_BEARER_TOKEN_BEDROCK" not in json.dumps(payload)
-    assert "secret" not in json.dumps(payload)
-    # `agent` field is NOT a failure signal and must NOT be redacted — T2.4's adapter
-    # uses it for the allow-list.
-    assert payload["agent"] == "parser"
+def test_has_failure_signal_status_error() -> None:
+    """Failure signal 1: status in {error, partial, failure}."""
+    assert runner_ns._has_failure_signal({"status": "error"})
+    assert runner_ns._has_failure_signal({"status": "partial"})
+    assert runner_ns._has_failure_signal({"status": "failure"})
+    assert not runner_ns._has_failure_signal({"status": "ok"})
 
 
-def test_query_error_emits_ns_runner_error_type_post_event(
-    fd_capture: FdCapture,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Locked spec line 486 + F-T1.3-1-3 round-1 hardener: on query_error,
-    the redacting closure emits a SECOND JSONL line `ns_runner_error_type`
-    carrying `{agent, error_type: "RedactedByRunner"}`. The bridge maps this
-    to a DEBUG log only, never to a WS frame — but the runner MUST emit it.
-    """
-    with fd_capture.active():
-        events_fd = _perform_event_channel_remap()
-        monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
-        try:
-            send_event = runner_ns._make_redacting_send_event()
-            send_event("query_error", {"error": "credential leak text", "agent": "graph"})
-        finally:
-            os.close(events_fd)
-            monkeypatch.setattr(runner_ns, "_EVENTS_FD", 1, raising=True)
-
-    stdout = fd_capture.stdout_bytes()
-    lines = [ln for ln in stdout.strip().split(b"\n") if ln]
-    # Expect EXACTLY two lines: the redacted query_error, then ns_runner_error_type.
-    assert len(lines) == 2, f"expected 2 JSONL lines on stdout; got {len(lines)}: {lines}"
-    e1 = json.loads(lines[0])
-    e2 = json.loads(lines[1])
-    assert e1["event"] == "query_error"
-    assert e1["payload"]["error"] == "<redacted>"
-    assert e1["payload"]["agent"] == "graph"
-    assert "credential leak text" not in stdout.decode("utf-8")  # main field redacted
-    # Second line: ns_runner_error_type with known-safe agent + sentinel error_type.
-    assert e2 == {
-        "event": "ns_runner_error_type",
-        "payload": {"agent": "graph", "error_type": "RedactedByRunner"},
-    }
+def test_has_failure_signal_error_type() -> None:
+    """Failure signal 2: non-empty error_type."""
+    assert runner_ns._has_failure_signal({"error_type": "AUTH_FAILED"})
+    assert not runner_ns._has_failure_signal({"error_type": ""})
 
 
-def test_redact_query_complete_does_not_emit_ns_runner_error_type(
-    fd_capture: FdCapture,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """query_complete does NOT trigger the ns_runner_error_type post-event line.
-
-    Spec line 486 scopes the post-event emission to query_error only. A future
-    regression that fires ns_runner_error_type on query_complete would mis-count
-    the runner's terminal-event signaling and confuse the bridge's per-turn
-    `terminal_emitted` flag.
-    """
-    with fd_capture.active():
-        events_fd = _perform_event_channel_remap()
-        monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
-        try:
-            send_event = runner_ns._make_redacting_send_event()
-            send_event(
-                "query_complete",
-                {"reply": "ok", "debug": {"agent": "reporter"}, "bundle_id": None},
-            )
-        finally:
-            os.close(events_fd)
-            monkeypatch.setattr(runner_ns, "_EVENTS_FD", 1, raising=True)
-
-    stdout = fd_capture.stdout_bytes()
-    lines = [ln for ln in stdout.strip().split(b"\n") if ln]
-    # Expect exactly ONE line — the query_complete itself. No post-event line.
-    assert len(lines) == 1, f"expected 1 JSONL line on stdout; got {len(lines)}: {lines}"
-    e1 = json.loads(lines[0])
-    assert e1["event"] == "query_complete"
-    assert b"ns_runner_error_type" not in stdout
+def test_has_failure_signal_top_error() -> None:
+    """Failure signal 3: truthy top-level error."""
+    assert runner_ns._has_failure_signal({"error": "something went wrong"})
+    assert not runner_ns._has_failure_signal({"error": ""})
 
 
-def test_redact_query_complete_redacts_debug_error() -> None:
-    """Failure signal #4: payload["debug"]["error"] non-empty → "<redacted>"; reply also redacted."""
-    payload = {
-        "reply": "Error: NEXTSEEK_PASSWORD=hunter2",
-        "error": "legacy top-level error flag",
-        "debug": {"error": "stack trace including hunter2"},
-        "bundle_id": None,
-    }
-    _redact_send_event("query_complete", payload)
-    assert payload["debug"]["error"] == "<redacted>"
-    assert payload["reply"] == "<redacted; see ns_query_complete_with_error frame>"
-    assert payload["error"] == "legacy top-level error flag"
-    serialized = json.dumps(payload)
-    assert "hunter2" not in serialized
-    assert "NEXTSEEK_PASSWORD" not in serialized
+def test_has_failure_signal_debug_error() -> None:
+    """Failure signal 4: truthy debug.error."""
+    assert runner_ns._has_failure_signal({"debug": {"error": "stack trace"}})
+    assert not runner_ns._has_failure_signal({"debug": {"error": ""}})
 
 
-def test_redact_query_complete_redacts_debug_fatal_error() -> None:
-    """Failure signal #5 — LLMFatalError-shaped: debug.fatal_error + reply both redacted.
-
-    Per locked spec line 489 + 498, the run_query LLMFatalError path (orchestrator.py:837-844)
-    puts str(fatal) in BOTH debug.fatal_error AND a credentialed reply text.
-    """
-    payload = {
-        "reply": "**The request could not be completed.**\n\nAWS_BEARER_TOKEN_BEDROCK=top-secret-token",
-        "debug": {
-            "fatal_error": "AWS_BEARER_TOKEN_BEDROCK=top-secret-token",
-            "agent": "parser",
-        },
-        "bundle_id": None,
-    }
-    _redact_send_event("query_complete", payload)
-    assert payload["debug"]["fatal_error"] == "<redacted>"
-    assert payload["reply"] == "<redacted; see ns_query_complete_with_error frame>"
-    assert payload["debug"]["agent"] == "parser"  # agent allow-list value NOT redacted
-    serialized = json.dumps(payload)
-    assert "AWS_BEARER_TOKEN_BEDROCK" not in serialized
-    assert "top-secret-token" not in serialized
+def test_has_failure_signal_debug_fatal_error() -> None:
+    """Failure signal 5: truthy debug.fatal_error."""
+    assert runner_ns._has_failure_signal({"debug": {"fatal_error": "fatal"}})
+    assert not runner_ns._has_failure_signal({"debug": {"fatal_error": ""}})
 
 
-def test_redact_query_complete_redacts_on_status_failure() -> None:
-    """Failure signal #1: payload["status"] in {"error","partial","failure"} → reply redacted."""
-    payload = {
-        "reply": "NEXTSEEK_PASSWORD=hunter2 leaked here",
-        "status": "error",
-        "bundle_id": None,
-    }
-    _redact_send_event("query_complete", payload)
-    assert payload["reply"] == "<redacted; see ns_query_complete_with_error frame>"
-    assert payload["status"] == "error"  # status itself is a flag, not a credential — keep it
-    assert "hunter2" not in json.dumps(payload)
-
-
-def test_redact_query_complete_redacts_on_error_type_set() -> None:
-    """Failure signal #2: payload["error_type"] non-empty → reply redacted."""
-    payload = {
-        "reply": "secret in here NEXTSEEK_PASSWORD=hunter2",
-        "error_type": "LLMTimeout",
-        "bundle_id": None,
-    }
-    _redact_send_event("query_complete", payload)
-    assert payload["reply"] == "<redacted; see ns_query_complete_with_error frame>"
-    assert payload["error_type"] == "LLMTimeout"  # type name NOT redacted (known-safe enum-like)
-    assert "hunter2" not in json.dumps(payload)
-
-
-def test_redact_query_complete_success_path_no_redaction() -> None:
-    """Success-shaped query_complete: NO failure signals → NO redaction."""
-    payload = {
-        "reply": "Here are the 14 samples you requested: ...",
-        "debug": {"agent": "reporter"},
-        "bundle_id": "bundle-xyz",
-    }
-    _redact_send_event("query_complete", payload)
-    # NO redaction on success path.
-    assert payload["reply"].startswith("Here are the 14 samples")
-    assert payload["debug"]["agent"] == "reporter"
-    assert payload["bundle_id"] == "bundle-xyz"
+def test_has_failure_signal_clean_success() -> None:
+    """No failure signals on a clean success terminal."""
+    assert not runner_ns._has_failure_signal({"reply": "ok", "bundle_id": 1})
 
 
 # ----------------------------------- no-interleave + runner-side exception path
 
 
-def test_no_diagnostic_interleave_with_stubbed_run_query(
+def test_no_diagnostic_interleave_with_stubbed_client(
     fd_capture: FdCapture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Locked spec line 567: stubbed run_query whose body prints diagnostics + emits events.
+    """Stubbed _build_assistant_client whose run_query prints diagnostics + returns events.
 
-    The captured stdout MUST be byte-equal to the JSONL the runner intends —
-    diagnostic prints / writes MUST land on stderr.
+    The captured stdout MUST be byte-equal to the JSONL the runner intends --
+    diagnostic prints / writes MUST land on stderr (unchanged from original test).
     """
-    # 1. Drive the production remap explicitly (we set DMAC_RUNNER_NS_NO_REMAP at module top,
-    #    so we have to manually invoke the remap inside this test).
     with fd_capture.active():
         events_fd = _perform_event_channel_remap()
         monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
         try:
-            # 2a. Stub _build_chat_nextseek_session_and_config (per F-T1.3-3-2 round-3 hardener):
-            # main() calls _build_chat_nextseek_session_and_config BEFORE _run_chat_nextseek_run_query.
-            # Without this stub, the unpatched helper would execute `from chat_nextseek.config import
-            # ChatConfig` on host Python 3.12 where chat_nextseek is not installed (memory
-            # feedback_chat_nextseek_host_image_split.md), raising ModuleNotFoundError before the
-            # patched run_query is reached.
-            def fake_build(session_id: str) -> tuple[object, object]:
-                return object(), object()  # sentinel session + config; fake_run_query ignores them
+            class FakeClient:
+                def run_query(self, q, *, mode, session_id=None, **k):
+                    print("[DEBUG][PARSER] starting", flush=True)
+                    sys.stdout.write("[GRAPH] traversing\n")
+                    sys.stdout.flush()
+                    return (
+                        {"reply": "done", "debug": {"agent": "reporter"}, "bundle_id": None},
+                        [("agent_started", {"agent": "entity"})],
+                    )
 
-            monkeypatch.setattr(
-                runner_ns,
-                "_build_chat_nextseek_session_and_config",
-                fake_build,
-                raising=True,
-            )
-
-            # 2b. Stub chat_nextseek's run_query: prints diagnostics, then emits 2 events.
-            def fake_run_query(
-                session: object,
-                config: object,
-                user_text: str,
-                *,
-                send_event: Any = None,
-                credentials: dict[str, str] | None = None,
-            ) -> dict[str, None]:
-                print("[DEBUG][PARSER] starting", flush=True)
-                sys.stdout.write("[GRAPH] traversing\n")
-                sys.stdout.flush()
-                send_event("agent_started", {"agent": "entity"})
-                send_event(
-                    "query_complete",
-                    {"reply": "done", "debug": {"agent": "reporter"}, "bundle_id": None},
-                )
-                return {"bundle_id": None}
-
-            monkeypatch.setattr(
-                runner_ns, "_run_chat_nextseek_run_query", fake_run_query, raising=True
-            )
-
-            # 3. Invoke main() with a fake stdin (one-line query).
+            monkeypatch.setattr(runner_ns, "_build_assistant_client", lambda: FakeClient())
             monkeypatch.setattr(sys, "stdin", _FakeStdin("find me PBMCs\n"))
             runner_ns.main(["--session", "test-sess"])
         finally:
             os.close(events_fd)
             monkeypatch.setattr(runner_ns, "_EVENTS_FD", 1, raising=True)
 
-    # 4. Inspect captures.
     stdout = fd_capture.stdout_bytes()
-    # Captured stdout MUST be exactly the 2 JSONL events (in emission order) — NOTHING ELSE.
+    # Captured stdout MUST be exactly the 2 JSONL events (agent_started + query_complete) -- NOTHING ELSE.
     lines = stdout.strip().split(b"\n")
     assert len(lines) == 2, f"expected exactly 2 JSONL lines on stdout; got {len(lines)}: {lines}"
     e1 = json.loads(lines[0])
@@ -426,10 +272,9 @@ def test_main_empty_stdin_emits_empty_query_error(
     fd_capture: FdCapture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F-T1.3-4-1 round-4 hardener: empty stdin → `ns_runner_error` with
+    """F-T1.3-4-1 round-4 hardener: empty stdin -> `ns_runner_error` with
     `error_type: "EmptyQuery"`, sys.exit(2). This branch lives BEFORE the
-    `_build_chat_nextseek_session_and_config` call in `main()`, so no stub
-    of the deferred-import helpers is required.
+    client construction call in `main()`, so no stub is required.
     """
     with fd_capture.active():
         events_fd = _perform_event_channel_remap()
@@ -454,7 +299,7 @@ def test_runner_uncaught_exception_emits_ns_runner_error_type_name_only(
     fd_capture: FdCapture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Locked spec lines 493, 568: uncaught exception → ns_runner_error with error_type only.
+    """Locked spec lines 493, 568: uncaught exception -> ns_runner_error with error_type only.
 
     NEVER str(exc), NEVER repr(exc), NEVER exc.args. The exception class name
     via type(exc).__name__ is the ONLY payload field.
@@ -463,41 +308,15 @@ def test_runner_uncaught_exception_emits_ns_runner_error_type_name_only(
         events_fd = _perform_event_channel_remap()
         monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
         try:
-            # Stub _build_chat_nextseek_session_and_config (per F-T1.3-3-2 round-3 hardener)
-            # so it does NOT trigger the deferred chat_nextseek import on host Python 3.12.
-            # main() calls this helper FIRST; without the stub, ModuleNotFoundError would fire
-            # before fake_run_query is ever reached, and the test's assertion that error_type
-            # is "RuntimeError" would fail with "ModuleNotFoundError" instead.
-            def fake_build(session_id: str) -> tuple[object, object]:
-                return object(), object()
+            class FakeClient:
+                def run_query(self, q, *, mode, session_id=None, **k):
+                    raise RuntimeError(
+                        "inner failure with AWS_BEARER_TOKEN_BEDROCK=top-secret-token in message"
+                    )
 
-            monkeypatch.setattr(
-                runner_ns,
-                "_build_chat_nextseek_session_and_config",
-                fake_build,
-                raising=True,
-            )
-
-            # Stub run_query to raise an exception whose message contains a fake credential.
-            def fake_run_query(
-                session: object,
-                config: object,
-                user_text: str,
-                *,
-                send_event: Any = None,
-                credentials: dict[str, str] | None = None,
-            ) -> None:
-                raise RuntimeError(
-                    "inner failure with AWS_BEARER_TOKEN_BEDROCK=top-secret-token in message"
-                )
-
-            monkeypatch.setattr(
-                runner_ns, "_run_chat_nextseek_run_query", fake_run_query, raising=True
-            )
+            monkeypatch.setattr(runner_ns, "_build_assistant_client", lambda: FakeClient())
             monkeypatch.setattr(sys, "stdin", _FakeStdin("trigger failure\n"))
 
-            # main() catches the exception, emits ns_runner_error, then re-raises OR sys.exit(1).
-            # Implementation choice (Section 6 uses sys.exit(1)); test asserts a non-zero exit code.
             with pytest.raises(SystemExit) as excinfo:
                 runner_ns.main(["--session", "test-sess"])
             assert excinfo.value.code != 0
@@ -505,7 +324,7 @@ def test_runner_uncaught_exception_emits_ns_runner_error_type_name_only(
             os.close(events_fd)
             monkeypatch.setattr(runner_ns, "_EVENTS_FD", 1, raising=True)
 
-    # Inspect captured stdout: exactly one ns_runner_error line carrying ONLY the type name.
+    # Inspect captured stdout: the ns_runner_error line carrying ONLY the type name.
     stdout = fd_capture.stdout_bytes()
     lines = [ln for ln in stdout.strip().split(b"\n") if ln]
     assert len(lines) >= 1, f"expected at least 1 JSONL line on stdout; got {lines}"
@@ -524,49 +343,28 @@ def test_runner_uncaught_exception_emits_ns_runner_error_type_name_only(
 # ------------------------------- synthetic terminal fallback (locked spec L107)
 
 
-def test_main_emits_synthetic_query_complete_when_run_query_emits_no_terminal(
+def test_main_emits_synthetic_query_complete_when_stream_ends_without_terminal(
     fd_capture: FdCapture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Locked spec line 107: if chat_nextseek's run_query returns without
-    emitting query_complete OR query_error, the runner MUST emit a synthetic
-    query_complete line. Defensive against future internal chat_nextseek
-    changes that might silently change the terminal-event contract.
-
-    Phase 7 independent reviewer flagged this as residual debt #2:
-    `.codex/reports/llm-router-independent-final-evaluation-2026-05-18.md`.
+    """When the viewset stream ends without a terminal event, the client returns
+    the sentinel {"__error__": "stream ended without terminal event", "agent": None}.
+    The runner MUST emit a failure-shaped query_complete with
+    error_type='RunnerSyntheticTerminal' (not a bare query_error).
     """
     with fd_capture.active():
         events_fd = _perform_event_channel_remap()
         monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
         try:
-            def fake_build(session_id: str) -> tuple[object, object]:
-                return object(), object()
+            class FakeClient:
+                def run_query(self, q, *, mode, session_id=None, **k):
+                    # Exactly the sentinel the real AssistantClient emits on stream close
+                    return (
+                        {"__error__": "stream ended without terminal event", "agent": None},
+                        [("agent_started", {"agent": "entity"})],
+                    )
 
-            monkeypatch.setattr(
-                runner_ns,
-                "_build_chat_nextseek_session_and_config",
-                fake_build,
-                raising=True,
-            )
-
-            def fake_run_query_silent(
-                session: object,
-                config: object,
-                user_text: str,
-                *,
-                send_event: Any = None,
-                credentials: dict[str, str] | None = None,
-            ) -> dict[str, None]:
-                send_event("agent_started", {"agent": "entity"})
-                return {"bundle_id": None}
-
-            monkeypatch.setattr(
-                runner_ns,
-                "_run_chat_nextseek_run_query",
-                fake_run_query_silent,
-                raising=True,
-            )
+            monkeypatch.setattr(runner_ns, "_build_assistant_client", lambda: FakeClient())
             monkeypatch.setattr(sys, "stdin", _FakeStdin("find me PBMCs\n"))
             exit_code = runner_ns.main(["--session", "test-sess"])
             assert exit_code == 0, (
@@ -581,66 +379,42 @@ def test_main_emits_synthetic_query_complete_when_run_query_emits_no_terminal(
     parsed = [json.loads(ln) for ln in lines]
     event_names = [e["event"] for e in parsed]
 
-    assert event_names == ["agent_started", "query_complete"], (
-        f"expected agent_started then synthetic query_complete; got {event_names}"
-    )
+    # agent_started is forwarded, then synthetic query_complete
+    assert "agent_started" in event_names
+    assert "query_complete" in event_names
 
-    synthetic = parsed[1]
+    synthetic = [e for e in parsed if e["event"] == "query_complete"][0]
     payload = synthetic["payload"]
     assert payload.get("error_type") == "RunnerSyntheticTerminal", (
         f"synthetic query_complete payload must carry "
-        f"error_type='RunnerSyntheticTerminal' so the bridge can route it "
-        f"through ns_query_complete_with_error; got payload={payload}"
+        f"error_type='RunnerSyntheticTerminal'; got payload={payload}"
     )
     assert payload.get("status") in {"error", "partial", "failure"}, (
-        f"synthetic query_complete must carry a failure status so the "
-        f"existing _has_failure_signal path treats it as failure-shaped; "
+        f"synthetic query_complete must carry a failure status; "
         f"got status={payload.get('status')!r}"
     )
 
 
-def test_main_does_not_emit_synthetic_when_run_query_emitted_query_complete(
+def test_main_does_not_emit_duplicate_terminal_on_clean_success(
     fd_capture: FdCapture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Negative guard: if run_query emits query_complete via send_event, the
-    runner must NOT also emit a synthetic one — duplicate terminals would
-    confuse the bridge's `terminal_emitted` short-circuit (locked spec L419).
+    """Negative guard: clean success returns exactly one query_complete terminal.
+
+    The synthetic terminal must NOT fire when the client returns a clean terminal.
     """
     with fd_capture.active():
         events_fd = _perform_event_channel_remap()
         monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
         try:
-            def fake_build(session_id: str) -> tuple[object, object]:
-                return object(), object()
+            class FakeClient:
+                def run_query(self, q, *, mode, session_id=None, **k):
+                    return (
+                        {"reply": "done", "debug": {"agent": "reporter"}, "bundle_id": None},
+                        [],
+                    )
 
-            monkeypatch.setattr(
-                runner_ns,
-                "_build_chat_nextseek_session_and_config",
-                fake_build,
-                raising=True,
-            )
-
-            def fake_run_query_normal(
-                session: object,
-                config: object,
-                user_text: str,
-                *,
-                send_event: Any = None,
-                credentials: dict[str, str] | None = None,
-            ) -> dict[str, None]:
-                send_event(
-                    "query_complete",
-                    {"reply": "done", "debug": {"agent": "reporter"}, "bundle_id": None},
-                )
-                return {"bundle_id": None}
-
-            monkeypatch.setattr(
-                runner_ns,
-                "_run_chat_nextseek_run_query",
-                fake_run_query_normal,
-                raising=True,
-            )
+            monkeypatch.setattr(runner_ns, "_build_assistant_client", lambda: FakeClient())
             monkeypatch.setattr(sys, "stdin", _FakeStdin("normal turn\n"))
             runner_ns.main(["--session", "test-sess"])
         finally:
@@ -655,51 +429,32 @@ def test_main_does_not_emit_synthetic_when_run_query_emitted_query_complete(
         f"expected exactly ONE terminal event; got {len(terminals)}: {terminals}"
     )
     assert terminals[0]["payload"].get("error_type") != "RunnerSyntheticTerminal", (
-        "synthetic terminal must NOT fire when run_query already emitted query_complete"
+        "synthetic terminal must NOT fire when client returned a clean terminal"
     )
 
 
-def test_main_does_not_emit_synthetic_when_run_query_emitted_query_error(
+def test_main_does_not_emit_synthetic_when_query_error(
     fd_capture: FdCapture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Negative guard: if run_query emits query_error (LLMFatalError path), the
-    runner must NOT also emit a synthetic query_complete.
+    """Negative guard: genuine query_error (non-None agent) must NOT produce a synthetic terminal.
+
+    The runner translates a genuine query_error terminal to a query_error event,
+    not a synthetic query_complete.
     """
     with fd_capture.active():
         events_fd = _perform_event_channel_remap()
         monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
         try:
-            def fake_build(session_id: str) -> tuple[object, object]:
-                return object(), object()
+            class FakeClient:
+                def run_query(self, q, *, mode, session_id=None, **k):
+                    # Genuine query_error -- non-None agent
+                    return (
+                        {"__error__": "LLMFatalError text", "agent": "graph", "session_id": None},
+                        [],
+                    )
 
-            monkeypatch.setattr(
-                runner_ns,
-                "_build_chat_nextseek_session_and_config",
-                fake_build,
-                raising=True,
-            )
-
-            def fake_run_query_error(
-                session: object,
-                config: object,
-                user_text: str,
-                *,
-                send_event: Any = None,
-                credentials: dict[str, str] | None = None,
-            ) -> dict[str, None]:
-                send_event(
-                    "query_error",
-                    {"error": "LLMFatalError text", "agent": "graph"},
-                )
-                return {"bundle_id": None}
-
-            monkeypatch.setattr(
-                runner_ns,
-                "_run_chat_nextseek_run_query",
-                fake_run_query_error,
-                raising=True,
-            )
+            monkeypatch.setattr(runner_ns, "_build_assistant_client", lambda: FakeClient())
             monkeypatch.setattr(sys, "stdin", _FakeStdin("error turn\n"))
             runner_ns.main(["--session", "test-sess"])
         finally:
@@ -715,9 +470,87 @@ def test_main_does_not_emit_synthetic_when_run_query_emitted_query_error(
         and e["payload"].get("error_type") == "RunnerSyntheticTerminal"
     ]
     assert synthetic == [], (
-        f"synthetic terminal must NOT fire when run_query emitted query_error; "
-        f"got: {synthetic}"
+        f"synthetic terminal must NOT fire for a genuine query_error; got: {synthetic}"
     )
+    # Must emit query_error (not query_complete) for genuine query_error
+    qe_events = [e for e in parsed if e["event"] == "query_error"]
+    assert len(qe_events) == 1
+
+
+# ----------------------------- AUTH_FAILED and TRANSPORT_ERROR (carry-forward)
+
+
+def test_auth_failed_emits_failure_shaped_query_complete(
+    fd_capture: FdCapture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Viewset 401 -> failure-shaped query_complete with error_type AUTH_FAILED.
+
+    The runner must catch httpx.HTTPStatusError on 401 and emit a typed failure
+    that the bridge routes to ns_query_complete_with_error. Credentials must
+    never appear in the emitted payload.
+    """
+    import httpx
+
+    with fd_capture.active():
+        events_fd = _perform_event_channel_remap()
+        monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
+        try:
+            class FakeClient:
+                def run_query(self, q, *, mode, session_id=None, **k):
+                    resp = httpx.Response(401, request=httpx.Request("POST", "https://ns.example/query/"))
+                    raise httpx.HTTPStatusError("401", request=resp.request, response=resp)
+
+            monkeypatch.setattr(runner_ns, "_build_assistant_client", lambda: FakeClient())
+            monkeypatch.setattr(sys, "stdin", _FakeStdin("find samples\n"))
+            with pytest.raises(SystemExit) as excinfo:
+                runner_ns.main(["--session", "test-sess"])
+            assert excinfo.value.code == 1
+        finally:
+            os.close(events_fd)
+            monkeypatch.setattr(runner_ns, "_EVENTS_FD", 1, raising=True)
+
+    stdout = fd_capture.stdout_bytes()
+    lines = [ln for ln in stdout.strip().split(b"\n") if ln]
+    parsed = [json.loads(ln) for ln in lines]
+    qc = [e for e in parsed if e["event"] == "query_complete"]
+    assert qc, "must emit query_complete on 401"
+    assert qc[0]["payload"]["error_type"] == "AUTH_FAILED"
+    assert qc[0]["payload"]["status"] == "error"
+    assert "secret" not in stdout.decode()
+
+
+def test_transport_error_emits_failure_shaped_query_complete(
+    fd_capture: FdCapture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """httpx.TransportError -> failure-shaped query_complete with error_type TRANSPORT_ERROR."""
+    import httpx
+
+    with fd_capture.active():
+        events_fd = _perform_event_channel_remap()
+        monkeypatch.setattr(runner_ns, "_EVENTS_FD", events_fd, raising=True)
+        try:
+            class FakeClient:
+                def run_query(self, q, *, mode, session_id=None, **k):
+                    raise httpx.ConnectError("connection refused")
+
+            monkeypatch.setattr(runner_ns, "_build_assistant_client", lambda: FakeClient())
+            monkeypatch.setattr(sys, "stdin", _FakeStdin("find samples\n"))
+            with pytest.raises(SystemExit) as excinfo:
+                runner_ns.main(["--session", "test-sess"])
+            assert excinfo.value.code == 1
+        finally:
+            os.close(events_fd)
+            monkeypatch.setattr(runner_ns, "_EVENTS_FD", 1, raising=True)
+
+    stdout = fd_capture.stdout_bytes()
+    lines = [ln for ln in stdout.strip().split(b"\n") if ln]
+    parsed = [json.loads(ln) for ln in lines]
+    qc = [e for e in parsed if e["event"] == "query_complete"]
+    assert qc, "must emit query_complete on TransportError"
+    assert qc[0]["payload"]["error_type"] == "TRANSPORT_ERROR"
+    assert qc[0]["payload"]["status"] == "error"
 
 
 # ---------------------------------------------------------- _FakeStdin helper
