@@ -83,3 +83,33 @@ def test_validate_op_args_rejects_bad_submission_type_and_empty_uids():
 def test_validate_op_args_unknown_op():
     with pytest.raises(ValueError):
         ws.validate_op_args("not-an-op", {})
+
+
+def test_empty_api_user_rejected():
+    # 2R1 item 2a: an empty api_user collapses all empty-login sessions onto
+    # ns:{sha256("")} and stages them in one hashed dir; the sidecar must not rely on
+    # client-side validation — NsLogin.api_user requires min_length=1.
+    with pytest.raises(ValueError):
+        ws.NsLogin(api_user="", api_pass="p")
+    # a non-empty user is still accepted
+    assert ws.NsLogin(api_user="u", api_pass="p").api_user == "u"
+
+
+def test_request_id_is_canonicalized():
+    # 2R1 item 2b: the UUID validator validated but returned the raw string, so
+    # urn:/brace/no-hyphen/uppercase spellings of ONE uuid became distinct request_ids
+    # (and distinct staging dir names). The validator must return str(UUID(v)) — the
+    # canonical lowercase-hyphenated form.
+    canonical = "11111111-1111-4111-8111-111111111111"
+    variants = [
+        "urn:uuid:11111111-1111-4111-8111-111111111111",  # URN/UUID-style spelling
+        "{11111111-1111-4111-8111-111111111111}",          # brace spelling
+        "11111111111141118111111111111111",                # no-hyphen spelling
+        "11111111-1111-4111-8111-AAAAAAAAAAAA",             # uppercase hex (different uuid)
+    ]
+    expected = [canonical, canonical, canonical, "11111111-1111-4111-8111-aaaaaaaaaaaa"]
+    for variant, want in zip(variants, expected):
+        req = ws.SidecarRequest(op="entity", args={"query": "x"},
+                                ns_login=ws.NsLogin(api_user="u", api_pass="p"),
+                                request_id=variant)
+        assert req.request_id == want, f"{variant!r} should canonicalize to {want!r}"

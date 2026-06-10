@@ -33,12 +33,22 @@ def test_session_key_is_hashed_user(fake_mss):
     expected = "ns:" + hashlib.sha256(b"alice@mit.edu").hexdigest()
     assert fake_mss["session_id"] == expected
     assert fake_mss["db_config"]["host"] == "h"
+    # 2R1 item 3b: first-class never-raw-user assertion — the plaintext api_user must
+    # never appear in the session_id (only its sha256 digest does).
+    assert login.api_user not in fake_mss["session_id"]
 
 
 def test_distinct_users_distinct_keys(fake_mss):
     a = sessions._session_key("alice")
     b = sessions._session_key("bob")
     assert a != b and a.startswith("ns:")
+
+
+def test_no_normalization_distinct_case_distinct_keys(fake_mss):
+    # 2R1 item 3a: keying is intentionally NOT case-normalized. Normalizing would risk
+    # merging distinct authenticated identities onto one session; fragmentation is the
+    # safe direction, so distinct case must yield distinct keys.
+    assert sessions._session_key("Alice") != sessions._session_key("alice")
 
 
 def test_assistant_session_id_preserved_when_present(fake_mss):

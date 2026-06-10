@@ -162,6 +162,24 @@ async def test_write_blocked_maps_to_write_blocked(patched, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_staging_error_maps_to_staging_error(patched, monkeypatch):
+    # 2R1 item 1: staging.py defines StagingError ("→ STAGING_ERROR / exit 9") and the
+    # contract defines the STAGING_ERROR code, but dispatch caught only OpValidationError,
+    # WriteBlockedError, then generic Exception → AGENT_FAILED, so a staging failure
+    # surfaced as AGENT_FAILED and STAGING_ERROR was dead. The StagingError arm must sit
+    # BEFORE the generic Exception arm.
+    from sidecar.app import staging
+
+    def raise_staging(op, args, **k):
+        raise staging.StagingError("disk full")
+
+    monkeypatch.setattr(server.ops, "run_op", raise_staging)
+    resp = json.loads(await server.handle_message(_msg("entity", {"query": "x"})))
+    assert resp["status"] == "error" and resp["error"]["code"] == "STAGING_ERROR"
+    assert "disk full" in resp["error"]["message"]
+
+
+@pytest.mark.asyncio
 async def test_downstream_failure_maps_to_agent_failed(patched, monkeypatch):
     def boom(op, args, **k):
         raise RuntimeError("neo4j exploded")

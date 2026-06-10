@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SIDECAR_OPS = frozenset(
     {"entity", "parse", "api-read", "api-write", "graph", "report", "generate-submission"}
@@ -33,7 +33,10 @@ ERROR_EXIT: dict[str, int] = {
 
 class NsLogin(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    api_user: str
+    # min_length=1: an empty api_user would collapse all empty-login sessions onto
+    # ns:{sha256("")} (one shared session/staging dir) — the sidecar must not rely on
+    # client-side validation to keep identities distinct.
+    api_user: str = Field(min_length=1)
     api_pass: str
 
 
@@ -54,8 +57,11 @@ class SidecarRequest(BaseModel):
     @field_validator("request_id")
     @classmethod
     def _uuid(cls, v: str) -> str:
-        UUID(v)  # raises ValueError on bad uuid
-        return v
+        # Canonicalize: UUID(v) accepts urn:uuid:/brace/no-hyphen/uppercase spellings of
+        # the same id, and request_id is used as a staging dir name — returning the raw
+        # string would let one logical id fan out into distinct dirs. str(UUID(v)) yields
+        # the canonical lowercase-hyphenated form. (Raises ValueError on a bad uuid.)
+        return str(UUID(v))
 
 
 class SidecarError(BaseModel):

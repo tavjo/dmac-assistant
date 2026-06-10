@@ -1,6 +1,9 @@
 """Per-user session store (U-5, §9). Key = ns:{sha256(api_user)}[:conv] so granular
 ops get user-scoped continuity and assistant/conversation calls stay per-conversation.
-Uses the existing MySQLSessionState(db_config, session_id) (recon:chatNs §2)."""
+Uses the existing MySQLSessionState(db_config, session_id) (recon:chatNs §2).
+
+(The assistant_session_id suffix is symmetry-only and not wired into any live path in
+this plan; NExtSEEK owns conversation continuity via QueryRequest.session_id.)"""
 from __future__ import annotations
 
 import hashlib

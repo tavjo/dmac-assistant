@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from sidecar.app import ops
 from sidecar.app.config import SidecarConfig
 from sidecar.app.contract import NsLogin, SidecarError, SidecarRequest, SidecarResponse
+from sidecar.app.staging import StagingError  # top-level safe: staging.py imports no chat_nextseek
 
 _CFG: SidecarConfig | None = None
 
@@ -97,6 +98,8 @@ async def handle_message(raw: str) -> str:
         return _err_response(req.request_id, "VALIDATION", str(exc))
     except ops.WriteBlockedError as exc:
         return _err_response(req.request_id, "WRITE_BLOCKED", str(exc))
+    except StagingError as exc:
+        return _err_response(req.request_id, "STAGING_ERROR", str(exc))
     except Exception as exc:  # noqa: BLE001 — downstream LLM/API/Neo4j failure
         return _err_response(req.request_id, "AGENT_FAILED", f"{type(exc).__name__}")
 
