@@ -1,0 +1,37 @@
+"""Hermetic contract checks on sidecar/docker-compose.yml + Makefile + config parity.
+
+Gate 15 (no host ports) + the R-7 one-config-source rule.
+"""
+import re
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+COMPOSE = (REPO / "sidecar" / "docker-compose.yml").read_text(encoding="utf-8")
+MAKEFILE = (REPO / "Makefile").read_text(encoding="utf-8")
+
+
+def test_no_host_ports_published():
+    assert re.search(r"^\s*ports\s*:", COMPOSE, re.MULTILINE) is None, (
+        "gate 15: the credential-holding sidecar must not publish host ports"
+    )
+
+
+def test_network_and_service_names_match_bridge_defaults():
+    from dmac_assistant.config import _DEFAULT_SIDECAR_NETWORK
+
+    assert f"name: ${{DMAC_SIDECAR_NETWORK:-{_DEFAULT_SIDECAR_NETWORK}}}" in COMPOSE
+    assert "nextseek-sidecar:" in COMPOSE
+
+
+def test_staging_bind_uses_env_var():
+    assert "DMAC_SIDECAR_STAGING_ROOT" in COMPOSE
+
+
+def test_no_internal_true():
+    assert "internal: true" not in COMPOSE
+
+
+def test_make_targets_exist():
+    for target in ("sidecar-build:", "sidecar-up:", "sidecar-down:"):
+        assert target in MAKEFILE
+    assert "--wait" in MAKEFILE
