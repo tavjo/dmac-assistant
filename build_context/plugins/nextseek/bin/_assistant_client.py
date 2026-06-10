@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from typing import Any
 
 import httpx
 
@@ -22,6 +21,10 @@ from _assistant_models import (
     TaskProgressResponse,
 )
 
+# Sentinel string emitted when polling ends without a terminal event.
+# runner_ns._STREAM_ENDED_WITHOUT_TERMINAL must equal this value (drift-pinned in test_runner_ns.py).
+STREAM_ENDED_SENTINEL = "stream ended without terminal event"
+
 # Module-level sleep and monotonic clock so tests can monkeypatch them.
 _sleep = time.sleep
 _monotonic = time.monotonic
@@ -31,12 +34,26 @@ _DEFAULT_POLL_INTERVAL: float = 0.5
 
 class AssistantClient:
     def __init__(self, *, base_url: str, assistant_prefix: str, auth: tuple[str, str],
-                 timeout: float = 300.0, transport: httpx.BaseTransport | None = None,
+                 timeout: float = 300.0, request_timeout: float = 30.0,
+                 transport: httpx.BaseTransport | None = None,
                  poll_interval: float = _DEFAULT_POLL_INTERVAL) -> None:
+        """Create an AssistantClient.
+
+        Args:
+            timeout: Total polling deadline in seconds. The run_query loop gives up
+                after this many seconds have elapsed since the POST (default 300).
+            request_timeout: Per-request httpx timeout in seconds applied to every
+                individual HTTP call -- POST query/async/, GET progress, and the
+                session/bundle/artifact helpers (default 30). Kept short so a single
+                hung GET does not consume the entire polling deadline. Artifact downloads
+                use the same 30 s value; this is intentionally conservative -- callers
+                that need longer artifact downloads can raise this knob.
+        """
         self._base = base_url.rstrip("/")
         self._prefix = assistant_prefix.strip("/")
         self._auth = auth
         self._timeout = timeout
+        self._request_timeout = request_timeout
         self._transport = transport
         self._poll_interval = poll_interval
 
@@ -44,7 +61,7 @@ class AssistantClient:
         return f"{self._base}/{self._prefix}/{suffix.lstrip('/')}"
 
     def _client(self) -> httpx.Client:
-        return httpx.Client(auth=self._auth, timeout=self._timeout, transport=self._transport)
+        return httpx.Client(auth=self._auth, timeout=self._request_timeout, transport=self._transport)
 
     def run_query(self, query: str, *, mode: str, session_id: str | None = None,
                   force_new: bool = False,
@@ -53,12 +70,17 @@ class AssistantClient:
         """POST query/async/ then poll tasks/{task_id}/progress/ until terminal.
 
         Returns (terminal_payload, [(event_name, data), ...]).
-        The terminal_payload shapes are identical to the old SSE implementation:
-          - query_complete: dict(data) from the progress event
-          - query_error:    {"__error__": ..., "agent": ..., "session_id": ...}
-          - no terminal:    {"__error__": "stream ended without terminal event", "agent": None}
+        The terminal_payload shapes are:
+          - query_complete:        dict(data) from the progress event
+          - query_error:           {"__error__": ..., "agent": ..., "session_id": ...}
+          - status=completed+result: dict(result) passed through directly
+          - status=error+result:   {"__error__": ..., "agent": ..., "session_id": ...}
+          - no terminal / timeout: {"__error__": STREAM_ENDED_SENTINEL, "agent": None}
         If on_event is provided, it is called for each new event as it arrives
-        (incremental, no duplicates). Exceptions from on_event propagate.
+        (incremental, no duplicates). NOTE: on_event is called BEFORE terminal model
+        validation; the runner's allowlist filter means terminal event names never
+        reach the on_event callback in the runner use-case. Exceptions from on_event
+        propagate.
         """
         body = QueryRequest(query=query, mode=mode,
                             session_id=session_id, force_new=force_new).model_dump(
@@ -79,12 +101,18 @@ class AssistantClient:
 
             while True:
                 if _monotonic() >= deadline:
-                    terminal = {"__error__": "stream ended without terminal event", "agent": None}
+                    terminal = {"__error__": STREAM_ENDED_SENTINEL, "agent": None}
                     break
 
                 progress_resp = client.get(self._url(f"tasks/{task_id}/progress/"))
                 progress_resp.raise_for_status()
                 task_progress = TaskProgressResponse(**progress_resp.json())
+
+                # Guard against server restart / task eviction shrinking the list.
+                if len(task_progress.progress) < seen_count:
+                    raise RuntimeError(
+                        "progress list shrank; server restarted or task evicted"
+                    )
 
                 # Process any new events since the last poll
                 new_events = task_progress.progress[seen_count:]
@@ -92,6 +120,7 @@ class AssistantClient:
                     name = pe.event
                     data = dict(pe.data)
                     events.append((name, data))
+                    # NOTE: on_event is called before terminal model validation below.
                     if on_event is not None:
                         on_event(name, data)
                     if name == "query_complete":
@@ -116,20 +145,18 @@ class AssistantClient:
                     if result:
                         if task_progress.status == "error":
                             terminal = {
-                                "__error__": str(result.get("error", "task ended with status=error")),
+                                "__error__": str(result.get("error") or "task ended with status=error"),
                                 "agent": result.get("agent"),
                                 "session_id": result.get("session_id"),
                             }
                         else:
                             terminal = dict(result)
                     else:
-                        terminal = {"__error__": "stream ended without terminal event", "agent": None}
+                        terminal = {"__error__": STREAM_ENDED_SENTINEL, "agent": None}
                     break
 
                 _sleep(self._poll_interval)
 
-        if terminal is None:
-            terminal = {"__error__": "stream ended without terminal event", "agent": None}
         return terminal, events
 
     def session_detail(self, session_id: str, *, include_turns: bool = False) -> dict:

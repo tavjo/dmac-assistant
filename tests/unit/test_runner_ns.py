@@ -1053,6 +1053,29 @@ def test_progress_frames_emitted_before_terminal_frame(
     )
 
 
+# ---- Sentinel drift pin: runner constant must equal _assistant_client.STREAM_ENDED_SENTINEL ----
+
+
+def test_stream_ended_without_terminal_matches_client_sentinel() -> None:
+    """runner_ns._STREAM_ENDED_WITHOUT_TERMINAL must equal _assistant_client.STREAM_ENDED_SENTINEL.
+
+    If they drift, the sentinel detection in _translate_terminal silently breaks.
+    """
+    import sys
+    import pathlib
+
+    _BIN = pathlib.Path(__file__).resolve().parents[2] / "build_context/plugins/nextseek/bin"
+    if str(_BIN) not in sys.path:
+        sys.path.insert(0, str(_BIN))
+    import _assistant_client
+
+    assert runner_ns._STREAM_ENDED_WITHOUT_TERMINAL == _assistant_client.STREAM_ENDED_SENTINEL, (
+        f"runner_ns._STREAM_ENDED_WITHOUT_TERMINAL={runner_ns._STREAM_ENDED_WITHOUT_TERMINAL!r} "
+        f"!= _assistant_client.STREAM_ENDED_SENTINEL={_assistant_client.STREAM_ENDED_SENTINEL!r}; "
+        "update one to match the other"
+    )
+
+
 # ---------------------------------------------------------- _FakeStdin helper
 
 

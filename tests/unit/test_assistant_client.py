@@ -7,9 +7,6 @@ unchanged so T8 plugin runner is unaffected.
 """
 import pathlib
 import sys
-import time
-from typing import Any
-from uuid import UUID
 
 import httpx
 import pytest
@@ -92,6 +89,7 @@ def test_on_event_fires_incrementally_no_duplicates():
     assert [name for name, _ in fired] == ["agent_started", "agent_complete", "query_complete"]
     assert fired[0][1]["agent"] == "entity"
     assert fired[2][1]["reply"] == "hello"
+    assert terminal["reply"] == "hello"
     assert len(events) == 3
 
 
@@ -291,11 +289,9 @@ def test_iter_sse_deleted():
 
 def test_run_query_passes_session_id_and_force_new():
     """session_id and force_new must appear in the POST query/async/ body."""
-    captured_body: dict[str, Any] = {}
-    calls = [0]
+    captured_body: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls[0] += 1
         if request.method == "POST":
             import json as _json
             captured_body.update(_json.loads(request.content))
@@ -353,3 +349,100 @@ def test_status_completed_no_result_returns_sentinel():
     terminal, _ = _client(_make_seq_transport(responses)).run_query("x", mode="standard")
     assert "stream ended without terminal event" in terminal["__error__"]
     assert terminal["agent"] is None
+
+
+# ---------------------------------------------------------------------------
+# (o) STREAM_ENDED_SENTINEL constant is exported and matches sentinel string
+# ---------------------------------------------------------------------------
+
+def test_stream_ended_sentinel_constant():
+    """STREAM_ENDED_SENTINEL must be exported and equal to the sentinel embedded in terminals."""
+    assert hasattr(c, "STREAM_ENDED_SENTINEL")
+    assert c.STREAM_ENDED_SENTINEL == "stream ended without terminal event"
+    # The deadline-exceeded path must use the constant.
+    responses = [
+        _async_202(),
+        _progress("completed", [], result=None),
+    ]
+    terminal, _ = _client(_make_seq_transport(responses)).run_query("x", mode="standard")
+    assert terminal["__error__"] == c.STREAM_ENDED_SENTINEL
+
+
+# ---------------------------------------------------------------------------
+# (p) timeout and request_timeout are distinct knobs
+# ---------------------------------------------------------------------------
+
+def test_timeout_and_request_timeout_are_distinct_knobs():
+    """The total polling deadline (timeout) and per-request httpx timeout (request_timeout)
+    must be independently configurable. Confirm both attributes survive construction."""
+    cl = c.AssistantClient(
+        base_url="https://ns.example",
+        assistant_prefix="nextseek_api/assistant",
+        auth=("u", "p"),
+        timeout=600.0,
+        request_timeout=10.0,
+    )
+    assert cl._timeout == 600.0
+    assert cl._request_timeout == 10.0
+    assert cl._timeout != cl._request_timeout
+
+
+# ---------------------------------------------------------------------------
+# (q) null error field does not yield the string "None"
+# ---------------------------------------------------------------------------
+
+def test_status_error_null_error_field_does_not_yield_string_none():
+    """When status=error and result.error is null/None, the __error__ terminal must
+    contain the fallback message, NOT the string 'None'."""
+    result_data = {"error": None, "agent": "entity", "session_id": "s1"}
+    responses = [
+        _async_202(),
+        _progress("error", [], result=result_data),
+    ]
+    terminal, _ = _client(_make_seq_transport(responses)).run_query("x", mode="standard")
+    assert "__error__" in terminal
+    assert terminal["__error__"] != "None"
+    assert terminal["__error__"] == "task ended with status=error"
+
+
+# ---------------------------------------------------------------------------
+# (r) mid-task poll GET failure propagates out of run_query
+# ---------------------------------------------------------------------------
+
+def test_mid_task_poll_transport_error_propagates():
+    """If the POST succeeds but the first progress GET raises httpx.TransportError,
+    that error must propagate out of run_query (current fail-fast behavior)."""
+    call_count = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return _async_202()
+        call_count[0] += 1
+        raise httpx.ConnectError("connection refused during poll")
+
+    with pytest.raises(httpx.TransportError):
+        _client(httpx.MockTransport(handler)).run_query("x", mode="standard")
+    assert call_count[0] >= 1, "poll GET must have been attempted at least once"
+
+
+# ---------------------------------------------------------------------------
+# (s) progress-shrinkage guard raises RuntimeError
+# ---------------------------------------------------------------------------
+
+def test_progress_shrinkage_raises_runtime_error():
+    """If the progress list shrinks between polls (server restart / task eviction),
+    run_query must raise RuntimeError with a clear message."""
+    responses = [
+        _async_202(),
+        # First poll: 2 events
+        _progress("running", [
+            {"event": "agent_started", "data": {"agent": "entity", "mode": ""}},
+            {"event": "agent_complete", "data": {"agent": "entity"}},
+        ]),
+        # Second poll: progress list shrank to 1 event (server restart)
+        _progress("running", [
+            {"event": "agent_started", "data": {"agent": "entity", "mode": ""}},
+        ]),
+    ]
+    with pytest.raises(RuntimeError, match="progress list shrank"):
+        _client(_make_seq_transport(responses)).run_query("x", mode="standard")

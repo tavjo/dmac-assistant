@@ -81,9 +81,10 @@ for _p in (_REPO_BIN_DIR, _SCRIPT_DIR):
 # recon:nsRoute section 1b and ns_adapter._has_failure_signal logic.
 _FAILURE_STATUSES = frozenset({"error", "partial", "failure"})
 
-# The exact error string the AssistantClient emits when the SSE stream closes
-# without a terminal event (see _assistant_client.py:57-58). Used to distinguish
-# a synthetic-terminal sentinel from a genuine query_error.
+# The exact error string the AssistantClient emits when the polling deadline
+# passes or the task ends with no terminal event and no result (see
+# _assistant_client.STREAM_ENDED_SENTINEL). Used to distinguish a synthetic-
+# terminal sentinel from a genuine query_error. Drift-pinned in test_runner_ns.py.
 _STREAM_ENDED_WITHOUT_TERMINAL = "stream ended without terminal event"
 
 
@@ -172,9 +173,10 @@ def _translate_terminal(terminal: dict[str, Any]) -> list[tuple[str, dict[str, A
     """
     if "__error__" in terminal:
         # Distinguish the stream-ended-without-terminal sentinel from a
-        # genuine query_error. The T3 client represents the sentinel as
-        # {"__error__": "stream ended without terminal event", "agent": None}
-        # (see _assistant_client.py:57-58). A genuine query_error carries a
+        # genuine query_error. The client represents the sentinel as
+        # {"__error__": _assistant_client.STREAM_ENDED_SENTINEL, "agent": None}
+        # (emitted when polling deadline passes or status becomes terminal with
+        # no terminal event in progress). A genuine query_error carries a
         # non-None agent or a different error string.
         sentinel_error = terminal.get("__error__", "")
         agent = terminal.get("agent")
@@ -282,7 +284,7 @@ def main(argv: Sequence[str] = ()) -> int:
 
     try:
         client = _build_assistant_client()
-        terminal, events = client.run_query(
+        terminal, _ = client.run_query(
             user_text,
             mode="standard",
             session_id=args.session,
