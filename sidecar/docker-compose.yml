@@ -23,6 +23,11 @@ services:
       - ${DMAC_SIDECAR_STAGING_ROOT:?set DMAC_SIDECAR_STAGING_ROOT to an absolute path (make sidecar-up exports it)}:/staging
     networks:
       - dmac-net
+      # Amendment A-1 (2026-06-10): join the local NExtSEEK stack's network so
+      # sessions.py + healthcheck reach seek-mysql (db:3306). Sidecar-only —
+      # agent containers stay off this network. Requires the local stack to be
+      # up (external network), so sidecar-up fails fast without it.
+      - nextseek-local
     healthcheck:
       test: ["CMD", "python", "-m", "sidecar.app.healthcheck"]
       interval: 10s
@@ -35,3 +40,6 @@ networks:
   dmac-net:
     name: ${DMAC_SIDECAR_NETWORK:-dmac-nextseek-net}
     driver: bridge
+  nextseek-local:
+    external: true
+    name: nextseek_default

@@ -27,6 +27,23 @@ def test_staging_bind_uses_env_var():
     assert "DMAC_SIDECAR_STAGING_ROOT" in COMPOSE
 
 
+def test_local_nextseek_network_attach():
+    """Amendment A-1 (2026-06-10): the sidecar additionally joins the local
+    NExtSEEK stack's network (`nextseek_default`, external) so sessions.py and
+    the healthcheck can reach seek-mysql at db:3306. Agent containers do NOT
+    join it — only the credential-holding sidecar."""
+    assert re.search(r"^\s+- nextseek-local\s*$", COMPOSE, re.MULTILINE), (
+        "service must list the nextseek-local network"
+    )
+    assert re.search(r"^\s+- dmac-net\s*$", COMPOSE, re.MULTILINE), (
+        "service must still join the sidecar's own network"
+    )
+    assert re.search(
+        r"nextseek-local:\s*\n\s+external: true\s*\n\s+name: nextseek_default",
+        COMPOSE,
+    ), "nextseek-local must map to the external nextseek_default network"
+
+
 def test_no_internal_true():
     assert "internal: true" not in COMPOSE
 
