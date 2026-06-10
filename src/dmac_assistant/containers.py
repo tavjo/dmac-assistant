@@ -340,25 +340,12 @@ def _build_environment(
         env["AWS_BEARER_TOKEN_BEDROCK"] = bridge_env["AWS_BEARER_TOKEN_BEDROCK"]
     if "NEXTSEEK_URL" in bridge_env:
         env["NEXTSEEK_URL"] = bridge_env["NEXTSEEK_URL"]
-    for forwarded_key in (
-        "GCP_API_KEY",
-        "NEO4J_URI",
-        "NEO4J_USER",
-        "NEO4J_PASSWORD",
-        "DMAC_PATH_MAPPINGS",
-        "MYSQL_HOST_DEV",
-        "MYSQL_PORT",
-        "MYSQL_USER",
-        "MYSQL_DEV_PASSWORD",
-        "SESSION_DB_TYPE",
-        "SESSION_DB_HOST",
-        "SESSION_DB_PORT",
-        "SESSION_DB_USER",
-        "SESSION_DB_PASSWORD",
-        "SESSION_DB_NAME",
-        "SESSION_DB_PATH",
-        "NEO4J_DATABASE",
-    ):
+    # T10 (U-1): the 16 shared-credential keys (GCP_API_KEY, NEO4J_*, MYSQL_*,
+    # SESSION_DB_*) are NO LONGER forwarded — they live only in the sidecar.
+    # DMAC_PATH_MAPPINGS stays: it is NOT a credential; it carries the per-user
+    # scratch/output host-root mapping the in-container agent needs for reply
+    # hygiene (vet finding 7).
+    for forwarded_key in ("DMAC_PATH_MAPPINGS",):
         if forwarded_key in bridge_env:
             env[forwarded_key] = bridge_env[forwarded_key]
     # B17c: catalog file is always mounted; CATALOG_FILE points at the bind.
@@ -447,6 +434,19 @@ def start_container(
     }
     if spec.name is not None:
         run_kwargs["name"] = spec.name
+    # T10 (U-1/OD-1): attach the agent to the sidecar network so the in-container
+    # runner can reach ws://<sidecar>/. R-6: the bridge never creates or manages
+    # compose resources — a missing network is a deployment error, fail fast.
+    if getattr(config, "sidecar_network", None):
+        try:
+            client.networks.get(config.sidecar_network)
+        except NotFound as exc:
+            raise RuntimeError(
+                f"sidecar network {config.sidecar_network!r} does not exist; "
+                "start the sidecar stack first (`make sidecar-up`) — the "
+                "bridge never creates or manages the network (R-6)."
+            ) from exc
+        run_kwargs["network"] = config.sidecar_network
     return client.containers.run(**run_kwargs)
 
 
@@ -541,20 +541,11 @@ def _build_exec_environment(
     env["API_USER"] = identity.user_id
     env["API_PASS"] = identity.password.get_secret_value()
     env["NEXTSEEK_BASE_URL"] = bridge_env.get("NEXTSEEK_BASE_URL", "")
-    if route == "ns":
-        if ns_session_id is None:
-            # Defensive guard for direct helper misuse. Public exec_ns_turn()
-            # requires session_id: str, so this branch is unreachable there.
-            raise ValueError(  # pragma: no cover
-                "ns_session_id required for route='ns'",
-            )
-        env["OUTPUTS_DIR"] = (
-            f"/data/scratch/{identity.user_id}/chat_nextseek/{ns_session_id}/"
-        )
-        env["CHAT_NEXTSEEK_SESSION_DB"] = (
-            "/home/user/.claude/chat_nextseek/sessions.sqlite"
-        )
-        env["NEXTSEEK_MODE"] = "gcp"
+    # T10 (U-8): the NS route no longer receives chat_nextseek env
+    # (OUTPUTS_DIR / CHAT_NEXTSEEK_SESSION_DB / NEXTSEEK_MODE) — session state
+    # and outputs live in the sidecar; the thin runner_ns talks to the viewset.
+    # `route`/`ns_session_id` are kept in the signature for call-site stability.
+    del route, ns_session_id
     return env
 
 

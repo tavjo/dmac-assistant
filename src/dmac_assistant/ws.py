@@ -272,6 +272,26 @@ async def _send_stdin_line(
         return False
 
 
+def _sweep_then_diff(config, identity, pre_turn_files):
+    """OD-2 ordering: sweep sidecar staging into scratch, THEN snapshot+diff so
+    swept artifacts are included in new_files and published this turn (§10)."""
+    swept: set[str] = set()
+    if getattr(config, "sidecar_staging_root", None) is not None:
+        from dmac_assistant.staging_sweep import sweep_sidecar_staging
+        try:
+            swept = sweep_sidecar_staging(
+                staging_root=config.sidecar_staging_root,
+                scratch_root=config.scratch_root,
+                user_id=identity.user_id,
+                api_user=identity.user_id,  # bridge user_id == NS api_user (recon:containers §5)
+            )
+        except Exception as exc:  # noqa: BLE001 — sweep failure must not kill the session
+            log.warning("staging sweep failed for user=%s: %s", identity.user_id, type(exc).__name__)
+    after = snapshot_scratch_files(config.scratch_root, identity.user_id)
+    new = diff_files(pre_turn_files, after) | swept
+    return after, new
+
+
 def dispatch_post_turn_copy(
     *,
     scratch_root: Path,
@@ -466,8 +486,7 @@ async def chat_ws(
         )
 
         async def fire_post_turn_copy() -> None:
-            after = snapshot_scratch_files(config.scratch_root, identity.user_id)
-            new = diff_files(pre_turn_files, after)
+            after, new = _sweep_then_diff(config, identity, pre_turn_files)
             if not new:
                 return
             await asyncio.to_thread(
@@ -875,8 +894,7 @@ async def _chat_ws_router_on(  # pragma: no cover
     pre_turn_files = snapshot_scratch_files(config.scratch_root, identity.user_id)
 
     async def fire_post_turn_copy() -> None:
-        after = snapshot_scratch_files(config.scratch_root, identity.user_id)
-        new = diff_files(pre_turn_files, after)
+        after, new = _sweep_then_diff(config, identity, pre_turn_files)
         if not new:
             return
         await asyncio.to_thread(
