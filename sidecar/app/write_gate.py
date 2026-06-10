@@ -4,10 +4,14 @@ mirrors the pre-sidecar runner (recon:runner §1h)."""
 from __future__ import annotations
 
 import json
-import os
 from typing import Callable
 
+from sidecar.app.contract import SIDECAR_OPS
 from sidecar.app.ops import WriteBlockedError
+
+# Read-class ops: every SIDECAR_OPS member that is neither "api-read" nor "api-write".
+# Derived from the contract so there is a single source of truth.
+_READ_CLASS = frozenset(SIDECAR_OPS) - {"api-read", "api-write"}
 
 
 class AllowlistMissingError(RuntimeError):
@@ -15,10 +19,17 @@ class AllowlistMissingError(RuntimeError):
 
 
 def _load_allowlist(path: str) -> set[tuple[str, str]]:
-    if not os.path.exists(path):
-        raise AllowlistMissingError(f"read_safe_endpoints.json missing at {path}")
-    with open(path, encoding="utf-8") as fh:
-        data = json.load(fh)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise AllowlistMissingError(
+            f"read_safe_endpoints.json unusable at {path}: {type(exc).__name__}"
+        ) from exc
+    if not isinstance(data, list) or not all(isinstance(entry, dict) for entry in data):
+        raise AllowlistMissingError(
+            f"read_safe_endpoints.json malformed at {path}"
+        )
     allow: set[tuple[str, str]] = set()
     for entry in data:
         ep = entry.get("endpoint")
@@ -40,7 +51,10 @@ def build_gate(cfg) -> Callable[[str, str | None, str | None, object], None]:
                 raise WriteBlockedError(
                     f"endpoint {endpoint!r} method {method!r} not in read_safe_endpoints.json")
             return
-        # All other ops (entity/parse/graph/report/generate-submission) are read-class.
-        return
+        if op in _READ_CLASS:
+            # entity/parse/graph/report/generate-submission are read-class — always allow.
+            return None
+        # Default-deny: any op label that is not in SIDECAR_OPS is a programming error.
+        raise WriteBlockedError(f"unknown op for write gate: {op!r}")
 
     return gate
