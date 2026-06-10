@@ -22,6 +22,12 @@ services:
         required: false
       - path: ./local-nextseek.env
         required: false
+      # dmac-vantage overrides layered LAST: the stack copies above stay
+      # verbatim (re-copyable), but e.g. their NEXTSEEK_BASE_URL
+      # (http://127.0.0.1:8000) is self-referential inside the nextseek
+      # container and wrong from the sidecar.
+      - path: ./local-nextseek-dmac.env
+        required: false
     environment:
       SESSION_DB_TYPE: mysql
       SIDECAR_WS_PORT: "8765"

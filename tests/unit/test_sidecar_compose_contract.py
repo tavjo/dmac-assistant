@@ -36,12 +36,20 @@ def test_local_overlay_env_file():
     from its sibling db.env, so BOTH are layered, in the stack's own order
     (db.env first). The overlays are optional (required: false) so sidecar-up
     keeps working after the files are deleted when the dev server returns."""
+    comment_lines = r"(?:\s*#[^\n]*\n)*"
     assert re.search(
         r"env_file:\s*\n\s+- path: \.\./\.env\s*\n"
-        r"\s+- path: \./local-nextseek-db\.env\s*\n\s+required: false\s*\n"
-        r"\s+- path: \./local-nextseek\.env\s*\n\s+required: false",
+        + comment_lines
+        + r"\s+- path: \./local-nextseek-db\.env\s*\n\s+required: false\s*\n"
+        + comment_lines
+        + r"\s+- path: \./local-nextseek\.env\s*\n\s+required: false\s*\n"
+        + comment_lines
+        + r"\s+- path: \./local-nextseek-dmac\.env\s*\n\s+required: false",
         COMPOSE,
-    ), "overlays must layer db.env then nextseek.env after ../.env, both optional"
+    ), (
+        "overlays must layer db.env, nextseek.env, then the dmac-vantage "
+        "override file after ../.env, all optional"
+    )
     gitignore = (REPO / ".gitignore").read_text(encoding="utf-8")
     assert "sidecar/local-nextseek*.env" in gitignore
 
