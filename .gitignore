@@ -17,6 +17,11 @@ build_context/docs/
 # Local env file for live runs
 .env
 
+# Sidecar local-NExtSEEK overlay (Amendment A-2): copy of the local stack's
+# nextseek.env, layered over .env for the sidecar service only while the
+# E2E target is tavjo's local instance. Never committed.
+sidecar/local-nextseek.env
+
 # Local Codex planning artifacts
 .codex/
 .claude/

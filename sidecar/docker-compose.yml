@@ -9,8 +9,15 @@ services:
       context: ..
       dockerfile: sidecar/Dockerfile
     image: dmac-nextseek-sidecar:poc
+    # Amendment A-2 (2026-06-10): local-nextseek.env is a gitignored copy of the
+    # local stack's nextseek.env; it layers over ../.env (last file wins) so the
+    # sidecar's SESSION_DB_* / shared-cred families target the local instance
+    # while it is the E2E target. Optional: delete it when the dev server is
+    # back and the sidecar reverts to plain .env values.
     env_file:
-      - ../.env
+      - path: ../.env
+      - path: ./local-nextseek.env
+        required: false
     environment:
       SESSION_DB_TYPE: mysql
       SIDECAR_WS_PORT: "8765"

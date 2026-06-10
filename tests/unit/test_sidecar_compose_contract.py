@@ -27,6 +27,22 @@ def test_staging_bind_uses_env_var():
     assert "DMAC_SIDECAR_STAGING_ROOT" in COMPOSE
 
 
+def test_local_overlay_env_file():
+    """Amendment A-2 (2026-06-10): while the E2E target is the local NExtSEEK
+    instance, the sidecar layers sidecar/local-nextseek.env (a gitignored copy
+    of the stack's own nextseek.env) over ../.env so SESSION_DB_* and the
+    shared-cred families point at the local stack without touching .env.
+    The overlay is optional (required: false) so sidecar-up keeps working
+    after the file is deleted when the dev server returns."""
+    assert re.search(
+        r"env_file:\s*\n\s+- path: \.\./\.env\s*\n"
+        r"\s+- path: \./local-nextseek\.env\s*\n\s+required: false",
+        COMPOSE,
+    ), "overlay env_file must layer after ../.env and be optional"
+    gitignore = (REPO / ".gitignore").read_text(encoding="utf-8")
+    assert "sidecar/local-nextseek.env" in gitignore
+
+
 def test_local_nextseek_network_attach():
     """Amendment A-1 (2026-06-10): the sidecar additionally joins the local
     NExtSEEK stack's network (`nextseek_default`, external) so sessions.py and
