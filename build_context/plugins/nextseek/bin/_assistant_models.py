@@ -1,0 +1,111 @@
+"""Mirrored Pydantic models for NExtSEEK assistant viewset (OD-6, origin/dev@935f5fa)."""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class QueryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+    mode: str
+    session_id: str | None = None
+    force_new: bool = False
+    use_prod: bool = False
+
+
+class ArtifactTable(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_type: Literal["table"]
+    key: str
+    label: str
+    columns: list[str]
+    data: list[dict[str, Any]]
+
+
+class ArtifactFile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_type: Literal["file"]
+    key: str
+    label: str
+    file_format: str
+
+
+Artifact = ArtifactTable | ArtifactFile
+
+
+class QueryCompleteEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reply: str
+    session_id: str | None = None
+    artifacts: list[Artifact] = Field(default_factory=list)
+    debug: dict[str, Any] | None = None
+
+
+class QueryErrorEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    error: str
+    agent: str | None = None
+    session_id: str | None = None
+
+
+class Turn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bundle_id: int
+    user_query: str
+    reply: str
+    mode: str
+
+
+class SessionDetailResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: UUID
+    created_at: datetime
+    query_count: int
+    has_results: bool
+    title: str | None = None
+    turns: list[Turn] | None = None
+
+
+class BundleDownloadParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: UUID
+    bundle_id: int
+
+
+class AsyncQueryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: UUID
+    session_id: UUID
+
+
+class ProgressEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event: str
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskProgressResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: UUID
+    session_id: UUID
+    status: str
+    progress: list[ProgressEvent] = Field(default_factory=list)
+    result: dict[str, Any] | None = None
+
+
+SessionDetailResponse.model_rebuild()
