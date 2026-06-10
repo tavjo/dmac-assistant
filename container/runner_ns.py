@@ -128,7 +128,7 @@ def _build_assistant_client() -> Any:
 
 
 def _typed_failure_events(
-    error_type: str, *, debug: Any = None
+    error_type: str,
 ) -> list[tuple[str, dict[str, Any]]]:
     """Return the ordered (event_name, payload) pairs for a typed failure.
 
@@ -137,7 +137,7 @@ def _typed_failure_events(
       1. ns_runner_error_type companion (carries error_type for bridge debug log)
       2. failure-shaped query_complete (carries reply, status, error_type)
 
-    The debug parameter is intentionally not wired here because the HTTP-error
+    Debug propagation is intentionally not wired here because the HTTP-error
     branches have no terminal dict to propagate debug from; the terminal-
     translation path uses _translate_terminal instead.
     """
