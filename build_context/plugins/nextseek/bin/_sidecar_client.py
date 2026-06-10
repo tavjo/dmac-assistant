@@ -39,7 +39,7 @@ def call_op(op: str, args: dict, *, ns_login: tuple[str, str], sidecar_url: str,
         raise SidecarCallError("TRANSPORT_ERROR", f"sidecar unreachable: {type(exc).__name__}") from exc
     try:
         ws.send(payload)
-        raw = ws.recv()
+        raw = ws.recv(timeout=300)  # Important-1: finite timeout prevents hang on stalled sidecar
     except Exception as exc:  # noqa: BLE001
         raise SidecarCallError("TRANSPORT_ERROR", f"sidecar I/O failed: {type(exc).__name__}") from exc
     finally:
@@ -51,6 +51,8 @@ def call_op(op: str, args: dict, *, ns_login: tuple[str, str], sidecar_url: str,
         resp = json.loads(raw)
     except (TypeError, ValueError) as exc:
         raise SidecarCallError("TRANSPORT_ERROR", "malformed sidecar response") from exc
+    if not isinstance(resp, dict):  # Minor-4: valid non-object JSON must not leak AttributeError
+        raise SidecarCallError("TRANSPORT_ERROR", "malformed sidecar response")
     if resp.get("status") == "ok":
         return resp.get("result") or {}
     err = resp.get("error") or {}

@@ -30,6 +30,7 @@ import argparse
 import json
 import os
 import sys
+import typing
 
 # Ensure sibling bin modules (_ws_contract, _sidecar_client, _assistant_client)
 # are importable when invoked as a script (sys.path may only contain the cwd
@@ -37,7 +38,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
-def _err(code: str, message: str, exit_code: int) -> None:
+def _err(code: str, message: str, exit_code: int) -> typing.NoReturn:  # Minor-7
     payload = {"error": {"code": code, "message": message}}
     sys.stderr.write(json.dumps(payload) + "\n")
     sys.exit(exit_code)
@@ -52,7 +53,7 @@ def _sanitize_env_quotes() -> None:
     the value). Bash's `set -a; . .env; set +a` strips quotes implicitly, so
     this only bites containerised / library-loaded env paths. We normalise
     here, in one place, before any downstream reads. We only strip when the
-    first and last characters are the same quote char and len >= 2 — never
+    first and last characters are the same quote char and len >= 2 -- never
     partial quotes, never mismatched.
     """
     for key, value in list(os.environ.items()):
@@ -68,7 +69,7 @@ def _dry_run() -> bool:
 
 # ---------------------------------------------------------------- dispatchers
 
-def _dispatch_entity(args, config, session):
+def _dispatch_entity(args):
     if _dry_run():  # pragma: no branch
         return {"sampletypes": [], "assays": [], "keywords": [], "projects": []}  # pragma: no cover
     import _sidecar_client as sc  # pragma: no cover
@@ -80,7 +81,7 @@ def _dispatch_entity(args, config, session):
         _err(e.code, e.message, e.exit_code)  # pragma: no cover
 
 
-def _dispatch_parse(args, config, session):
+def _dispatch_parse(args):
     if _dry_run():  # pragma: no branch
         return {"mode": "new_search", "target_endpoint": None}  # pragma: no cover
     import _sidecar_client as sc  # pragma: no cover
@@ -92,17 +93,12 @@ def _dispatch_parse(args, config, session):
         _err(e.code, e.message, e.exit_code)  # pragma: no cover
 
 
-def _dispatch_plan(args, config, session):
-    """multi_parser + planner advisor via the assistant viewset (plan mode)."""
-    if _dry_run():  # pragma: no branch
-        return {  # pragma: no cover
-            "plan": [],
-            "executed_read_steps": [],
-            "context_engineer_outputs": [],
-            "evaluator": None,
-            "skipped_steps": [],
-            "recommended_next_actions": [],
-        }
+def _run_viewset(query: str, mode: str) -> dict:  # pragma: no cover  # Minor-8
+    """Shared helper: drive the NExtSEEK assistant viewset for query and plan ops.
+
+    Handles 401/HTTP/transport errors uniformly and returns the shaped terminal
+    dict {"reply": str, "debug": {...}, "bundle_id": int|None}.
+    """
     import _assistant_client as ac  # pragma: no cover
     import httpx  # pragma: no cover
     client = ac.AssistantClient(  # pragma: no cover
@@ -111,7 +107,7 @@ def _dispatch_plan(args, config, session):
         auth=(_api_user(), _api_pass()),  # pragma: no cover
     )  # pragma: no cover
     try:  # pragma: no cover
-        terminal, _ = client.run_query(args.query, mode="plan")  # pragma: no cover
+        terminal, _ = client.run_query(query, mode=mode)  # pragma: no cover
     except httpx.HTTPStatusError as e:  # pragma: no cover
         if e.response.status_code == 401:  # pragma: no cover
             _err("AUTH_FAILED", "authentication failed (check NS credentials)", 8)  # pragma: no cover
@@ -127,7 +123,21 @@ def _dispatch_plan(args, config, session):
     }  # pragma: no cover
 
 
-def _dispatch_api_read(args, config, session):
+def _dispatch_plan(args):
+    """multi_parser + planner advisor via the assistant viewset (plan mode)."""
+    if _dry_run():  # pragma: no branch
+        return {  # pragma: no cover
+            "plan": [],
+            "executed_read_steps": [],
+            "context_engineer_outputs": [],
+            "evaluator": None,
+            "skipped_steps": [],
+            "recommended_next_actions": [],
+        }
+    return _run_viewset(args.query, mode="plan")  # pragma: no cover
+
+
+def _dispatch_api_read(args):
     """Read-only API dispatch. Refuses --confirmed-write locally (exit-3)."""
     if not args.parser_plan:  # pragma: no cover
         _err("VALIDATION", "--parser-plan required", 3)  # pragma: no cover
@@ -146,13 +156,13 @@ def _dispatch_api_read(args, config, session):
         _err(e.code, e.message, e.exit_code)  # pragma: no cover
 
 
-def _dispatch_api_write(args, config, session):
+def _dispatch_api_write(args):
     """Write-class API dispatch. Layer 2: refuses without --confirmed-write."""
     if not args.parser_plan:  # pragma: no cover
         _err("VALIDATION", "--parser-plan required", 3)  # pragma: no cover
     if not args.confirmed_write:
         _err("WRITE_BLOCKED",
-             "nextseek-api-write requires --confirmed-write (Layer 2; advisory — server is the hard floor)", 5)
+             "nextseek-api-write requires --confirmed-write (Layer 2; advisory; server is the hard floor)", 5)
 
     if _dry_run():  # pragma: no branch
         return {"endpoint": "/dry-run/", "method": "POST", "response": {}}  # pragma: no cover
@@ -167,7 +177,7 @@ def _dispatch_api_write(args, config, session):
         _err(e.code, e.message, e.exit_code)  # pragma: no cover
 
 
-def _dispatch_graph(args, config, session):
+def _dispatch_graph(args):
     if _dry_run():  # pragma: no branch
         return {"cypher": "", "result": []}  # pragma: no cover
     import _sidecar_client as sc  # pragma: no cover
@@ -179,7 +189,7 @@ def _dispatch_graph(args, config, session):
         _err(e.code, e.message, e.exit_code)  # pragma: no cover
 
 
-def _dispatch_report(args, config, session):
+def _dispatch_report(args):
     if args.mode not in ("samples", "protocols", "published", "rppr"):  # pragma: no cover
         _err("VALIDATION",  # pragma: no cover
              f"--mode must be samples|protocols|published|rppr, got {args.mode!r}",
@@ -198,7 +208,7 @@ def _dispatch_report(args, config, session):
         _err(e.code, e.message, e.exit_code)  # pragma: no cover
 
 
-def _dispatch_generate_submission(args, config, session):
+def _dispatch_generate_submission(args):
     if args.type not in ("GEO", "SRA", "NFCORE_RNASEQ", "NFCORE_SCRNASEQ", "PRIDE"):  # pragma: no cover
         _err("VALIDATION", f"--type unsupported: {args.type!r}", 3)  # pragma: no cover
     if not args.uids:  # pragma: no cover
@@ -217,7 +227,7 @@ def _dispatch_generate_submission(args, config, session):
         _err(e.code, e.message, e.exit_code)  # pragma: no cover
 
 
-def _dispatch_query(args, config, session):
+def _dispatch_query(args):
     """Single-shot orchestrator via the NExtSEEK assistant viewset.
 
     Routes to run_query (standard) or run_query_plan (--planner flag).
@@ -227,29 +237,8 @@ def _dispatch_query(args, config, session):
     """
     if _dry_run():  # pragma: no branch
         return {"reply": "[dry-run]", "debug": {}, "bundle_id": None}  # pragma: no cover
-    import _assistant_client as ac  # pragma: no cover
-    import httpx  # pragma: no cover
-    client = ac.AssistantClient(  # pragma: no cover
-        base_url=os.environ["NEXTSEEK_URL"],  # pragma: no cover
-        assistant_prefix=os.environ.get("NEXTSEEK_ASSISTANT_PREFIX", "nextseek_api/assistant"),  # pragma: no cover
-        auth=(_api_user(), _api_pass()),  # pragma: no cover
-    )  # pragma: no cover
     mode = "plan" if args.planner else "standard"  # pragma: no cover
-    try:  # pragma: no cover
-        terminal, _ = client.run_query(args.query, mode=mode)  # pragma: no cover
-    except httpx.HTTPStatusError as e:  # pragma: no cover
-        if e.response.status_code == 401:  # pragma: no cover
-            _err("AUTH_FAILED", "authentication failed (check NS credentials)", 8)  # pragma: no cover
-        _err("AGENT_FAILED", f"HTTP {e.response.status_code}", 4)  # pragma: no cover
-    except httpx.TransportError as e:  # pragma: no cover
-        _err("TRANSPORT_ERROR", f"viewset unreachable: {type(e).__name__}", 7)  # pragma: no cover
-    if "__error__" in terminal:  # pragma: no cover
-        _err("AGENT_FAILED", terminal["__error__"], 4)  # pragma: no cover
-    return {  # pragma: no cover
-        "reply": terminal.get("reply", ""),  # pragma: no cover
-        "debug": terminal.get("debug", {}),  # pragma: no cover
-        "bundle_id": terminal.get("bundle_id"),  # pragma: no cover
-    }  # pragma: no cover
+    return _run_viewset(args.query, mode=mode)  # pragma: no cover
 
 
 def _api_user() -> str:  # pragma: no cover
@@ -292,14 +281,16 @@ def main() -> None:
     # / dotenv_values preserve surrounding quotes from .env literals).
     _sanitize_env_quotes()
 
-    # config/session are no longer used (thin-client model — no chat_nextseek).
-    # They are kept as positional params in dispatcher signatures for compat with
-    # the in-image coverage tests that monkeypatch _load_config / _make_session.
-    config = None
-    session = None
+    # Important-2: enforce CONFIG_MISSING before any dispatch (matches the old
+    # runner's _load_config guard). In dry-run mode the credentials are not
+    # exercised, so we skip the check -- matching old runner behavior where
+    # _load_config was only called outside the dry-run branch.
+    if not _dry_run():
+        if not os.environ.get("API_USER") or not os.environ.get("API_PASS"):
+            _err("CONFIG_MISSING", "API_USER / API_PASS not set", 2)
 
     try:
-        result = _DISPATCH[args.agent](args, config, session)
+        result = _DISPATCH[args.agent](args)
     except SystemExit:  # pragma: no cover
         raise  # pragma: no cover
     except Exception as exc:
