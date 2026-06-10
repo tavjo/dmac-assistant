@@ -32,15 +32,18 @@ def test_local_overlay_env_file():
     instance, the sidecar layers sidecar/local-nextseek.env (a gitignored copy
     of the stack's own nextseek.env) over ../.env so SESSION_DB_* and the
     shared-cred families point at the local stack without touching .env.
-    The overlay is optional (required: false) so sidecar-up keeps working
-    after the file is deleted when the dev server returns."""
+    The stack's nextseek.env interpolates $MYSQL_HOST/$NEXTSEEK_MYSQL_DATABASE
+    from its sibling db.env, so BOTH are layered, in the stack's own order
+    (db.env first). The overlays are optional (required: false) so sidecar-up
+    keeps working after the files are deleted when the dev server returns."""
     assert re.search(
         r"env_file:\s*\n\s+- path: \.\./\.env\s*\n"
+        r"\s+- path: \./local-nextseek-db\.env\s*\n\s+required: false\s*\n"
         r"\s+- path: \./local-nextseek\.env\s*\n\s+required: false",
         COMPOSE,
-    ), "overlay env_file must layer after ../.env and be optional"
+    ), "overlays must layer db.env then nextseek.env after ../.env, both optional"
     gitignore = (REPO / ".gitignore").read_text(encoding="utf-8")
-    assert "sidecar/local-nextseek.env" in gitignore
+    assert "sidecar/local-nextseek*.env" in gitignore
 
 
 def test_local_nextseek_network_attach():
