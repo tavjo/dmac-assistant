@@ -6,11 +6,24 @@ copied so ws.py can union them into the post-turn `new_files` set (ordering, §1
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import shutil
 from pathlib import Path
 
+log = logging.getLogger(__name__)
+
 _USER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
+def _disambiguate(dst: Path) -> Path:
+    """First free `<stem>__N<suffix>` sibling (run_batch.py promotion pattern)."""
+    n = 1
+    candidate = dst.parent / f"{dst.stem}__{n}{dst.suffix}"
+    while candidate.exists():
+        n += 1
+        candidate = dst.parent / f"{dst.stem}__{n}{dst.suffix}"
+    return candidate
 
 
 def sweep_sidecar_staging(*, staging_root: Path, scratch_root: Path, user_id: str,
@@ -39,9 +52,28 @@ def sweep_sidecar_staging(*, staging_root: Path, scratch_root: Path, user_id: st
             rel = Path("nextseek-artifacts") / src.relative_to(req_dir)
             dst = dst_base / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
+            if dst.exists():
+                # never clobber a previously published artifact (same sweep or
+                # an earlier turn) — rename with the repo's __N pattern.
+                dst = _disambiguate(dst)
+                # log only the relative path, never file contents/values
+                log.warning(
+                    "staging sweep: collision on %s, renamed to %s",
+                    rel, dst.name,
+                )
+                rel = rel.parent / dst.name
             shutil.copy2(src, dst)
             written.add(str(rel))
-        # cleanup after a successful sweep (gate 12)
-        shutil.rmtree(req_dir, ignore_errors=True)
+        # cleanup after a successful sweep (gate 12); on failure keep the
+        # marker as a breadcrumb so the next sweep retries the cleanup.
+        try:
+            shutil.rmtree(req_dir)
+        except OSError as exc:
+            # log only the exception TYPE — its message may echo paths/values
+            log.warning(
+                "staging sweep: cleanup of request dir failed (%s); "
+                "keeping marker for retry", type(exc).__name__,
+            )
+            continue
         marker.unlink(missing_ok=True)
     return written

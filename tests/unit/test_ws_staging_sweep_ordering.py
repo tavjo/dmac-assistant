@@ -75,6 +75,6 @@ def test_sweep_failure_does_not_kill_the_turn(tmp_path, monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="dmac_assistant.ws"):
         after, new = ws._sweep_then_diff(config, _identity(), {})
     assert new == {"fresh.txt"}  # the ordinary diff still publishes
-    assert any("staging sweep failed" in r.message for r in caplog.records)
+    assert any("staging sweep failed" in r.getMessage() for r in caplog.records)
     # R-03: only the exception TYPE is logged, never its message/values
     assert all("disk on fire" not in r.getMessage() for r in caplog.records)

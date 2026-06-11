@@ -5,7 +5,7 @@ Does not collide with the migrated test_containers_env.py (T11)."""
 from unittest.mock import MagicMock
 
 import pytest
-from docker.errors import NotFound
+from docker.errors import APIError, NotFound
 from pydantic import SecretStr
 
 from dmac_assistant.auth import AuthenticatedIdentity
@@ -119,6 +119,28 @@ def test_start_container_fails_fast_when_sidecar_network_missing(tmp_path):
     msg = str(excinfo.value)
     assert "dmac-sidecar-net" in msg
     assert "make sidecar-up" in msg
+    client.containers.run.assert_not_called()
+
+
+def test_start_container_wraps_apierror_from_network_check(tmp_path):
+    """T10R M-2: an APIError from the network lookup (e.g. daemon unreachable)
+    must surface as a RuntimeError naming the sidecar network, not escape raw."""
+    config = _config(tmp_path, sidecar_network="dmac-sidecar-net")
+    client = MagicMock()
+    client.networks.get.side_effect = APIError("daemon gone")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        start_container(
+            _identity(),
+            image=IMAGE,
+            session_id=None,
+            bridge_env={},
+            config=config,
+            client=client,
+        )
+    msg = str(excinfo.value)
+    assert "dmac-sidecar-net" in msg
+    assert "daemon" in msg.lower()
     client.containers.run.assert_not_called()
 
 

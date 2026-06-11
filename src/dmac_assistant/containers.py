@@ -446,6 +446,11 @@ def start_container(
                 "start the sidecar stack first (`make sidecar-up`) — the "
                 "bridge never creates or manages the network (R-6)."
             ) from exc
+        except APIError as exc:
+            raise RuntimeError(
+                f"could not check sidecar network {config.sidecar_network!r}: "
+                "the Docker daemon may be unreachable."
+            ) from exc
         run_kwargs["network"] = config.sidecar_network
     return client.containers.run(**run_kwargs)
 
