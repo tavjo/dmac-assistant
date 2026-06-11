@@ -47,6 +47,17 @@ class QueryCompleteEvent(BaseModel):
     session_id: str | None = None
     artifacts: list[Artifact] = Field(default_factory=list)
     debug: dict[str, Any] | None = None
+    # Amendment A-4 (2026-06-11): the LOCAL E2E stack (worktree dmac-integration,
+    # branch integration/dmac-assistant) emits query_complete data carrying
+    # bundle_id + files (chat_nextseek.orchestrator._emit_query_complete; live-verified
+    # keys: bundle_id, debug, files, reply, session_id). The pinned origin/dev@935f5fa
+    # mirror lacked them, so query/plan tripped extra_forbidden -> exit 4. Added as
+    # OPTIONAL; extra="forbid" is preserved for all other unknown keys. files items are
+    # file-manifest dicts (key/label/path/filename/mime + optional kind/bundle_id/step_id
+    # per chat_nextseek.artifacts.build_file_manifest_entry) -> modeled as raw dicts, the
+    # same raw-dict treatment the local stack gives Turn.artifacts for the same reason.
+    bundle_id: int | None = None
+    files: list[dict[str, Any]] | None = None
 
 
 class QueryErrorEvent(BaseModel):

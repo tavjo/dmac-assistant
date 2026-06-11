@@ -143,7 +143,7 @@ def test_decredentialed_agent_runs_9_ops_with_zero_shared_creds(
 
         # --- CONTAINMENT (the gate) -----------------------------------------
         # Container-resident surfaces (env, /proc/1/environ, scratch, all 9 ops'
-        # frames incl. the failing viewset frames) must carry NONE of the 16 shared
+        # frames incl. the query/plan viewset frames) must carry NONE of the 16 shared
         # canaries — full-strength scan.
         streams = [env_dump, proc_dump, scratch_dump, *run.frames]
         hits = scan_for_canaries(streams, paths=[], canaries=_ALL_CANARY_VALUES)
@@ -168,50 +168,35 @@ def test_decredentialed_agent_runs_9_ops_with_zero_shared_creds(
         assert len(run.results) == 9, f"expected 9 ops, drove {len(run.results)}"
         by_name = {r.name: r for r in run.results}
 
-        # --- NON-VACUITY: the 7 granular ops genuinely FUNCTION (vet finding 9/16) ---
+        # --- NON-VACUITY: ALL 9 ops genuinely FUNCTION (vet finding 9/16) -----
         # Containment is meaningful precisely because the de-credentialed container
         # does real work (real Gemini/Neo4j/NS calls via the sidecar) — it is not an
         # inert container that "leaks nothing because it does nothing".
-        granular = ["entity", "parse", "graph", "api-read", "api-write",
-                    "report", "generate-submission"]
-        failed_gran = [r for r in run.results if r.name in granular and not r.ok]
-        assert not failed_gran, (
-            "granular ops did not function (containment would be vacuous): "
+        # Amendment A-4 (2026-06-11): query + plan now succeed (the A-3 mirror models
+        # were reconciled with the LOCAL stack's query_complete shape — bundle_id +
+        # files added as optional), so the full 9-op conjunction is restored. The old
+        # query/plan exit-4 contract-mismatch tripwire is retired by this amendment.
+        all_ops = ["entity", "parse", "graph", "api-read", "api-write",
+                   "report", "generate-submission", "query", "plan"]
+        failed_ops = [r for r in run.results if r.name in all_ops and not r.ok]
+        assert not failed_ops, (
+            "ops did not function (containment would be vacuous): "
             + "; ".join(f"{r.name}=exit{r.exit_code} {r.stderr.strip()[-160:]}"
-                        for r in failed_gran)
+                        for r in failed_ops)
         )
-        # Step 2 contract: each granular op returned its typed shape (not just exit 0).
+        # Step 2 contract: each op returned its typed shape (not just exit 0).
+        # query + plan terminate on a validated query_complete event whose terminal
+        # payload carries `reply` (the A-4-reconciled QueryCompleteEvent shape).
         for name, required_key in (
             ("entity", "sampletypes"), ("parse", "mode"), ("graph", "cypher"),
             ("api-read", "response"), ("api-write", "response"),
             ("report", "saved_files"), ("generate-submission", "report"),
+            ("query", "reply"), ("plan", "reply"),
         ):
             payload = by_name[name].terminal_json()
             assert required_key in payload, (
                 f"{name} contract missing {required_key!r}; got keys {list(payload)}"
             )
-
-        # --- KNOWN BLOCKER TRIPWIRE: query/plan viewset contract mismatch -----
-        # ESCALATED (T12 report): the A-3 assistant client's mirrored Pydantic models
-        # (`QueryCompleteEvent`, extra="forbid", mirrored from origin/dev@935f5fa)
-        # REJECT the LOCAL stack's `query_complete` payload, which carries extra keys
-        # `bundle_id` + `files` (verified live: data keys =
-        # ['bundle_id','debug','files','reply','session_id']). So query+plan terminate
-        # in a Pydantic `extra_forbidden` ValidationError -> AGENT_FAILED / exit 4.
-        # The transport (POST query/async/ + progress polling) reaches `completed`;
-        # only terminal-event validation fails. This is a target-version/contract skew
-        # between the A-3 client and the local NExtSEEK build — NOT a containment defect
-        # and NOT weakened here. Per the T12 STOP rule the fix (reconcile the A-3 models
-        # vs the deployed viewset, or run against a matching-version stack) is escalated,
-        # not improvised. When reconciled, these asserts flip -> update this block.
-        for name in ("query", "plan"):
-            r = by_name[name]
-            assert r.exit_code == 4, (
-                f"{name}: expected the documented A-3 contract-mismatch (exit 4); got "
-                f"exit {r.exit_code}. If query/plan now SUCCEED, the A-3<->stack contract "
-                f"was reconciled — re-enable these in the 9-op conjunction. stderr={r.stderr[-200:]}"
-            )
-            assert "extra_forbidden" in r.stderr or "AGENT_FAILED" in r.stderr, r.stderr
     finally:
         from dmac_assistant.containers import stop_and_remove
         stop_and_remove(container)

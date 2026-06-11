@@ -310,8 +310,13 @@ def run_nine_ops(container) -> NineOpRun:
     drive("generate-submission",
           [f"{_BIN}/nextseek-generate-submission", "--type", "GEO", "--uids", "1"])
 
-    # query + plan (agent bin -> assistant viewset query/async + progress polling)
-    drive("query", [f"{_BIN}/nextseek-query", "--query",
+    # query + plan (agent bin -> assistant viewset query/async + progress polling).
+    # --json on `query` so it emits the full runner dict (reply + debug + bundle_id
+    # + files) as a single JSON line, matching the step-2 contract check's
+    # terminal_json() parse. WITHOUT --json the query shim prints only the raw reply
+    # TEXT (which can be markdown, e.g. a trailing ``` fence) and is not JSON.
+    # `nextseek-plan` always execs the runner directly (already JSON, no flag).
+    drive("query", [f"{_BIN}/nextseek-query", "--json", "--query",
                     "how many samples are in the database"], timeout=300)
     drive("plan", [f"{_BIN}/nextseek-plan", "--query",
                    "how many samples are in the database"], timeout=300)
