@@ -75,6 +75,16 @@ class Turn(BaseModel):
     user_query: str
     reply: str
     mode: str
+    # T13 (2026-06-11): live `session_detail(include_turns=True)` against the
+    # LOCAL E2E stack (worktree dmac-integration) emits Turn objects carrying `ts`
+    # (ISO-8601 timestamp string) and `artifacts` (None, or a list of artifact
+    # manifest dicts) that the pinned origin/dev@935f5fa mirror lacked — same drift
+    # class A-4 fixed for QueryCompleteEvent. Added as OPTIONAL; extra="forbid" is
+    # preserved for every OTHER unknown key so future drift still fails loudly.
+    # `artifacts` is modeled as raw dicts (the same treatment QueryCompleteEvent.files
+    # gets) since the item shape is a file/table manifest, not a fixed schema.
+    ts: str | None = None
+    artifacts: list[dict[str, Any]] | None = None
 
 
 class SessionDetailResponse(BaseModel):
