@@ -38,6 +38,10 @@ _DEFAULT_POLL_INTERVAL: float = 0.5
 # seen_count dedups re-issued responses, so we retry it a bounded number of
 # times with short backoff -- always under the run_query polling deadline.
 # (W3 deferred follow-up.)
+# NOTE: retry count and request_timeout are COUPLED. A fully-stalled link burns
+# up to _PROGRESS_GET_MAX_RETRIES * request_timeout (4 * 30s = 120s) per poll
+# iteration, plus backoff, against the 300s poll deadline. Raising this without
+# revisiting request_timeout shrinks the polling headroom.
 _PROGRESS_GET_MAX_RETRIES: int = 4
 # Linear backoff base between progress-GET retry attempts (seconds). Kept well
 # under the poll deadline; injectable via the module-level _sleep so tests
@@ -141,10 +145,12 @@ class AssistantClient:
                         progress_resp.raise_for_status()
                         task_progress = TaskProgressResponse(**progress_resp.json())
                         break
-                    except (httpx.TransportError, httpx.TimeoutException) as exc:
+                    except httpx.TransportError as exc:
                         # Idempotent GET stalled (ReadTimeout/ConnectError/etc.);
-                        # retry under the deadline. HTTPStatusError is a sibling
-                        # of TransportError and is intentionally NOT caught here.
+                        # retry under the deadline. httpx.TimeoutException is a
+                        # SUBCLASS of TransportError, so this covers all timeouts.
+                        # HTTPStatusError is NOT a TransportError and is
+                        # intentionally NOT caught here (real 4xx/5xx still surface).
                         last_transport_exc = exc
                         if attempt + 1 < _PROGRESS_GET_MAX_RETRIES:
                             _sleep(_PROGRESS_GET_RETRY_BACKOFF * (attempt + 1))
