@@ -564,6 +564,92 @@ def test_kill_exec_pid_returns_on_kill_start_apierror(tmp_path: Path) -> None:
     assert len(api.exec_create_calls) == pre_exec_count
 
 
+# --------------------------------------------------------------------------
+# task-13R2: the docker exec attach socket must be made blocking so only the
+# per-turn asyncio.wait_for in ws.py governs idle time. docker-py's client
+# default 60s timeout otherwise leaks through recv() as a TimeoutError that
+# ws.py mislabels `exec_timeout`. These tests pin that the attach socket is
+# blocking (gettimeout() is None) after BOTH exec_cc_turn and exec_ns_turn.
+# --------------------------------------------------------------------------
+
+
+class _TimeoutRecordingSocket(_RawSocketFake):
+    """Raw-socket fake that models docker-py's inherited 60s read timeout.
+
+    Starts with the docker default timeout (60.0s) and records every
+    settimeout call so the test can prove the bridge cleared it to None.
+    """
+
+    def __init__(self, data: bytes = b"") -> None:
+        super().__init__(data)
+        # docker.constants.DEFAULT_TIMEOUT_SECONDS — the value the real
+        # hijacked attach socket inherits and that misfires at 60s.
+        self._timeout: float | None = 60.0
+        self.settimeout_calls: list[float | None] = []
+
+    def settimeout(self, value: float | None) -> None:
+        self.settimeout_calls.append(value)
+        self._timeout = value
+
+    def gettimeout(self) -> float | None:
+        return self._timeout
+
+
+class _TimeoutRecordingAPI(_FakeDockerAPI):
+    def exec_start(self, exec_id: str, **kwargs: Any) -> _TimeoutRecordingSocket:
+        sock = _TimeoutRecordingSocket()
+        self._sockets.append(sock)
+        self.exec_start_calls.append(
+            {"exec_id": exec_id, "kwargs": kwargs, "socket": sock}
+        )
+        return sock
+
+
+class _TimeoutRecordingContainer(_FakeContainer):
+    def __init__(self, *, container_id: str = "ctr-deadbeef") -> None:
+        super().__init__(container_id=container_id)
+        self.client.api = _TimeoutRecordingAPI()
+
+
+def test_exec_cc_turn_makes_attach_socket_blocking(tmp_path: Path) -> None:
+    container = _TimeoutRecordingContainer()
+    exec_cc_turn(
+        container,
+        query="hi",
+        model_id=MODEL_ID,
+        session_id=None,
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env_with_url(),
+    )
+    raw_sock = container.client.api.exec_start_calls[0]["socket"]
+    # Pre-fix: docker's 60s default was never cleared, so this fails.
+    assert raw_sock.gettimeout() is None
+    assert raw_sock.settimeout_calls[-1] is None
+
+
+def test_exec_ns_turn_makes_attach_socket_blocking(tmp_path: Path) -> None:
+    container = _TimeoutRecordingContainer()
+    exec_ns_turn(
+        container,
+        query="hi",
+        session_id=NS_SESSION_ID,
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env_with_url(),
+    )
+    raw_sock = container.client.api.exec_start_calls[0]["socket"]
+    assert raw_sock.gettimeout() is None
+    assert raw_sock.settimeout_calls[-1] is None
+
+
+def test_bridge_attach_socket_set_blocking_defensive_no_settimeout() -> None:
+    # Log-streaming construction (no real socket); _set_blocking must not raise
+    # when the transport lacks settimeout.
+    sock = BridgeAttachSocket(object(), stdout_stream=iter([b""]))
+    assert sock is not None
+
+
 def test_returns_socket_with_exec_id_attribute(tmp_path: Path) -> None:
     container = _FakeContainer()
     cc_sock = exec_cc_turn(

@@ -135,6 +135,23 @@ class BridgeAttachSocket:
         self._raw = raw_socket
         self._stdout_stream = stdout_stream
         self._line_buffer: bytearray = bytearray()
+        # task-13R2: make the docker exec attach socket blocking (no read
+        # timeout). docker-py's client default timeout is 60s
+        # (docker.constants.DEFAULT_TIMEOUT_SECONDS), and the hijacked attach
+        # socket inherits it. In Python 3.12 `socket.timeout is TimeoutError is
+        # asyncio.TimeoutError`, so a turn whose stdout idles >60s (e.g. an NS
+        # discriminator or a chart query whose remote nextseek-query computes
+        # silently) raises TimeoutError out of recv(); ws.py's
+        # `except asyncio.TimeoutError` then mislabels it `exec_timeout` and
+        # kills the turn far below its real budget. The bridge already bounds
+        # each turn with `asyncio.wait_for(_read_and_dispatch(),
+        # timeout=_NS/_CC_TURN_TIMEOUT_SECONDS)` — that wait_for is the intended
+        # sole governor. Clearing the socket's own timeout here, in __init__,
+        # covers BOTH exec_cc_turn and exec_ns_turn (each wraps its raw_socket
+        # in this class) from one obvious seam. Log-streaming construction
+        # (stdout_stream set, no real socket) is harmless: _set_blocking is a
+        # no-op when the object lacks .settimeout.
+        self._set_blocking()
         # Phase 7 residual #1 visibility (2026-05-18): when set, every stderr
         # frame's payload is written verbatim (untruncated) to this sink so the
         # in-container runner's debug output — including chat_nextseek's
@@ -203,6 +220,27 @@ class BridgeAttachSocket:
         if hasattr(self._raw, "read"):
             return self._raw.read(size)
         return self._transport().recv(size)
+
+    def _set_blocking(self) -> None:
+        """Clear any read timeout on the underlying attach socket (task-13R2).
+
+        Resolves the same underlying socket-like object as :meth:`_transport`
+        (docker-py wraps the real socket as ``._sock`` on a ``SocketIO``) and
+        calls ``settimeout(None)`` so reads block indefinitely. The
+        per-turn ``asyncio.wait_for`` in ``ws.py`` is then the only governor,
+        instead of docker-py's 60s default leaking through as a spurious
+        ``exec_timeout``. Defensive: never raises if the transport lacks
+        ``settimeout`` (log-streaming uses a non-socket ``stdout_stream``).
+        """
+        sock = self._transport()
+        settimeout = getattr(sock, "settimeout", None)
+        if callable(settimeout):
+            try:
+                settimeout(None)
+            except (OSError, ValueError):
+                # Some transports refuse settimeout once hijacked; the wait_for
+                # governor still bounds the turn, so degrade silently.
+                log.debug("attach socket settimeout(None) failed; ignoring")
 
     def _transport(self) -> Any:
         """Return the recv/send/shutdown-capable socket-like transport.
