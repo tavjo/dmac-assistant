@@ -292,6 +292,7 @@ def _build_child_env(
     output_root: pathlib.Path,
     dropbox_root: pathlib.Path,
     catalog_file: pathlib.Path,
+    ns_stderr_dir: pathlib.Path,
 ) -> dict[str, str]:
     child_env = os.environ.copy()
     pythonpath_parts = [str(REPO_ROOT / "src"), str(REPO_ROOT)]
@@ -317,6 +318,12 @@ def _build_child_env(
     # sidecar-network-only agent container. The host-side harness keeps using its
     # own 127.0.0.1 bridge for login, so this only changes the container's view.
     child_env["NEXTSEEK_URL"] = _agent_nextseek_url()
+    # Persist the bridge's NS runner stderr per ns_session_id so a failing
+    # NS turn's underlying runner_ns / NExtSEEK error detail is captured on
+    # disk (otherwise the per-query record only holds the bridge's collapsed
+    # `ns_query_complete_with_error` / detail="error" frame). Writes
+    # <ns_stderr_dir>/<ns_session_id>.stderr.log (see ws._open_ns_stderr_capture).
+    child_env["DMAC_BRIDGE_NS_STDERR_DIR"] = str(ns_stderr_dir)
     return child_env
 
 
@@ -438,7 +445,12 @@ async def _run_one_query(
     return record
 
 
-async def _async_main(*, corpus_path: pathlib.Path, run_dir: pathlib.Path) -> int:
+async def _async_main(
+    *,
+    corpus_path: pathlib.Path,
+    run_dir: pathlib.Path,
+    only_ids: frozenset[str] | None = None,
+) -> int:
     queries_by_id = _load_corpus(corpus_path)
     run_id = run_dir.name
     started_at = _utc_now()
@@ -450,6 +462,8 @@ async def _async_main(*, corpus_path: pathlib.Path, run_dir: pathlib.Path) -> in
     output_root.mkdir(parents=True, exist_ok=True)
     dropbox_root.mkdir(parents=True, exist_ok=True)
     (dropbox_root / _synthetic_project()).mkdir(parents=True, exist_ok=True)
+    ns_stderr_dir = run_dir / "ns-stderr"
+    ns_stderr_dir.mkdir(parents=True, exist_ok=True)
 
     # T13 vendored-catalog decision (vet finding 18): KEPT as a documented
     # invariant, NOT relaxed. RATIONALE: the in-agent NS parser that historically
@@ -483,6 +497,7 @@ async def _async_main(*, corpus_path: pathlib.Path, run_dir: pathlib.Path) -> in
         output_root=output_root,
         dropbox_root=dropbox_root,
         catalog_file=catalog_file,
+        ns_stderr_dir=ns_stderr_dir,
     )
     stdout_log = run_dir / "bridge.stdout.log"
     stderr_log = run_dir / "bridge.stderr.log"
@@ -506,6 +521,8 @@ async def _async_main(*, corpus_path: pathlib.Path, run_dir: pathlib.Path) -> in
             return 2
         token = _login(port=port)
         for query_id, expected in DISCRIMINATORS:
+            if only_ids is not None and query_id not in only_ids:
+                continue
             query_text = queries_by_id[query_id]
             print(
                 f"[run_router_e2e] running {query_id!r} ({expected})...",
@@ -655,7 +672,28 @@ def main(argv: list[str] | None = None) -> int:
         default=OUTPUT_BASE,
         help=f"Output root for per-run dirs (default: {OUTPUT_BASE})",
     )
+    parser.add_argument(
+        "--ids",
+        default=None,
+        help="Comma-separated discriminator IDs to run (default: all 6). "
+        "Use to re-run a single query, e.g. --ids Search-Basic-1.",
+    )
     args = parser.parse_args(argv)
+    only_ids = (
+        frozenset(s.strip() for s in args.ids.split(",") if s.strip())
+        if args.ids
+        else None
+    )
+    if only_ids is not None:
+        valid = {qid for qid, _ in DISCRIMINATORS}
+        unknown = only_ids - valid
+        if unknown:
+            print(
+                f"[run_router_e2e] unknown --ids: {sorted(unknown)!r}; "
+                f"valid IDs: {sorted(valid)!r}",
+                file=sys.stderr,
+            )
+            return 2
 
     load_dotenv(REPO_ROOT / ".env", override=False)
 
@@ -681,7 +719,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return asyncio.run(
             asyncio.wait_for(
-                _async_main(corpus_path=args.corpus, run_dir=run_dir),
+                _async_main(
+                    corpus_path=args.corpus,
+                    run_dir=run_dir,
+                    only_ids=only_ids,
+                ),
                 timeout=OVERALL_TIMEOUT_S,
             )
         )
