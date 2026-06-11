@@ -47,6 +47,20 @@ def _make_seq_transport(responses: list[httpx.Response]) -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
+import contextlib
+
+
+@contextlib.contextmanager
+def _no_real_sleep(recorder: list[float]):
+    """Replace module-level _sleep with a recorder so retries never sleep for real."""
+    original = c._sleep
+    c._sleep = recorder.append  # records the requested duration, sleeps 0
+    try:
+        yield
+    finally:
+        c._sleep = original
+
+
 def _client(transport: httpx.BaseTransport, timeout: float = 300.0, poll_interval: float = 0.0) -> c.AssistantClient:
     return c.AssistantClient(
         base_url="https://ns.example",
@@ -410,8 +424,14 @@ def test_status_error_null_error_field_does_not_yield_string_none():
 # ---------------------------------------------------------------------------
 
 def test_mid_task_poll_transport_error_propagates():
-    """If the POST succeeds but the first progress GET raises httpx.TransportError,
-    that error must propagate out of run_query (current fail-fast behavior)."""
+    """If the POST succeeds but EVERY progress GET raises a transport error,
+    run_query retries the idempotent GET up to _PROGRESS_GET_MAX_RETRIES times
+    and, with all attempts exhausted before the deadline, surfaces the transport
+    error (task-13R3 bounded retry; runner_ns maps it to TRANSPORT_ERROR).
+
+    Updated from the W3 fail-fast pin: transient stalls are now retried, but an
+    exhausted retry budget still surfaces the failure rather than masking it.
+    """
     call_count = [0]
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -420,9 +440,16 @@ def test_mid_task_poll_transport_error_propagates():
         call_count[0] += 1
         raise httpx.ConnectError("connection refused during poll")
 
-    with pytest.raises(httpx.TransportError):
-        _client(httpx.MockTransport(handler)).run_query("x", mode="standard")
-    assert call_count[0] >= 1, "poll GET must have been attempted at least once"
+    sleeps: list[float] = []
+    with _no_real_sleep(sleeps):
+        with pytest.raises(httpx.TransportError):
+            _client(httpx.MockTransport(handler)).run_query("x", mode="standard")
+    # All retry attempts were made before surfacing the failure.
+    assert call_count[0] == c._PROGRESS_GET_MAX_RETRIES, (
+        "poll GET must be retried the full bounded budget before surfacing"
+    )
+    # Backoff used the injectable _sleep (one fewer sleep than attempts).
+    assert len(sleeps) == c._PROGRESS_GET_MAX_RETRIES - 1
 
 
 # ---------------------------------------------------------------------------
@@ -446,3 +473,114 @@ def test_progress_shrinkage_raises_runtime_error():
     ]
     with pytest.raises(RuntimeError, match="progress list shrank"):
         _client(_make_seq_transport(responses)).run_query("x", mode="standard")
+
+
+# ---------------------------------------------------------------------------
+# (t) task-13R3: bounded retry on the idempotent progress GET
+# ---------------------------------------------------------------------------
+
+def test_progress_get_retries_then_succeeds():
+    """Test 1: ReadTimeout on the progress GET N times, then a valid terminal
+    progress response -> run_query RETRIES and ultimately SUCCEEDS. No duplicate
+    events (seen_count slice dedups the recovered response)."""
+    n_fail = c._PROGRESS_GET_MAX_RETRIES - 1  # transient: fewer than the budget
+    state = {"gets": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return _async_202()
+        state["gets"] += 1
+        if state["gets"] <= n_fail:
+            raise httpx.ReadTimeout("progress GET stalled")
+        return _progress("completed", [
+            {"event": "agent_started", "data": {"agent": "entity", "mode": ""}},
+            {"event": "query_complete", "data": {"reply": "recovered", "session_id": _SESSION_ID}},
+        ])
+
+    fired: list[tuple[str, dict]] = []
+    sleeps: list[float] = []
+    with _no_real_sleep(sleeps):
+        terminal, events = _client(httpx.MockTransport(handler)).run_query(
+            "x", mode="standard", on_event=lambda nm, d: fired.append((nm, d))
+        )
+    assert terminal["reply"] == "recovered"
+    # Exactly one query_complete -- no duplicates from the retried GET.
+    assert [name for name, _ in events] == ["agent_started", "query_complete"]
+    assert [name for name, _ in fired] == ["agent_started", "query_complete"]
+    assert state["gets"] == n_fail + 1
+    assert len(sleeps) == n_fail  # one backoff sleep per failed attempt
+
+
+def test_progress_get_retries_exhausted_surfaces_transport_failure():
+    """Test 2: ReadTimeout on EVERY progress GET until retries exhaust ->
+    run_query surfaces the transport failure (re-raise), NOT a success and NOT
+    a misleading query_complete-with-error."""
+    state = {"gets": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return _async_202()
+        state["gets"] += 1
+        raise httpx.ReadTimeout("progress GET always stalls")
+
+    sleeps: list[float] = []
+    with _no_real_sleep(sleeps):
+        with pytest.raises(httpx.TimeoutException):
+            _client(httpx.MockTransport(handler)).run_query("x", mode="standard")
+    assert state["gets"] == c._PROGRESS_GET_MAX_RETRIES
+    assert len(sleeps) == c._PROGRESS_GET_MAX_RETRIES - 1
+
+
+def test_progress_get_http_status_error_not_retried():
+    """Test 3: a 4xx/5xx HTTPStatusError on the progress GET still propagates and
+    is NOT retried (transport-vs-status distinction)."""
+    state = {"gets": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return _async_202()
+        state["gets"] += 1
+        return httpx.Response(503, json={"detail": "service unavailable"})
+
+    sleeps: list[float] = []
+    with _no_real_sleep(sleeps):
+        with pytest.raises(httpx.HTTPStatusError):
+            _client(httpx.MockTransport(handler)).run_query("x", mode="standard")
+    assert state["gets"] == 1, "HTTPStatusError must NOT be retried"
+    assert sleeps == [], "no backoff sleeps on a status error"
+
+
+def test_progress_get_retry_never_exceeds_deadline():
+    """Test 4: backoff uses the injectable _sleep (no real sleeping) and retries
+    never exceed the _monotonic deadline -- once the deadline is crossed during
+    retries, run_query stops retrying and returns the stream-ended sentinel."""
+    state = {"gets": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return _async_202()
+        state["gets"] += 1
+        raise httpx.ReadTimeout("stall")
+
+    # Injectable monotonic clock: POST sets deadline at t0+timeout; advance the
+    # clock past the deadline after the first GET attempt so the retry loop's
+    # deadline check trips before exhausting the retry budget.
+    ticks = iter([0.0, 0.0, 0.0, 100.0, 100.0, 100.0, 100.0, 100.0])
+
+    orig_monotonic = c._monotonic
+    orig_sleep = c._sleep
+    sleeps: list[float] = []
+    c._monotonic = lambda: next(ticks)
+    c._sleep = sleeps.append
+    try:
+        terminal, events = _client(
+            httpx.MockTransport(handler), timeout=10.0
+        ).run_query("x", mode="standard")
+    finally:
+        c._monotonic = orig_monotonic
+        c._sleep = orig_sleep
+
+    # Deadline crossed mid-retry -> stream-ended sentinel terminal, not a raise.
+    assert terminal == {"__error__": c.STREAM_ENDED_SENTINEL, "agent": None}
+    # Stopped well before the full retry budget (deadline ceiling honored).
+    assert state["gets"] < c._PROGRESS_GET_MAX_RETRIES

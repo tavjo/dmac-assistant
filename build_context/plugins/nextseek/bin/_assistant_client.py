@@ -31,6 +31,19 @@ _monotonic = time.monotonic
 
 _DEFAULT_POLL_INTERVAL: float = 0.5
 
+# Bounded retry budget for the idempotent progress GET. Over the
+# agent-container -> host.docker.internal link the progress endpoint
+# intermittently stalls past request_timeout, raising httpx.ReadTimeout
+# (a TransportError, NOT an HTTPStatusError). The GET is idempotent and
+# seen_count dedups re-issued responses, so we retry it a bounded number of
+# times with short backoff -- always under the run_query polling deadline.
+# (W3 deferred follow-up.)
+_PROGRESS_GET_MAX_RETRIES: int = 4
+# Linear backoff base between progress-GET retry attempts (seconds). Kept well
+# under the poll deadline; injectable via the module-level _sleep so tests
+# never sleep for real.
+_PROGRESS_GET_RETRY_BACKOFF: float = 0.5
+
 
 class AssistantClient:
     def __init__(self, *, base_url: str, assistant_prefix: str, auth: tuple[str, str],
@@ -104,9 +117,50 @@ class AssistantClient:
                     terminal = {"__error__": STREAM_ENDED_SENTINEL, "agent": None}
                     break
 
-                progress_resp = client.get(self._url(f"tasks/{task_id}/progress/"))
-                progress_resp.raise_for_status()
-                task_progress = TaskProgressResponse(**progress_resp.json())
+                # The progress GET is idempotent (seen_count dedups re-issued
+                # responses), so transport/timeout stalls are retried with
+                # bounded short backoff, never past the polling deadline. A
+                # real 4xx/5xx (HTTPStatusError from raise_for_status) is NOT
+                # retried -- it must surface unchanged. If every attempt raises
+                # a transport/timeout error and the deadline has not been hit,
+                # the last exception is re-raised so runner_ns's
+                # `except httpx.TransportError` branch maps it to the
+                # TRANSPORT_ERROR typed failure (a clear transport outcome,
+                # not a misleading query_complete-with-error). If the deadline
+                # is reached mid-retry, we fall back to the same stream-ended
+                # sentinel the timeout path uses.
+                task_progress = None
+                last_transport_exc: BaseException | None = None
+                for attempt in range(_PROGRESS_GET_MAX_RETRIES):
+                    if _monotonic() >= deadline:
+                        break
+                    try:
+                        progress_resp = client.get(
+                            self._url(f"tasks/{task_id}/progress/")
+                        )
+                        progress_resp.raise_for_status()
+                        task_progress = TaskProgressResponse(**progress_resp.json())
+                        break
+                    except (httpx.TransportError, httpx.TimeoutException) as exc:
+                        # Idempotent GET stalled (ReadTimeout/ConnectError/etc.);
+                        # retry under the deadline. HTTPStatusError is a sibling
+                        # of TransportError and is intentionally NOT caught here.
+                        last_transport_exc = exc
+                        if attempt + 1 < _PROGRESS_GET_MAX_RETRIES:
+                            _sleep(_PROGRESS_GET_RETRY_BACKOFF * (attempt + 1))
+
+                if task_progress is None:
+                    # All attempts exhausted (or deadline hit during retries).
+                    if _monotonic() >= deadline:
+                        # Deadline ceiling reached: same terminal as the
+                        # top-of-loop timeout path.
+                        terminal = {"__error__": STREAM_ENDED_SENTINEL, "agent": None}
+                        break
+                    # Retries exhausted before the deadline with a real
+                    # transport/timeout failure -- surface it (do NOT treat as
+                    # success). runner_ns maps it to TRANSPORT_ERROR.
+                    assert last_transport_exc is not None
+                    raise last_transport_exc
 
                 # Guard against server restart / task eviction shrinking the list.
                 if len(task_progress.progress) < seen_count:
