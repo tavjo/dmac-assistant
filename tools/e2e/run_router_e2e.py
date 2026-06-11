@@ -218,6 +218,14 @@ def _agent_nextseek_url() -> str:
     host (`localhost`/`127.0.0.1`) to the Docker host gateway so the in-container
     thin runner_ns -> assistant viewset call resolves. A non-local host (the dev
     server, an in-network DNS name) is passed through unchanged.
+
+    FOOTGUN (root-caused 2026-06-11): with `DMAC_E2E_NS_URL` UNSET this falls back to
+    `.env`'s `NEXTSEEK_URL`, which is the dev server — if that is down (it was on
+    2026-06-11), every NS-route POST transport-fails and surfaces as
+    `ns_query_complete_with_error`, masquerading as a NExtSEEK pipeline failure. To
+    target the local stack, export `DMAC_E2E_NS_URL=http://localhost:8000`.
+    `_check_ns_target_reachable` now fails the run fast and loud when the resolved
+    target is unreachable instead of letting it look like a pipeline error.
     """
     import urllib.parse
 
@@ -265,6 +273,60 @@ def _check_sidecar() -> str | None:
             )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return f"could not verify sidecar precondition: {type(exc).__name__}"
+    return None
+
+
+def _check_ns_target_reachable(only_ids: frozenset[str] | None) -> str | None:
+    """Return a human error string if the agent's NS target is unreachable, else None.
+
+    Root cause captured 2026-06-11: ``_agent_nextseek_url()`` falls back to ``.env``'s
+    ``NEXTSEEK_URL`` (the dev server) when ``DMAC_E2E_NS_URL`` is unset, and passes a
+    non-local host through unchanged. If that server is down, every NS-route query's
+    POST transport-fails and the bridge emits ``ns_query_complete_with_error``
+    (``status:"error"``) — a failure that LOOKS like a NExtSEEK pipeline error but is
+    really "the harness was pointed at a dead server." This precheck fails fast and
+    loud instead, naming ``DMAC_E2E_NS_URL`` as the remedy.
+
+    Only runs when at least one selected discriminator routes ``nextseek_query`` —
+    a ``--ids`` subset of only container_cc/unrelated queries makes the NS target
+    irrelevant, so the check is skipped (and no probe is issued).
+
+    The agent target uses ``host.docker.internal`` (resolvable only from inside a
+    container); the HOST process probes the equivalent ``localhost:<port>`` (same
+    published port). Any HTTP response — including 401/404 — proves the server is
+    alive; only a transport error (connect/read timeout, refused) is a failure.
+    """
+    ns_selected = [
+        qid
+        for qid, expected in DISCRIMINATORS
+        if expected == "nextseek_query" and (only_ids is None or qid in only_ids)
+    ]
+    if not ns_selected:
+        return None
+
+    import urllib.parse
+
+    agent_url = _agent_nextseek_url()
+    parsed = urllib.parse.urlsplit(agent_url)
+    probe_parsed = parsed
+    if parsed.hostname == _AGENT_NS_GATEWAY_HOST:
+        netloc = "localhost"
+        if parsed.port:
+            netloc = f"{netloc}:{parsed.port}"
+        probe_parsed = parsed._replace(netloc=netloc)
+    probe_url = urllib.parse.urlunsplit(probe_parsed._replace(path="/", query="", fragment=""))
+
+    try:
+        with httpx.Client(timeout=8.0) as client:
+            client.get(probe_url)
+    except httpx.TransportError as exc:
+        return (
+            f"agent NS target {agent_url!r} is unreachable "
+            f"(host probe to {probe_url!r} failed: {type(exc).__name__}). "
+            "NEXTSEEK_URL defaults to the dev server, which may be down; export "
+            "DMAC_E2E_NS_URL=http://localhost:8000 to target the local stack, or "
+            "bring the intended server up before running the NS discriminators."
+        )
     return None
 
 
@@ -488,6 +550,12 @@ async def _async_main(
     sidecar_problem = _check_sidecar()
     if sidecar_problem is not None:
         print(f"[run_router_e2e] sidecar precondition failed: {sidecar_problem}",
+              file=sys.stderr)
+        return 2
+
+    ns_target_problem = _check_ns_target_reachable(only_ids)
+    if ns_target_problem is not None:
+        print(f"[run_router_e2e] NS target precondition failed: {ns_target_problem}",
               file=sys.stderr)
         return 2
 
