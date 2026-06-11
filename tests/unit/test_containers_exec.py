@@ -294,6 +294,25 @@ def test_ns_argv_includes_session_when_supplied(tmp_path: Path) -> None:
     assert cmd == ["python", "/opt/dmac/runner_ns.py", "--session", NS_SESSION_ID]
 
 
+def test_ns_argv_omits_session_when_none(tmp_path: Path) -> None:
+    # task-13R: the first NS turn of a WS connection has no captured viewset
+    # session UUID yet (session_id=None). exec_ns_turn must omit --session
+    # entirely so the assistant viewset creates a fresh session and returns its
+    # UUID in the terminal query_complete event.
+    container = _FakeContainer()
+    exec_ns_turn(
+        container,
+        query="hello",
+        session_id=None,
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env_with_url(),
+    )
+    cmd = container.client.api.exec_create_calls[0]["cmd"]
+    assert cmd == ["python", "/opt/dmac/runner_ns.py"]
+    assert "--session" not in cmd
+
+
 def test_ns_stdin_is_raw_query_with_newline(tmp_path: Path) -> None:
     container = _FakeContainer()
     query = "What samples are in the GBM study?"

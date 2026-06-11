@@ -662,15 +662,23 @@ def exec_ns_turn(
     container: Container,
     *,
     query: str,
-    session_id: str,
+    session_id: str | None,
     identity: AuthenticatedIdentity,
     config: BridgeConfig,
     bridge_env: Mapping[str, str],
     client: Any | None = None,
 ) -> BridgeAttachSocket:
-    """Run one NExtSEEK turn against the idle container via docker exec."""
+    """Run one NExtSEEK turn against the idle container via docker exec.
+
+    task-13R: ``session_id`` is the viewset-issued NExtSEEK session UUID, or
+    ``None`` on the first turn of a WS connection. When ``None``, ``--session``
+    is omitted so the assistant viewset creates a fresh session (passing a
+    non-UUID id is 422-rejected); the returned UUID is captured by the bridge.
+    """
     api_client = client or container.client
-    cmd: list[str] = ["python", "/opt/dmac/runner_ns.py", "--session", session_id]
+    cmd: list[str] = ["python", "/opt/dmac/runner_ns.py"]
+    if session_id is not None:
+        cmd += ["--session", session_id]
     environment = _build_exec_environment(
         identity,
         bridge_env,

@@ -395,7 +395,6 @@ async def test_ns_dispatch_emits_session_started_before_event_frames(
         identity=_identity(),
         config=_config(tmp_path),
         bridge_env=_bridge_env(),
-        ns_session_key="user-key-1",
     )
 
     types = [f["type"] for f in ws.sent_frames]
@@ -429,7 +428,6 @@ async def test_ns_session_id_format_matches_ns_hex12(
         identity=_identity(),
         config=_config(tmp_path),
         bridge_env=_bridge_env(),
-        ns_session_key="user-key-1",
     )
 
     session_started_frames = [
@@ -466,7 +464,6 @@ async def test_multi_turn_ns_then_ns_emits_all_terminals(
         identity=_identity(),
         config=_config(tmp_path),
         bridge_env=_bridge_env(),
-        ns_session_key="k",
     )
     await _dispatch_ns_turn(
         websocket=ws,
@@ -475,7 +472,6 @@ async def test_multi_turn_ns_then_ns_emits_all_terminals(
         identity=_identity(),
         config=_config(tmp_path),
         bridge_env=_bridge_env(),
-        ns_session_key="k",
     )
 
     assert sum(1 for f in ws.sent_frames if f.get("type") == "session_started") == 2
@@ -804,7 +800,6 @@ async def test_ns_exec_failure_emits_ns_exec_failed_frame(
         identity=_identity(),
         config=_config(tmp_path),
         bridge_env=_bridge_env(),
-        ns_session_key="k",
     )
 
     reasons = [f.get("reason") for f in ws.sent_frames if f.get("type") == "error"]
@@ -864,7 +859,6 @@ async def test_multi_turn_cc_then_ns_state_isolation(
         current_session_id=None,
         session_started_emitted=False,
         session_ended_emitted=False,
-        ns_session_key="ws-key-1",
     )
     assert sid1 == "cc-sess-1"
 
@@ -878,7 +872,6 @@ async def test_multi_turn_cc_then_ns_state_isolation(
         current_session_id=sid1,
         session_started_emitted=started1,
         session_ended_emitted=ended1,
-        ns_session_key="ws-key-1",
     )
     assert sid2 == sid1
 
@@ -1027,7 +1020,6 @@ async def test_ns_dispatch_timeout_calls_kill_exec_pid_and_emits_timeout(
         identity=_identity(),
         config=_config(tmp_path),
         bridge_env=_bridge_env(),
-        ns_session_key="k",
     )
 
     assert killed == [(sentinel_container, "exec-ns-hang")]
@@ -1081,7 +1073,6 @@ async def test_ns_dispatch_drops_invalid_json_and_post_terminal_events(
         identity=_identity(),
         config=_config(tmp_path),
         bridge_env=_bridge_env(),
-        ns_session_key="k",
     )
 
     types = [f.get("type") for f in ws.sent_frames]
@@ -1239,7 +1230,6 @@ async def test_dispatch_ns_turn_wires_sock_stderr_sink_when_capture_env_set(
         identity=_identity(),
         config=_config(tmp_path),
         bridge_env=_bridge_env(),
-        ns_session_key="user-key-1",
     )
 
     # Exactly one capture file should exist, named after the synthesized
@@ -1258,3 +1248,230 @@ def _make_stderr_then_eof(payload: bytes) -> bytes:
     """Helper: one stderr frame followed by socket EOF (no stdout)."""
     header = bytes([2, 0, 0, 0]) + struct.pack(">I", len(payload))
     return header + payload
+
+
+# task-13R: NS route rides viewset-issued session UUIDs for multi-turn parity.
+# The old ns_session_key ({user}-ws-{epoch}) is non-UUID and the assistant
+# viewset 422-rejects it. First NS turn sends no session_id; the bridge
+# captures the UUID the viewset returns in the terminal query_complete event
+# and reuses it for subsequent turns in the same WS connection.
+
+
+def _record_exec_ns_turn(socks, recorded):
+    def _fake(*args, **kwargs):
+        recorded.append(kwargs.get("session_id"))
+        return next(socks)
+
+    return _fake
+
+
+@pytest.mark.asyncio
+async def test_ns_first_turn_sends_no_session_id(tmp_path: Path, monkeypatch) -> None:
+    from dmac_assistant.containers import BridgeAttachSocket
+    from dmac_assistant.ws import _NsSessionState, _dispatch_ns_turn
+
+    ws = _StubWebSocket()
+    sock = BridgeAttachSocket(
+        _RawSocketFake(
+            _make_ns_jsonl_stream(
+                [("query_complete", {"reply": "ok", "session_id": "uuid-abc-123"})]
+            )
+        )
+    )
+    recorded: list[Any] = []
+    monkeypatch.setattr(
+        "dmac_assistant.ws.exec_ns_turn",
+        _record_exec_ns_turn(iter([sock]), recorded),
+    )
+
+    holder = _NsSessionState()
+    await _dispatch_ns_turn(
+        websocket=ws,
+        container=object(),
+        query="find me samples",
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env(),
+        ns_session=holder,
+    )
+
+    assert recorded == [None]
+
+
+@pytest.mark.asyncio
+async def test_ns_turn_captures_viewset_session_uuid(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from dmac_assistant.containers import BridgeAttachSocket
+    from dmac_assistant.ws import _NsSessionState, _dispatch_ns_turn
+
+    ws = _StubWebSocket()
+    sock = BridgeAttachSocket(
+        _RawSocketFake(
+            _make_ns_jsonl_stream(
+                [
+                    ("agent_started", {"agent": "parser"}),
+                    (
+                        "query_complete",
+                        {"reply": "done", "session_id": "550e8400-uuid"},
+                    ),
+                ]
+            )
+        )
+    )
+    monkeypatch.setattr("dmac_assistant.ws.exec_ns_turn", lambda *a, **kw: sock)
+
+    holder = _NsSessionState()
+    await _dispatch_ns_turn(
+        websocket=ws,
+        container=object(),
+        query="hi",
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env(),
+        ns_session=holder,
+    )
+
+    assert holder.session_id == "550e8400-uuid"
+
+
+@pytest.mark.asyncio
+async def test_ns_subsequent_turn_reuses_captured_uuid(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from dmac_assistant.containers import BridgeAttachSocket
+    from dmac_assistant.ws import _NsSessionState, _dispatch_ns_turn
+
+    ws = _StubWebSocket()
+
+    def make_sock(events):
+        return BridgeAttachSocket(_RawSocketFake(_make_ns_jsonl_stream(events)))
+
+    socks = iter(
+        [
+            make_sock(
+                [("query_complete", {"reply": "t1", "session_id": "uuid-xyz"})]
+            ),
+            make_sock([("query_complete", {"reply": "t2", "session_id": "uuid-xyz"})]),
+        ]
+    )
+    recorded: list[Any] = []
+    monkeypatch.setattr(
+        "dmac_assistant.ws.exec_ns_turn",
+        _record_exec_ns_turn(socks, recorded),
+    )
+
+    holder = _NsSessionState()
+    for q in ("turn one", "turn two"):
+        await _dispatch_ns_turn(
+            websocket=ws,
+            container=object(),
+            query=q,
+            identity=_identity(),
+            config=_config(tmp_path),
+            bridge_env=_bridge_env(),
+            ns_session=holder,
+        )
+
+    # Turn 1: no session id sent. Turn 2: the captured UUID is reused.
+    assert recorded == [None, "uuid-xyz"]
+    assert holder.session_id == "uuid-xyz"
+
+
+@pytest.mark.asyncio
+async def test_ns_session_isolation_fresh_holder_starts_none(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from dmac_assistant.containers import BridgeAttachSocket
+    from dmac_assistant.ws import _NsSessionState, _dispatch_ns_turn
+
+    ws = _StubWebSocket()
+
+    def make_sock():
+        return BridgeAttachSocket(
+            _RawSocketFake(
+                _make_ns_jsonl_stream(
+                    [("query_complete", {"reply": "ok", "session_id": "conn-1-uuid"})]
+                )
+            )
+        )
+
+    socks = iter([make_sock(), make_sock()])
+    recorded: list[Any] = []
+    monkeypatch.setattr(
+        "dmac_assistant.ws.exec_ns_turn",
+        _record_exec_ns_turn(socks, recorded),
+    )
+
+    # First WS connection captures a UUID.
+    holder_conn1 = _NsSessionState()
+    await _dispatch_ns_turn(
+        websocket=ws,
+        container=object(),
+        query="hi",
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env(),
+        ns_session=holder_conn1,
+    )
+    assert holder_conn1.session_id == "conn-1-uuid"
+
+    # A brand-new connection starts with a fresh holder: no cross-connection leak.
+    holder_conn2 = _NsSessionState()
+    assert holder_conn2.session_id is None
+    await _dispatch_ns_turn(
+        websocket=ws,
+        container=object(),
+        query="hi",
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env(),
+        ns_session=holder_conn2,
+    )
+    # Second connection's first turn must still send None (not conn-1's UUID).
+    assert recorded == [None, None]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_one_turn_threads_ns_session_holder(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from dmac_assistant.router.baml_client.types import Route, RouterDecision
+    from dmac_assistant.ws import _NsSessionState, _dispatch_one_turn
+
+    ws = _StubWebSocket()
+    decision = RouterDecision(
+        route=Route.NextseekQuery, model_class=None, reasoning="ns"
+    )
+
+    async def fake_route(query: str) -> RouterDecision:
+        del query
+        return decision
+
+    fake_agent = AsyncMock()
+    fake_agent.route = fake_route
+    monkeypatch.setattr("dmac_assistant.ws._get_router_agent", lambda: fake_agent)
+
+    captured: list[Any] = []
+
+    async def fake_ns(**kwargs):
+        captured.append(kwargs.get("ns_session"))
+
+    monkeypatch.setattr("dmac_assistant.ws._dispatch_ns_turn", fake_ns)
+
+    holder = _NsSessionState(session_id="prior-uuid")
+    await _dispatch_one_turn(
+        websocket=ws,
+        container=object(),
+        query="find me samples",
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env(),
+        current_session_id=None,
+        session_started_emitted=False,
+        session_ended_emitted=False,
+        ns_session=holder,
+    )
+
+    assert captured == [holder]
+    assert captured[0].session_id == "prior-uuid"
