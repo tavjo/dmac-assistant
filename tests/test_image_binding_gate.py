@@ -10,8 +10,12 @@ This test invokes pytest INSIDE dmac-assistant:poc with
 and asserts the docker run exits 0 (meaning: all tests pass AND
 coverage >= 95%).
 
-Credential source: host .env file (NEXTSEEK_USERNAME / NEXTSEEK_PASSWORD).
-If absent, all tests in this module skip cleanly.
+Credential source: NONE. T11 review (M-2): every in-image run here is
+hermetic — tests/image/test_runner_coverage.py monkeypatches its own fake
+creds, and the dry-run shim/wiring tests run under NEXTSEEK_DRY_RUN=1 —
+so the gate uses fixed PLACEHOLDER credentials and never reads real ones
+from .env. The only skip conditions are Docker / the dmac-assistant:poc
+image being unavailable.
 
 chat_nextseek host/image split: this file does NOT import chat_nextseek
 and does NOT require pytest.importorskip — it only calls subprocess.run
@@ -36,30 +40,25 @@ from tests.harness.containers import IMAGE_TAG, docker_available
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _load_dotenv_creds() -> tuple[str, str] | None:
-    """Return (API_USER, API_PASS) from .env, or None if absent/incomplete."""
-    env_path = REPO_ROOT / ".env"
-    if not env_path.is_file():
-        return None
-    try:
-        from dotenv import dotenv_values  # type: ignore[import]
-    except ImportError:
-        # python-dotenv not installed on host; parse manually (stdlib fallback)
-        creds: dict[str, str] = {}
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, _, v = line.partition("=")
-            creds[k.strip()] = v.strip().strip('"').strip("'")
-    else:
-        creds = dict(dotenv_values(env_path))
+# T11 review (M-2): fixed placeholder creds. The in-image coverage tests
+# (tests/image/test_runner_coverage.py) are fully hermetic — dry-run +
+# injected fakes via monkeypatch — and the wiring tests run under
+# NEXTSEEK_DRY_RUN=1, so real credentials are never needed. Using dummies
+# keeps the binding gate runnable on any machine with Docker + the image,
+# instead of silently skipping when .env lacks live creds.
+_PLACEHOLDER_API_USER = "gate-placeholder-user"
+_PLACEHOLDER_API_PASS = "gate-placeholder-pass"
 
-    username = creds.get("NEXTSEEK_USERNAME", "")
-    password = creds.get("NEXTSEEK_PASSWORD", "")
-    if not username or not password:
-        return None
-    return username, password
+
+def _image_present() -> bool:
+    """Return True when the dmac-assistant:poc image exists locally."""
+    r = subprocess.run(
+        ["docker", "image", "inspect", IMAGE_TAG],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return r.returncode == 0
 
 
 pytestmark = pytest.mark.skipif(
@@ -70,15 +69,16 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def _image_creds() -> tuple[str, str]:
-    """Skip this entire module if credentials are not in .env."""
-    creds = _load_dotenv_creds()
-    if creds is None:
+    """Placeholder creds; skip only when the image is unavailable.
+
+    T11 review (M-2): the gate no longer skips on missing .env creds —
+    every run it dispatches is hermetic (dry-run + injected fakes).
+    """
+    if not _image_present():
         pytest.skip(
-            "NEXTSEEK_USERNAME / NEXTSEEK_PASSWORD not found in .env — "
-            "image binding gate skipped. Provide a .env file at repo root "
-            "with real NExtSEEK dev credentials to run the gate."
+            f"{IMAGE_TAG} image not present — run `make image-build` first."
         )
-    return creds
+    return _PLACEHOLDER_API_USER, _PLACEHOLDER_API_PASS
 
 
 def test_image_coverage_gate_passes(_image_creds: tuple[str, str]) -> None:

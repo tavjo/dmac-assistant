@@ -33,6 +33,32 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 from tools.e2e import run_headless  # noqa: E402
 
+# T11 review (M-1): the 16 sidecar-held shared-credential keys. Post-T10
+# the production bridge (_build_environment, src/dmac_assistant/containers.py)
+# no longer forwards these into the agent container — they live only in the
+# sidecar. This harness exists to mimic the bridge env, so it must withhold
+# them from the container relay too, even when the host .env carries them.
+# (The harness may still read them host-side for its own needs; only the
+# container-env relay is restricted.)
+_SHARED_CRED_KEYS = frozenset({
+    "GCP_API_KEY",
+    "NEO4J_URI",
+    "NEO4J_USER",
+    "NEO4J_PASSWORD",
+    "NEO4J_DATABASE",
+    "MYSQL_HOST_DEV",
+    "MYSQL_PORT",
+    "MYSQL_USER",
+    "MYSQL_DEV_PASSWORD",
+    "SESSION_DB_TYPE",
+    "SESSION_DB_HOST",
+    "SESSION_DB_PORT",
+    "SESSION_DB_USER",
+    "SESSION_DB_PASSWORD",
+    "SESSION_DB_NAME",
+    "SESSION_DB_PATH",
+})
+
 
 def dispatch_cc(*, query_text: str, query_id: str, image: str,
                 env: dict[str, str], timeout: int,
@@ -111,26 +137,21 @@ def dispatch_ns(*, query_text: str, query_id: str, image: str,
     stderr_path = output_dir / f"{query_id}.stderr.log"
 
     # See _read_dotenv_stripping_quotes for why we cannot use --env-file.
-    # CATALOG_FILE + CHAT_NEXTSEEK_DB_ENV are container-side paths the
-    # bridge sets dynamically (not in .env); add them explicitly.
-    import os as _os
-    env_pairs = _read_dotenv_stripping_quotes(env_file)
+    # CATALOG_FILE is a container-side path the bridge sets dynamically
+    # (not in .env); add it explicitly.
+    #
+    # T11 review (M-1): mirror the post-T10 bridge. The thin
+    # container/runner_ns.py is a sidecar client — chat_nextseek (and its
+    # CHAT_NEXTSEEK_DB_ENV / NEXTSEEK_OUTPUTS_DIR knobs) left the agent
+    # image, so those injections are gone, and the 16 sidecar-held
+    # shared-cred keys are filtered out of the container relay even when
+    # the host .env carries them.
+    env_pairs = {
+        k: v
+        for k, v in _read_dotenv_stripping_quotes(env_file).items()
+        if k not in _SHARED_CRED_KEYS
+    }
     env_pairs["CATALOG_FILE"] = "/etc/dmac/agent_model_catalog.json"
-    env_pairs["CHAT_NEXTSEEK_DB_ENV"] = _os.environ.get(
-        "CHAT_NEXTSEEK_DB_ENV", "dev",
-    )
-    # Steer chat_nextseek's per-call output dir UNDER /data/scratch so the
-    # files cross the mount boundary and the host-side snapshot-diff in
-    # run_router_batch._promote_artifacts() can attribute them to this query.
-    # Without this, chat_nextseek defaults to
-    # `~/.local/state/chat_nextseek/outputs/` inside the container (not in
-    # any mount), and reporter-family xlsx/csv outputs are silently lost on
-    # container exit. chat_nextseek reads the env var named
-    # NEXTSEEK_OUTPUTS_DIR (not OUTPUTS_DIR — see chat_nextseek/config.py
-    # line ~166: `os.getenv("NEXTSEEK_OUTPUTS_DIR", ...)`).
-    env_pairs["NEXTSEEK_OUTPUTS_DIR"] = (
-        f"/data/scratch/chat_nextseek/{session_id}/"
-    )
     env_flags: list[str] = []
     for k, v in env_pairs.items():
         env_flags.extend(["-e", f"{k}={v}"])

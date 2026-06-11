@@ -218,6 +218,15 @@ def container_mounts(
 # ``env`` by ``_live_env_for_plugin`` or passed via ``extra_env=``.
 
 
+# T11 review (H-1): REQUIRED_VARS validates the HOST-side .env for the live
+# harness, but post-T10 the sidecar-held shared creds in it must never be
+# forwarded into the agent container — mirror _build_environment
+# (src/dmac_assistant/containers.py, T10/U-1). GCP_API_KEY is the only
+# REQUIRED_VARS member in the 16-key shared-cred set; list it explicitly so a
+# future REQUIRED_VARS addition of another shared cred is caught here too.
+_SHARED_CRED_VARS_NOT_FOR_CONTAINER = frozenset({"GCP_API_KEY"})
+
+
 def _live_env_for_plugin(live_env: dict[str, str]) -> dict[str, str]:
     """Assemble the env dict passed to the container.
 
@@ -227,8 +236,16 @@ def _live_env_for_plugin(live_env: dict[str, str]) -> dict[str, str]:
 
     Per DD-21 layer 2, USE_DEV_API=1 forces plugin-side dev routing regardless
     of any base-URL resolution path (SKILL.md line 341).
+
+    T11 review (H-1): shared creds (GCP_API_KEY) are withheld — they live
+    only in the sidecar; the agent container gets the user's own NS login
+    plus AWS/Bedrock/infra keys only, mirroring _build_environment.
     """
-    env = {var: live_env[var] for var in REQUIRED_VARS if var in live_env}
+    env = {
+        var: live_env[var]
+        for var in REQUIRED_VARS
+        if var in live_env and var not in _SHARED_CRED_VARS_NOT_FOR_CONTAINER
+    }
     env["CLAUDE_CODE_USE_BEDROCK"] = "1"
     env["USE_DEV_API"] = "1"
     # B17c: container-side catalog path; mirrors the bridge's _build_environment.
@@ -680,7 +697,14 @@ def test_container_mounts_fixture_includes_catalog(
 
 
 def test_live_env_for_plugin_sets_catalog_file() -> None:
-    """B17c: _live_env_for_plugin always sets CATALOG_FILE to the container path."""
+    """B17c: _live_env_for_plugin always sets CATALOG_FILE to the container path.
+
+    T11 review (H-1): post-T10 the agent container env mirrors the bridge's
+    _build_environment — the sidecar-held shared creds (GCP_API_KEY is the
+    one present in REQUIRED_VARS) must NOT be forwarded. GCP_API_KEY is
+    deliberately INJECTED into the source env here so the absence assertion
+    is non-tautological.
+    """
     fake_live = {
         "AWS_BEARER_TOKEN_BEDROCK": "tok",
         "AWS_REGION": "us-east-1",
@@ -691,9 +715,18 @@ def test_live_env_for_plugin_sets_catalog_file() -> None:
     }
     env = _live_env_for_plugin(fake_live)
     assert env["CATALOG_FILE"] == "/etc/dmac/agent_model_catalog.json"
-    # Sanity: REQUIRED_VARS forwarding still works (incl. B17c's GCP_API_KEY).
-    assert env["GCP_API_KEY"] == "gcp-key"
+    # Shared cred present in the source env must be withheld from the
+    # container env (it lives only in the sidecar — containers.py T10/U-1).
+    assert "GCP_API_KEY" not in env, (
+        "GCP_API_KEY is a sidecar-held shared cred and must not reach the "
+        "agent container env"
+    )
+    # Legitimate per-user / infra keys still forwarded.
     assert env["NEXTSEEK_PASSWORD"] == "pw"
+    assert env["NEXTSEEK_USERNAME"] == "alice"
+    assert env["NEXTSEEK_URL"] == "https://dev.example.com"
+    assert env["AWS_BEARER_TOKEN_BEDROCK"] == "tok"
+    assert env["AWS_REGION"] == "us-east-1"
 
 
 def test_resolve_catalog_host_path_prefers_env(

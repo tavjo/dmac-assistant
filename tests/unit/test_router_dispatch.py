@@ -198,7 +198,17 @@ def test_dispatch_ns_builds_docker_argv(tmp_path, monkeypatch):
     assert "NEXTSEEK_PASSWORD" in seen_env_keys
     # Added by dispatch_ns explicitly
     assert "CATALOG_FILE" in seen_env_keys
-    assert "CHAT_NEXTSEEK_DB_ENV" in seen_env_keys
+    # T11 review (M-1): the thin container/runner_ns.py no longer consumes
+    # CHAT_NEXTSEEK_DB_ENV or NEXTSEEK_OUTPUTS_DIR (chat_nextseek left the
+    # agent image for the sidecar) — the harness must mirror the post-T10
+    # bridge and NOT inject them into the agent container env.
+    assert "CHAT_NEXTSEEK_DB_ENV" not in seen_env_keys, (
+        "dead injection: thin runner_ns.py does not read CHAT_NEXTSEEK_DB_ENV"
+    )
+    assert "NEXTSEEK_OUTPUTS_DIR" not in seen_env_keys, (
+        "dead injection: chat_nextseek (consumer of NEXTSEEK_OUTPUTS_DIR) is "
+        "no longer in the agent image"
+    )
     # And --env-file specifically must NOT be present.
     assert "--env-file" not in argv, (
         "dispatch_ns must not use --env-file (it skips quote-stripping); "
@@ -207,15 +217,29 @@ def test_dispatch_ns_builds_docker_argv(tmp_path, monkeypatch):
 
 
 def test_dispatch_ns_strips_wrapping_quotes_from_env_file(tmp_path, monkeypatch):
-    """Regression: GCP_API_KEY=\"AIzaSy...\" in .env must reach the container
-    WITHOUT surrounding quotes (docker --env-file would forward them
-    literally; we read+strip in Python instead)."""
+    """Regression: a quoted value in .env (e.g. GCP_API_KEY=\"AIzaSy...\")
+    must be parsed WITHOUT surrounding quotes (docker --env-file would
+    forward them literally; we read+strip in Python instead).
+
+    T11 review (M-1): what this test pins is .env PARSING, host-side. The
+    stripped GCP_API_KEY value must NOT be forwarded into the agent
+    container — shared creds live only in the sidecar post-T10. The
+    quote-strip behavior itself is asserted on a forwarded key
+    (NEXTSEEK_PASSWORD) plus directly on _read_dotenv_stripping_quotes.
+    """
     env_file = tmp_path / ".env"
     env_file.write_text(
         'NEXTSEEK_USERNAME=demo\n'
-        'NEXTSEEK_PASSWORD=demo\n'
+        'NEXTSEEK_PASSWORD="quoted-pw"\n'
         'GCP_API_KEY="AIzaSyExampleQuotedKey123456789012345"\n'
     )
+    # Host-side parse: quotes stripped from every value, GCP_API_KEY included.
+    parsed = router_dispatch._read_dotenv_stripping_quotes(env_file)
+    assert parsed["GCP_API_KEY"] == "AIzaSyExampleQuotedKey123456789012345", (
+        f"wrapping quotes must be stripped; got {parsed['GCP_API_KEY']!r}"
+    )
+    assert parsed["NEXTSEEK_PASSWORD"] == "quoted-pw"
+
     events = [{"event": "query_complete",
                "payload": {"status": "ok", "reply": "ok"}}]
     fake_run, captured = _make_fake_subprocess_run(events)
@@ -228,9 +252,71 @@ def test_dispatch_ns_strips_wrapping_quotes_from_env_file(tmp_path, monkeypatch)
         argv[i + 1].split("=", 1)[0]: argv[i + 1].split("=", 1)[1]
         for i, tok in enumerate(argv) if tok == "-e"
     }
-    assert e_pairs.get("GCP_API_KEY") == "AIzaSyExampleQuotedKey123456789012345", (
-        f"wrapping quotes must be stripped; got {e_pairs.get('GCP_API_KEY')!r}"
+    # Forwarded key reaches the container quote-stripped...
+    assert e_pairs.get("NEXTSEEK_PASSWORD") == "quoted-pw", (
+        f"wrapping quotes must be stripped; got {e_pairs.get('NEXTSEEK_PASSWORD')!r}"
     )
+    # ...but the shared-cred key must not reach the container at all.
+    assert "GCP_API_KEY" not in e_pairs, (
+        "GCP_API_KEY is a sidecar-held shared cred and must not be relayed "
+        "into the agent container env"
+    )
+
+
+# T11 (U-1) parity with tests/unit/test_containers.py::SHARED_CRED_KEYS: the
+# 16 shared-credential keys that must NEVER reach the agent container.
+_SHARED_CRED_KEYS = (
+    "GCP_API_KEY",
+    "NEO4J_URI",
+    "NEO4J_USER",
+    "NEO4J_PASSWORD",
+    "NEO4J_DATABASE",
+    "MYSQL_HOST_DEV",
+    "MYSQL_PORT",
+    "MYSQL_USER",
+    "MYSQL_DEV_PASSWORD",
+    "SESSION_DB_TYPE",
+    "SESSION_DB_HOST",
+    "SESSION_DB_PORT",
+    "SESSION_DB_USER",
+    "SESSION_DB_PASSWORD",
+    "SESSION_DB_NAME",
+    "SESSION_DB_PATH",
+)
+
+
+def test_dispatch_ns_never_relays_shared_cred_keys_to_container(
+    tmp_path, monkeypatch,
+):
+    """T11 review (M-1): the harness mimics the production bridge env, and
+    post-T10 the bridge no longer forwards the 16 sidecar-held shared-cred
+    keys. Even when .env carries all of them, none may appear in the
+    container's -e flags — while legitimate keys still flow through."""
+    env_file = tmp_path / ".env"
+    lines = ["NEXTSEEK_USERNAME=demo\n", "NEXTSEEK_PASSWORD=demo\n"]
+    lines += [f"{key}=sentinel-{key}\n" for key in _SHARED_CRED_KEYS]
+    env_file.write_text("".join(lines))
+
+    events = [{"event": "query_complete",
+               "payload": {"status": "ok", "reply": "ok"}}]
+    fake_run, captured = _make_fake_subprocess_run(events)
+    monkeypatch.setattr(router_dispatch.subprocess, "run", fake_run)
+
+    router_dispatch.dispatch_ns(**_baseline_ns_kwargs(tmp_path, env_file))
+
+    argv = captured[0]
+    seen_env_keys = {
+        argv[i + 1].split("=", 1)[0]
+        for i, tok in enumerate(argv) if tok == "-e"
+    }
+    leaked = seen_env_keys & set(_SHARED_CRED_KEYS)
+    assert not leaked, (
+        f"shared-cred keys leaked into the agent container env: {sorted(leaked)}"
+    )
+    # Legitimate keys still relayed.
+    assert "NEXTSEEK_USERNAME" in seen_env_keys
+    assert "NEXTSEEK_PASSWORD" in seen_env_keys
+    assert "CATALOG_FILE" in seen_env_keys
 
 
 def test_dispatch_ns_success_record(tmp_path, monkeypatch):
