@@ -151,6 +151,10 @@ class BridgeAttachSocket:
         # in this class) from one obvious seam. Log-streaming construction
         # (stdout_stream set, no real socket) is harmless: _set_blocking is a
         # no-op when the object lacks .settimeout.
+        # Residual (pre-existing, accepted): on a truly-hung remote the wait_for
+        # still fires exec_timeout + kill_exec_pid at the turn budget, but the
+        # blocking recv() in its asyncio.to_thread worker cannot be force-killed
+        # and lingers until the docker daemon closes the connection.
         self._set_blocking()
         # Phase 7 residual #1 visibility (2026-05-18): when set, every stderr
         # frame's payload is written verbatim (untruncated) to this sink so the

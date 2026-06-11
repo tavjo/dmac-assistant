@@ -625,6 +625,7 @@ def test_exec_cc_turn_makes_attach_socket_blocking(tmp_path: Path) -> None:
     raw_sock = container.client.api.exec_start_calls[0]["socket"]
     # Pre-fix: docker's 60s default was never cleared, so this fails.
     assert raw_sock.gettimeout() is None
+    assert raw_sock.settimeout_calls, "settimeout was never called on the attach socket"
     assert raw_sock.settimeout_calls[-1] is None
 
 
