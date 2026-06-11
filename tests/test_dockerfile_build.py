@@ -394,8 +394,7 @@ def test_dockerfile_copies_only_new_plugin():
     behavioral assertions in test_image_smoke.py). The docs copy at
     /app/docs/nextseek-api/ is intentionally allowed.
     """
-    from pathlib import Path
-    text = Path("Dockerfile").read_text()
+    text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY build_context/plugins/nextseek/ /app/plugins/nextseek/" in text, (
         "Dockerfile MUST contain the plugin-specific COPY "
         "(COPY build_context/plugins/nextseek/ /app/plugins/nextseek/). "

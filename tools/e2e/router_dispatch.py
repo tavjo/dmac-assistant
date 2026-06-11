@@ -40,24 +40,9 @@ from tools.e2e import run_headless  # noqa: E402
 # them from the container relay too, even when the host .env carries them.
 # (The harness may still read them host-side for its own needs; only the
 # container-env relay is restricted.)
-_SHARED_CRED_KEYS = frozenset({
-    "GCP_API_KEY",
-    "NEO4J_URI",
-    "NEO4J_USER",
-    "NEO4J_PASSWORD",
-    "NEO4J_DATABASE",
-    "MYSQL_HOST_DEV",
-    "MYSQL_PORT",
-    "MYSQL_USER",
-    "MYSQL_DEV_PASSWORD",
-    "SESSION_DB_TYPE",
-    "SESSION_DB_HOST",
-    "SESSION_DB_PORT",
-    "SESSION_DB_USER",
-    "SESSION_DB_PASSWORD",
-    "SESSION_DB_NAME",
-    "SESSION_DB_PATH",
-})
+# T11R2 (HIGH-2): import-reuse the harness's canonical frozenset instead of
+# redefining the 16-key list; a parity test pins the remaining copies.
+_SHARED_CRED_KEYS = run_headless.SHARED_CRED_KEYS
 
 
 def dispatch_cc(*, query_text: str, query_id: str, image: str,

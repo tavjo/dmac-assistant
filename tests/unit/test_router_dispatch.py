@@ -26,6 +26,7 @@ import pytest
 
 # Module under test — created by G2.
 from tools.e2e import router_dispatch  # noqa: E402  (module created in G2)
+from tools.e2e import run_headless  # noqa: E402
 
 
 _SONNET_4_ID = "us.anthropic.claude-sonnet-4-20250514-v1:0"
@@ -263,26 +264,119 @@ def test_dispatch_ns_strips_wrapping_quotes_from_env_file(tmp_path, monkeypatch)
     )
 
 
-# T11 (U-1) parity with tests/unit/test_containers.py::SHARED_CRED_KEYS: the
-# 16 shared-credential keys that must NEVER reach the agent container.
-_SHARED_CRED_KEYS = (
-    "GCP_API_KEY",
-    "NEO4J_URI",
-    "NEO4J_USER",
-    "NEO4J_PASSWORD",
-    "NEO4J_DATABASE",
-    "MYSQL_HOST_DEV",
-    "MYSQL_PORT",
-    "MYSQL_USER",
-    "MYSQL_DEV_PASSWORD",
-    "SESSION_DB_TYPE",
-    "SESSION_DB_HOST",
-    "SESSION_DB_PORT",
-    "SESSION_DB_USER",
-    "SESSION_DB_PASSWORD",
-    "SESSION_DB_NAME",
-    "SESSION_DB_PATH",
-)
+# T11R2 (HIGH-2): the 16 shared-credential keys that must NEVER reach the
+# agent container. Imported from the harness's canonical frozenset rather
+# than redefined — copy-count reduction; the independent drift pin against
+# the OTHER copies lives in test_shared_cred_key_list_parity_across_copies.
+_SHARED_CRED_KEYS = tuple(sorted(run_headless.SHARED_CRED_KEYS))
+
+
+def test_shared_cred_key_list_parity_across_copies():
+    """T11R2 (HIGH-2): drift pin across every copy of the 16-key
+    shared-cred list. Adding a 17th key (or renaming one) at any single
+    site must fail here until ALL sites are updated.
+
+    Copies pinned:
+      - tools/e2e/run_headless.py::SHARED_CRED_KEYS (canonical, harness)
+      - tools/e2e/router_dispatch.py::_SHARED_CRED_KEYS (must be the same
+        object — import-reuse, not a redefinition)
+      - tests/unit/test_containers.py::SHARED_CRED_KEYS
+      - tests/unit/test_sidecar_bridge_env.py::SHARED
+    """
+    from tests.unit import test_containers, test_sidecar_bridge_env
+
+    canonical = run_headless.SHARED_CRED_KEYS
+    assert isinstance(canonical, frozenset)
+    assert len(canonical) == 16, (
+        f"expected exactly 16 shared-cred keys, got {len(canonical)}: "
+        f"{sorted(canonical)}"
+    )
+    # router_dispatch must reuse the harness frozenset, not carry a copy.
+    assert router_dispatch._SHARED_CRED_KEYS is canonical, (
+        "router_dispatch._SHARED_CRED_KEYS must be import-reused from "
+        "run_headless.SHARED_CRED_KEYS, not redefined"
+    )
+    assert set(test_containers.SHARED_CRED_KEYS) == set(canonical), (
+        "tests/unit/test_containers.py::SHARED_CRED_KEYS drifted from the "
+        "harness canonical list"
+    )
+    assert set(test_sidecar_bridge_env.SHARED) == set(canonical), (
+        "tests/unit/test_sidecar_bridge_env.py::SHARED drifted from the "
+        "harness canonical list"
+    )
+
+
+def test_dispatch_cc_never_relays_shared_cred_keys_to_container(
+    tmp_path, monkeypatch,
+):
+    """T11R2 (HIGH-1): the CC route delegates to run_headless.run_one, which
+    relays env into the container via a docker --env-file. Even when the
+    caller-supplied env carries all 16 sidecar-held shared-cred keys, none
+    may appear in the env-file content — while legitimate keys still flow
+    through. Also pins MEDIUM-2: the dead CHAT_NEXTSEEK_DB_ENV injection is
+    gone from the docker argv (chat_nextseek left the agent image)."""
+    captured_argv: list[list[str]] = []
+    captured_env_file: list[str] = []
+
+    def _fake_run(cmd, *args, stdin=None, stdout=None, stderr=None,
+                  timeout=None, **kwargs):
+        cmd = list(cmd)
+        captured_argv.append(cmd)
+        # run_one deletes the env-file after the run; read it NOW, the way
+        # docker would.
+        env_file_idx = cmd.index("--env-file")
+        captured_env_file.append(
+            pathlib.Path(cmd[env_file_idx + 1]).read_text()
+        )
+        return SimpleNamespace(returncode=0, stdout=None, stderr=None)
+
+    monkeypatch.setattr(
+        router_dispatch.run_headless.subprocess, "run", _fake_run,
+    )
+
+    kwargs = _baseline_cc_kwargs(tmp_path)
+    kwargs["env"] = {
+        "NEXTSEEK_USERNAME": "demo",
+        "NEXTSEEK_PASSWORD": "demo",
+        "CATALOG_FILE": "/etc/dmac/agent_model_catalog.json",
+        **{key: f"sentinel-{key}" for key in _SHARED_CRED_KEYS},
+    }
+    router_dispatch.dispatch_cc(**kwargs, model_id=_SONNET_4_ID)
+
+    assert len(captured_argv) == 1
+    env_file_keys = {
+        line.split("=", 1)[0]
+        for line in captured_env_file[0].splitlines() if "=" in line
+    }
+    leaked = env_file_keys & set(_SHARED_CRED_KEYS)
+    assert not leaked, (
+        f"shared-cred keys leaked into the CC-route container env-file: "
+        f"{sorted(leaked)}"
+    )
+    # Legitimate keys still relayed.
+    assert "NEXTSEEK_USERNAME" in env_file_keys
+    assert "NEXTSEEK_PASSWORD" in env_file_keys
+    assert "CATALOG_FILE" in env_file_keys
+
+    # MEDIUM-2: dead CHAT_NEXTSEEK_DB_ENV injection removed — absent from
+    # both the -e flags and the env-file.
+    argv = captured_argv[0]
+    e_values = {argv[i + 1] for i, tok in enumerate(argv) if tok == "-e"}
+    assert not any(v.startswith("CHAT_NEXTSEEK_DB_ENV=") for v in e_values), (
+        "dead injection: chat_nextseek left the agent image; "
+        "CHAT_NEXTSEEK_DB_ENV must not be -e injected on the CC route"
+    )
+    assert "CHAT_NEXTSEEK_DB_ENV" not in env_file_keys
+
+
+def test_run_headless_env_keys_exclude_shared_cred_keys():
+    """T11R2 (HIGH-1): run_headless._ENV_KEYS (the .env→container forwarding
+    allowlist) must not list any of the 16 sidecar-held shared-cred keys."""
+    overlap = run_headless._ENV_KEYS & run_headless.SHARED_CRED_KEYS
+    assert not overlap, (
+        f"_ENV_KEYS still allowlists sidecar-held shared-cred keys: "
+        f"{sorted(overlap)}"
+    )
 
 
 def test_dispatch_ns_never_relays_shared_cred_keys_to_container(
