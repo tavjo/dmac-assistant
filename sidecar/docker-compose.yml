@@ -33,6 +33,11 @@ services:
       SIDECAR_WS_PORT: "8765"
       SIDECAR_STAGING_DIR: /staging
       READ_SAFE_ENDPOINTS_PATH: /app/context/read_safe_endpoints.json
+      # T12: override the agent-image CATALOG_FILE from .env with the sidecar's
+      # own staged copy (Dockerfile COPYs it to /app/context/). ChatConfig reads
+      # this for every granular op; the .env value points at a nonexistent
+      # /app/chat_nextseek/ path inside this venv-installed image.
+      CATALOG_FILE: /app/context/agent_model_catalog.json
       CHAT_NEXTSEEK_DB_ENV: dev
       NEXTSEEK_MODE: gcp
       CHAT_NEXTSEEK_CONFIG_VERBOSE: "false"

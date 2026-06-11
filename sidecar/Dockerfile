@@ -17,6 +17,12 @@ RUN uv pip install /tmp/chat_nextseek websockets~=16.0 pydantic>=2.9
 COPY sidecar/__init__.py /app/sidecar/__init__.py
 COPY sidecar/app/ /app/sidecar/app/
 COPY build_context/plugins/nextseek/context/read_safe_endpoints.json /app/context/read_safe_endpoints.json
+# T12: chat_nextseek's ChatConfig hard-reads CATALOG_FILE at init for every
+# granular op. The agent-image path baked into .env (/app/chat_nextseek/...)
+# does not exist in this venv-installed sidecar, so stage the vendored catalog
+# at a stable in-image path; compose sets CATALOG_FILE to point here (overriding
+# the .env value). Without this, all 7 granular ops fail CONFIG_ERROR/FileNotFound.
+COPY vendor/chat_nextseek/agent_model_catalog.json /app/context/agent_model_catalog.json
 
 RUN useradd -m -u 1001 -s /bin/sh sidecar
 USER sidecar
