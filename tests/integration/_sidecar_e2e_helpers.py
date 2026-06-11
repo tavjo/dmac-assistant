@@ -255,6 +255,18 @@ def warm_sidecar(container) -> None:
     exec_in_agent(container, [f"{_BIN}/nextseek-entity-extract", "--query", _NDMA], timeout=120)
 
 
+def settings_surface(bridge_env: dict[str, str]) -> str:
+    """The REAL production `--settings '{...}'` cmdline string for this bridge_env.
+
+    The auto-mode classifier settings JSON rides the CC exec cmdline (built by
+    `_automode_settings_args`), NOT the container env — so the gate-1 canary scan must
+    cover it too, or a re-keying of a shared canary into an autoMode `environment`
+    entry would slip the scan. This calls the exact production builder and joins its
+    parts, yielding the literal string the bridge would pass to `claude`."""
+    from dmac_assistant.containers import _automode_settings_args
+    return " ".join(_automode_settings_args(bridge_env))
+
+
 def run_nine_ops(container) -> NineOpRun:
     """Drive all 9 ops through ONE de-cred container; collect frames for the canary
     scan. Binds gate 1's conjunction: a non-functional container fails .all_succeeded."""

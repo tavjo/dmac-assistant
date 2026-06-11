@@ -58,6 +58,23 @@ SHARED_CANARY: dict[str, str] = {
 }
 _ALL_CANARY_VALUES = list(SHARED_CANARY.values())
 
+# The auto-mode `--settings` allowlist (OI-5, built by `_automode_settings_args`)
+# LEGITIMATELY embeds the Neo4j ENDPOINT URI into a "trusted internal infra"
+# descriptor on the CC exec cmdline — this is shipped, documented behavior (project
+# CLAUDE.md "Headless Invocation":  `--settings '{"autoMode":{"environment":
+# ["$defaults", <trusted NS API / Neo4j / GCP entries>]}}'`). The endpoint URL is NOT
+# a usable credential on its own: NEO4J_USER / NEO4J_PASSWORD are stripped from BOTH
+# the container env AND the settings descriptor. So the settings-surface scan targets
+# the 15 SECRET values that must NEVER ride the cmdline (passwords, hosts, ports, db
+# names/paths, the GCP key value); the one legitimately-forwarded endpoint is
+# excluded here and positively asserted present below (it proves the allowlist works).
+# NOTE (escalated, T12 review): that the literal Neo4j endpoint URI is visible to the
+# agent via its own `claude --settings` argv is an OI-5 design tradeoff, not a leak of
+# a secret — flagged for conscious ratification; see the T12 remediation report.
+_SETTINGS_SECRET_CANARY_VALUES = [
+    v for k, v in SHARED_CANARY.items() if k != "NEO4J_URI"
+]
+
 
 def _seeded_bridge_env() -> dict[str, str]:
     """A hostile-host bridge_env: all 16 shared canaries PLUS the legitimately
@@ -116,16 +133,38 @@ def test_decredentialed_agent_runs_9_ops_with_zero_shared_creds(
 
         H.warm_sidecar(container)
         run = H.run_nine_ops(container)
+        # The auto-mode `--settings '{"autoMode":...}'` JSON rides the CC exec cmdline
+        # (NOT the container env), so the scan must cover it for the SAME bridge_env the
+        # canary seeds — built by the real production builder `_automode_settings_args`.
+        run.settings = H.settings_surface(bridge_env)
 
         scratch_dump = H.exec_in_agent(
             container, ["sh", "-c", "cat /data/scratch/* 2>/dev/null || true"]).stdout
 
         # --- CONTAINMENT (the gate) -----------------------------------------
-        # Scanned across ALL 9 ops' frames (incl. the failing viewset frames), so a
-        # leak on any op surface is caught regardless of that op's exit status.
+        # Container-resident surfaces (env, /proc/1/environ, scratch, all 9 ops'
+        # frames incl. the failing viewset frames) must carry NONE of the 16 shared
+        # canaries — full-strength scan.
         streams = [env_dump, proc_dump, scratch_dump, *run.frames]
         hits = scan_for_canaries(streams, paths=[], canaries=_ALL_CANARY_VALUES)
         assert hits == [], f"shared canary leaked into agent surfaces: {hits}"
+
+        # The auto-mode `--settings` JSON rides the CC exec CMDLINE (not env), so it is
+        # a distinct exfil surface that the env scan above cannot see. Scan it for the
+        # 15 SECRET canaries that `_automode_settings_args` must never embed (a password
+        # or the GCP key re-keyed into an allowlist descriptor would be caught here).
+        settings_hits = scan_for_canaries(
+            [run.settings], paths=[], canaries=_SETTINGS_SECRET_CANARY_VALUES)
+        assert settings_hits == [], (
+            f"secret canary leaked into the --settings allowlist cmdline: {settings_hits}"
+        )
+        # Positive control: the ONE legitimately-forwarded value (the Neo4j endpoint
+        # URI) IS present — proving the OI-5 allowlist descriptor was built, so the
+        # secret-only scan above is selective, not a vacuous empty-string scan.
+        assert SHARED_CANARY["NEO4J_URI"] in run.settings, (
+            "OI-5 Neo4j allowlist descriptor missing from --settings; the scan would "
+            "be vacuous (settings string built from the wrong bridge_env?)."
+        )
         assert len(run.results) == 9, f"expected 9 ops, drove {len(run.results)}"
         by_name = {r.name: r for r in run.results}
 

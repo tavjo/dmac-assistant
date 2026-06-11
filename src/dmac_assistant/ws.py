@@ -872,6 +872,7 @@ def _get_router_agent() -> RouterAgent:  # pragma: no cover
     return _router_agent
 
 
+# TODO(T12-escalated): real-WS-turn artifact gate still owed - needs sample data on the E2E target stack; see .claude/plans/nextseek-sidecar-build-2026-06-09.md Wave 4/5 log + evidence/sidecar-e2e/20260611T025009Z/SUMMARY.txt
 async def _chat_ws_router_on(  # pragma: no cover
     *,
     websocket: WebSocket,
@@ -893,6 +894,7 @@ async def _chat_ws_router_on(  # pragma: no cover
     )
     pre_turn_files = snapshot_scratch_files(config.scratch_root, identity.user_id)
 
+    # TODO(T12-escalated): real-WS-turn artifact gate still owed - needs sample data on the E2E target stack; see .claude/plans/nextseek-sidecar-build-2026-06-09.md Wave 4/5 log + evidence/sidecar-e2e/20260611T025009Z/SUMMARY.txt
     async def fire_post_turn_copy() -> None:
         after, new = _sweep_then_diff(config, identity, pre_turn_files)
         if not new:
