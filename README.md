@@ -121,7 +121,7 @@ The `.env.example` file is the canonical schema. Required for the bridge to star
 - `NEXTSEEK_USERNAME`, `NEXTSEEK_PASSWORD`, `NEXTSEEK_URL` — fallback creds (production reuses chat-UI login)
 - `DMAC_DEV_MODE=1` — selects macOS-friendly default path roots (`~/dmac-dev/...`)
 
-Optional (forwarded to the container if set): `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`. **`GCP_API_KEY` is conditionally required**: optional when the LLM router is off (the default), but required when `DMAC_ROUTER_ENABLED=1` because the router uses Gemini Pro via BAML for route decisions. See [LLM router](#llm-router).
+Optional (bridge/sidecar-side only — **not forwarded to the agent container**): `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`. **`GCP_API_KEY` is conditionally required**: optional when the LLM router is off (the default), but required when `DMAC_ROUTER_ENABLED=1` because the router uses Gemini Pro via BAML for route decisions; it is likewise not forwarded to the agent container (the NExtSEEK sidecar holds the shared credentials). See [LLM router](#llm-router).
 
 ---
 

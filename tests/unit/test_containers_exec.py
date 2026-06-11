@@ -363,7 +363,10 @@ def test_nextseek_base_url_equals_bridge_url_value(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("which", ["cc", "ns"])
-def test_neo4j_database_forwarded_when_set(which: str, tmp_path: Path) -> None:
+def test_neo4j_database_never_forwarded(which: str, tmp_path: Path) -> None:
+    """T11 (U-1): NEO4J_DATABASE is one of the 16 sidecar-held shared-cred
+    keys — it must be ABSENT from the per-exec env even when set in
+    bridge_env, on both routes."""
     container = _FakeContainer()
     bridge_env = {**_bridge_env_with_url(), "NEO4J_DATABASE": "neo4j-prod"}
     common_kwargs = dict(
@@ -377,7 +380,7 @@ def test_neo4j_database_forwarded_when_set(which: str, tmp_path: Path) -> None:
     else:
         exec_ns_turn(container, session_id=NS_SESSION_ID, **common_kwargs)
     env = container.client.api.exec_create_calls[0]["environment"]
-    assert env["NEO4J_DATABASE"] == "neo4j-prod"
+    assert "NEO4J_DATABASE" not in env
 
 
 @pytest.mark.parametrize("which", ["cc", "ns"])
@@ -399,7 +402,11 @@ def test_neo4j_database_omitted_when_unset(which: str, tmp_path: Path) -> None:
     assert "NEO4J_DATABASE" not in env
 
 
-def test_ns_env_has_outputs_dir(tmp_path: Path) -> None:
+def test_ns_env_omits_chat_nextseek_keys(tmp_path: Path) -> None:
+    """T11 (U-8): the NS route execs a thin client of the sidecar/viewset —
+    OUTPUTS_DIR / CHAT_NEXTSEEK_SESSION_DB / NEXTSEEK_MODE were chat_nextseek
+    process config and moved to the sidecar with it (T10 removed them from
+    the NS exec env). They must be ABSENT."""
     container = _FakeContainer()
     exec_ns_turn(
         container,
@@ -410,39 +417,9 @@ def test_ns_env_has_outputs_dir(tmp_path: Path) -> None:
         bridge_env=_bridge_env_with_url(),
     )
     env = container.client.api.exec_create_calls[0]["environment"]
-    assert env["OUTPUTS_DIR"] == (
-        f"/data/scratch/{USER_ID}/chat_nextseek/{NS_SESSION_ID}/"
-    )
-
-
-def test_ns_env_has_chat_nextseek_session_db(tmp_path: Path) -> None:
-    container = _FakeContainer()
-    exec_ns_turn(
-        container,
-        query="hi",
-        session_id=NS_SESSION_ID,
-        identity=_identity(),
-        config=_config(tmp_path),
-        bridge_env=_bridge_env_with_url(),
-    )
-    env = container.client.api.exec_create_calls[0]["environment"]
-    assert env["CHAT_NEXTSEEK_SESSION_DB"] == (
-        "/home/user/.claude/chat_nextseek/sessions.sqlite"
-    )
-
-
-def test_ns_env_has_nextseek_mode_literal_gcp(tmp_path: Path) -> None:
-    container = _FakeContainer()
-    exec_ns_turn(
-        container,
-        query="hi",
-        session_id=NS_SESSION_ID,
-        identity=_identity(),
-        config=_config(tmp_path),
-        bridge_env=_bridge_env_with_url(),
-    )
-    env = container.client.api.exec_create_calls[0]["environment"]
-    assert env["NEXTSEEK_MODE"] == "gcp"
+    assert "OUTPUTS_DIR" not in env
+    assert "CHAT_NEXTSEEK_SESSION_DB" not in env
+    assert "NEXTSEEK_MODE" not in env
 
 
 def test_cc_env_omits_outputs_dir(tmp_path: Path) -> None:

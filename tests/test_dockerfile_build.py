@@ -33,14 +33,10 @@ def _docker_available() -> bool:
 
 @pytest.fixture(scope="module")
 def built_image() -> str:
-    # Amendment 4 (vendored chat_nextseek) requires vendor/chat_nextseek/.git
-    # to exist before `docker buildx build`, otherwise the COPY directive
-    # fails with an opaque path-not-found error. The Makefile `image-build`
-    # target sequences `sync-vendor-deps` correctly; this fixture bypasses
-    # Make and calls Docker directly, so we must replicate the prereq.
-    if not (REPO_ROOT / "vendor" / "chat_nextseek" / ".git").is_dir():
-        subprocess.run(["make", "sync-vendor-deps"], cwd=REPO_ROOT, check=True)
-
+    # T11 (U-11): the agent image no longer COPYs vendor/chat_nextseek, so the
+    # vendor-presence prereq moved to the SIDECAR image pin
+    # (test_sidecar_dockerfile_keeps_vendored_chat_nextseek below). The agent
+    # build needs only the committed build_context tree.
     build_context = REPO_ROOT / "build_context"
     assert (build_context / "plugins" / "nextseek").is_dir(), (
         "build_context/plugins/nextseek must be populated by the B13 snapshot "
@@ -272,7 +268,9 @@ def test_dockerfile_uses_uv_sync_locked() -> None:
     venv prepended to PATH so plain `python` resolves to the venv
     interpreter. Replaces Amendment 4's `--system` install model (uv has
     never accepted `--system` on `sync`). Amendment 4 vendored-source
-    drift guards (COPY vendor, no SSH, no git+ URLs) preserved.
+    drift guards (no SSH, no git+ URLs) preserved; the vendored COPY +
+    install pins are INVERTED by T11 (chat_nextseek/torch stripped from
+    the agent image — sidecar-only per U-11).
     """
     import re
 
@@ -333,23 +331,20 @@ def test_dockerfile_uses_uv_sync_locked() -> None:
                 f"Amendment 4 forbids git+https:// for chat_nextseek: {line!r}"
             )
 
-    # Amendment 4: vendored COPY + local install pair.
-    assert "COPY vendor/chat_nextseek /tmp/chat_nextseek" in text, (
-        "Amendment 4 requires `COPY vendor/chat_nextseek /tmp/chat_nextseek` in "
-        "the Dockerfile (vendored-source install)."
+    # T11 (U-11, resolves OI-2): chat_nextseek + torch are STRIPPED from the
+    # agent image — they live only in the sidecar image (sidecar/Dockerfile).
+    # Inverts the Amendment 4/5 vendored-install pins that used to live here.
+    assert "COPY vendor/chat_nextseek" not in text, (
+        "T11 forbids `COPY vendor/chat_nextseek` in the AGENT Dockerfile. "
+        "chat_nextseek is sidecar-only (U-11); the sidecar image keeps the "
+        "vendored COPY in sidecar/Dockerfile."
     )
-    assert re.search(r"uv pip install\b.*/tmp/chat_nextseek", text), (
-        "Amendment 5 v3 requires a `uv pip install ... /tmp/chat_nextseek` "
-        "line consuming the COPY destination (no --system; venv-on-PATH "
-        "provides interpreter resolution)."
+    assert re.search(r"uv pip install\b[^\n]*chat_nextseek", text) is None, (
+        "T11 forbids installing chat_nextseek into the agent image."
     )
-
-    # R4-NEW-5 ordering: chat_nextseek install line follows uv sync line.
-    sync_match = re.search(r"uv sync --locked", text)
-    pip_match = re.search(r"uv pip install\b.*/tmp/chat_nextseek", text)
-    assert sync_match is not None and pip_match is not None
-    assert sync_match.start() < pip_match.start(), (
-        "chat_nextseek install must follow `uv sync --locked`."
+    assert re.search(r"uv pip install\b[^\n]*\btorch\b", text) is None, (
+        "T11 forbids the torch-cpu install in the agent image (it existed "
+        "only to satisfy chat_nextseek's sentence-transformers dependency)."
     )
 
     # AMD3-M2 leftover guard: no placeholder.
@@ -431,6 +426,39 @@ def test_dockerfile_copies_only_new_plugin():
         "Dockerfile MUST contain the NEW-6 build-time catalog-presence guard "
         "so silent-empty-snapshot fails closed at docker build time. Pairs "
         "with B13's host-side test -d guard."
+    )
+
+
+def test_agent_image_ships_thin_client_modules():
+    """T11 (U-11): runner_ns.py at /opt/dmac/ needs its sibling helper modules
+    (_ws_contract / _assistant_models / _assistant_client / _sidecar_client)
+    COPY'd next to it — the /opt/dmac path is outside the plugin bin dir that
+    rides along via the broad plugin COPY."""
+    text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    for mod in (
+        "_ws_contract.py",
+        "_assistant_models.py",
+        "_assistant_client.py",
+        "_sidecar_client.py",
+    ):
+        assert (
+            f"COPY build_context/plugins/nextseek/bin/{mod} /opt/dmac/{mod}"
+            in text
+        ), (
+            f"Dockerfile must COPY {mod} to /opt/dmac/ so runner_ns.py can "
+            "import it (T11 step 1)."
+        )
+
+
+def test_sidecar_dockerfile_keeps_vendored_chat_nextseek():
+    """T11: the vendored chat_nextseek install MOVED to the sidecar image.
+    This is the relocated vendor-presence guard from the old agent-image
+    `built_image` fixture: the SIDECAR Dockerfile must keep the vendored
+    COPY (sidecar builds require `make sync-vendor-deps` first)."""
+    text = (REPO_ROOT / "sidecar" / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY vendor/chat_nextseek" in text, (
+        "sidecar/Dockerfile must keep `COPY vendor/chat_nextseek` — the "
+        "sidecar is the ONLY image that ships chat_nextseek (U-11)."
     )
 
 

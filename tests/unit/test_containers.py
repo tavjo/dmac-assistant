@@ -26,8 +26,15 @@ from dmac_assistant.containers import (
 )
 
 
-# T4 Amendment-4 forwarded-key list (12 keys; prod-MySQL keys excluded).
-NEW_FORWARDED_KEYS = (
+# T11 (U-1): the 16 shared-credential keys that must NEVER reach the agent
+# container — T10 deleted them from _build_environment's forwarding; they
+# live only in the sidecar.
+SHARED_CRED_KEYS = (
+    "GCP_API_KEY",
+    "NEO4J_URI",
+    "NEO4J_USER",
+    "NEO4J_PASSWORD",
+    "NEO4J_DATABASE",
     "MYSQL_HOST_DEV",
     "MYSQL_PORT",
     "MYSQL_USER",
@@ -39,14 +46,10 @@ NEW_FORWARDED_KEYS = (
     "SESSION_DB_PASSWORD",
     "SESSION_DB_NAME",
     "SESSION_DB_PATH",
-    "NEO4J_DATABASE",
 )
-PRE_EXISTING_FORWARDED_KEYS = (
+# Non-credential keys the bridge still forwards to the agent container.
+STILL_FORWARDED_KEYS = (
     "NEXTSEEK_URL",
-    "GCP_API_KEY",
-    "NEO4J_URI",
-    "NEO4J_USER",
-    "NEO4J_PASSWORD",
     "DMAC_PATH_MAPPINGS",
 )
 _MINIMUM_BRIDGE_ENV = {
@@ -698,53 +701,43 @@ def test_catalog_file_env_var_is_constant_regardless_of_host_path(
 
 
 # ---------------------------------------------------------------------------
-# T5 Group A — per-new-key parameterized forwarding tests (12 keys × 2 dirs)
+# T11 Group A — containment: shared creds NEVER forwarded (U-1)
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("new_key", NEW_FORWARDED_KEYS)
-def test_new_forwarded_key_round_trips_when_present(new_key, identity, config):
-    sentinel = f"sentinel-{new_key}"
-    bridge_env = dict(_MINIMUM_BRIDGE_ENV, **{new_key: sentinel})
+def test_shared_creds_never_forwarded(identity, config):
+    """All 16 shared-cred keys must be ABSENT from spec.environment even when
+    present in bridge_env. T10 moved them to the sidecar; forwarding any of
+    them to the per-user agent container is the exfiltration vector this
+    plan closes."""
+    bridge_env = dict(_MINIMUM_BRIDGE_ENV)
+    bridge_env.update(
+        {key: f"sentinel-{key}" for key in SHARED_CRED_KEYS}
+    )
     spec = build_container_spec(
         identity, config, image=IMAGE, session_id=None, bridge_env=bridge_env
     )
-    assert spec.environment.get(new_key) == sentinel
-
-
-@pytest.mark.parametrize("new_key", NEW_FORWARDED_KEYS)
-def test_new_forwarded_key_absent_when_missing_from_bridge_env(
-    new_key, identity, config
-):
-    spec = build_container_spec(
-        identity,
-        config,
-        image=IMAGE,
-        session_id=None,
-        bridge_env=dict(_MINIMUM_BRIDGE_ENV),
-    )
-    assert new_key not in spec.environment
+    for key in SHARED_CRED_KEYS:
+        assert key not in spec.environment, (
+            f"shared-cred key {key} leaked into the agent container spec"
+        )
 
 
 # ---------------------------------------------------------------------------
-# T5 Group B — pre-existing keys still forward (regression, non-parameterized)
+# T11 Group B — non-credential keys still forward (regression)
 # ---------------------------------------------------------------------------
-def test_pre_existing_forwarded_keys_still_round_trip(identity, config):
+def test_still_forwarded_keys_round_trip(identity, config):
     bridge_env = dict(_MINIMUM_BRIDGE_ENV)
     bridge_env.update(
         {
             "NEXTSEEK_URL": "https://nextseek-dev.example.mit.edu",
-            "GCP_API_KEY": "gcp-key-XYZ",
-            "NEO4J_URI": "bolt://neo4j.example:7687",
-            "NEO4J_USER": "neo4j-user",
-            "NEO4J_PASSWORD": "neo4j-pw",
             "DMAC_PATH_MAPPINGS": "proj-a:/data/projects/proj-a",
         }
     )
     spec = build_container_spec(
         identity, config, image=IMAGE, session_id=None, bridge_env=bridge_env
     )
-    for key in PRE_EXISTING_FORWARDED_KEYS:
+    for key in STILL_FORWARDED_KEYS:
         assert spec.environment.get(key) == bridge_env[key], (
-            f"pre-existing key {key} dropped from forwarding tuple/branch"
+            f"still-forwarded key {key} dropped from forwarding tuple/branch"
         )
 
 
@@ -763,22 +756,34 @@ def test_password_key_is_member_of_redacted_env_keys(redacted_key):
     "redacted_key",
     ["MYSQL_DEV_PASSWORD", "SESSION_DB_PASSWORD", "NEO4J_PASSWORD"],
 )
-def test_password_key_redacts_in_repr_and_model_dump(
+def test_shared_cred_password_never_reaches_spec_or_dumps(
     redacted_key, identity, config
 ):
+    """T11: these password keys are no longer forwarded at all (containment
+    beats redaction). The canary value must appear NOWHERE — not in the
+    environment, not in repr, not in any dump."""
     canary = f"CANARY-{redacted_key}-VAL-92Z"
     bridge_env = dict(_MINIMUM_BRIDGE_ENV, **{redacted_key: canary})
     spec = build_container_spec(
         identity, config, image=IMAGE, session_id=None, bridge_env=bridge_env
     )
+    assert redacted_key not in spec.environment
+    for blob in (repr(spec), json.dumps(spec.model_dump()), spec.model_dump_json()):
+        assert canary not in blob
+
+
+def test_redaction_still_fires_for_forwarded_secret(identity, config):
+    """Regression: the redaction machinery itself must keep working for
+    secrets that ARE still forwarded (AWS_BEARER_TOKEN_BEDROCK)."""
+    spec = build_container_spec(
+        identity, config, image=IMAGE, session_id=None,
+        bridge_env=dict(_MINIMUM_BRIDGE_ENV),
+    )
     text = repr(spec)
-    assert canary not in text
+    assert "bearer-abc" not in text
     assert "<REDACTED>" in text
     dumped = spec.model_dump()
-    assert dumped["environment"][redacted_key] == "<REDACTED>"
-    dumped_json = json.dumps(dumped)
-    assert canary not in dumped_json
-    assert "<REDACTED>" in dumped_json
+    assert dumped["environment"]["AWS_BEARER_TOKEN_BEDROCK"] == "<REDACTED>"
     spec_json = spec.model_dump_json()
-    assert canary not in spec_json
+    assert "bearer-abc" not in spec_json
     assert '"<REDACTED>"' in spec_json

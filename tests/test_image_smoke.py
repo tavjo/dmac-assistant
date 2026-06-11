@@ -387,10 +387,11 @@ def test_dmac_python_env_resolves_to_314(dummy_env: dict[str, str]) -> None:
     assert "DMAC_PYTHON_OK" in logs, f"$DMAC_PYTHON path not 3.14; logs={logs!r}"
 
 
-def test_chat_nextseek_importable_no_with(dummy_env: dict[str, str]) -> None:
-    """Plan A · T8 (C2): `python -c "import chat_nextseek"` MUST succeed
-    inside the image WITHOUT a `uv run --with` wrapper. This is the
-    persistent-install gate.
+def test_chat_nextseek_absent_from_agent_image(dummy_env: dict[str, str]) -> None:
+    """T11 (U-11, gate 9): `python -c "import chat_nextseek"` MUST FAIL inside
+    the agent image. chat_nextseek (and its ~2 GB torch dependency chain) is
+    sidecar-only; the agent image ships only the thin WS/viewset client.
+    Inverts the old Plan A T8 persistent-install gate.
     """
     with make_container(
         image=IMAGE_TAG,
@@ -398,19 +399,20 @@ def test_chat_nextseek_importable_no_with(dummy_env: dict[str, str]) -> None:
         env=dummy_env,
         command=[
             "-c",
-            "python -c 'import chat_nextseek; print(chat_nextseek.__name__)'",
+            "python -c 'import chat_nextseek'",
         ],
         entrypoint_override=["sh"],
     ) as container:
         exit_code = container.wait()["StatusCode"]
         logs = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
 
-    assert exit_code == 0, (
-        f"`python -c 'import chat_nextseek'` failed (exit={exit_code}): {logs!r}. "
-        "Plan A T8 invariant: chat_nextseek MUST be importable without `uv run --with`."
+    assert exit_code != 0, (
+        f"`python -c 'import chat_nextseek'` SUCCEEDED (exit={exit_code}) — "
+        "chat_nextseek must NOT be installed in the agent image (T11/U-11); "
+        f"logs={logs!r}"
     )
-    assert "chat_nextseek" in logs, (
-        f"`import chat_nextseek` did not print module name; logs={logs!r}."
+    assert "ModuleNotFoundError" in logs or "ImportError" in logs, (
+        f"expected an import failure for chat_nextseek; logs={logs!r}"
     )
 
 
@@ -563,16 +565,23 @@ def test_runner_ns_mode_world_executable() -> None:
     )
 
 
-def test_chat_nextseek_orchestrator_importable_in_image() -> None:
-    """The rebuilt image can import chat_nextseek.orchestrator.run_query."""
+def test_thin_client_modules_importable_at_opt_dmac() -> None:
+    """T11: runner_ns.py's sibling helper modules (_ws_contract,
+    _assistant_models, _assistant_client, _sidecar_client) must import from
+    /opt/dmac/ WITHOUT chat_nextseek — proving the new Dockerfile COPYs landed
+    and the thin client's deps (websockets, httpx) come from `uv sync`.
+    Replaces the old chat_nextseek.orchestrator import gate (inverted by
+    test_chat_nextseek_absent_from_agent_image above).
+    """
     with make_container(
         image=IMAGE_TAG,
         mounts={},
         env={},
         command=[
             "-c",
-            "python -c 'from chat_nextseek.orchestrator import run_query; "
-            "print(run_query.__name__)'",
+            "cd /opt/dmac && python -c '"
+            "import _ws_contract, _assistant_models, _assistant_client, "
+            "_sidecar_client; print(\"THIN_CLIENT_OK\")'",
         ],
         entrypoint_override=["sh"],
     ) as container:
@@ -582,10 +591,9 @@ def test_chat_nextseek_orchestrator_importable_in_image() -> None:
         )
 
     assert exit_code == 0, (
-        "chat_nextseek.orchestrator.run_query import failed inside rebuilt "
-        f"image; logs={logs!r}"
+        f"thin-client helper modules failed to import at /opt/dmac; logs={logs!r}"
     )
-    assert "run_query" in logs
+    assert "THIN_CLIENT_OK" in logs
 
 
 def test_entrypoint_dmac_runtime_mode_idle_keeps_container_alive(

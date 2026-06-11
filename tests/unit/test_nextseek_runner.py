@@ -6,17 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 
-# Skip cleanly on hosts without chat_nextseek installed. The subprocess we
-# spawn loads `_nextseek_runner.py`, which does
-# `from chat_nextseek.config import ChatConfig` first; on a host without
-# chat_nextseek that exits 2 with IMPORT_FAILED before reaching the
-# cred-missing branch this test asserts. chat_nextseek is image-only by
-# Plan A T7's PATH_B decision (host Python 3.12 vs chat_nextseek's
-# `requires-python >=3.14`) — see plan `## Host vs Image Python Environment`
-# and `## Amendment Log` entry "chat_nextseek host-import audit (2026-05-02)".
-pytest.importorskip("chat_nextseek")
+# T11 (U-11): no importorskip — `_nextseek_runner.py` is a thin
+# sidecar/viewset client that imports no chat_nextseek, so the
+# CONFIG_MISSING guard below is reachable on any host.
 
 RUNNER = Path(
     "build_context/plugins/nextseek/bin/_nextseek_runner.py"

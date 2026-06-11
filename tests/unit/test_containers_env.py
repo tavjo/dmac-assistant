@@ -1,5 +1,6 @@
-"""Plan A · T2: container environment must include GCP_API_KEY + NEO4J_*
-and redact secret keys in repr() and model_dump()."""
+"""T11 (inverts Plan A · T2): the agent container environment must NOT
+include GCP_API_KEY / NEO4J_* (sidecar-held shared creds, U-1) and must
+still redact secret keys in repr() and model_dump()."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -33,13 +34,16 @@ def _config(tmp_path: Path) -> BridgeConfig:
     )
 
 
-def test_gcp_api_key_passed_through(tmp_path):
+def test_gcp_api_key_not_forwarded(tmp_path):
+    """T11 (U-1): GCP_API_KEY is sidecar-held; it must never reach the
+    agent container even when present in bridge_env."""
     spec = build_container_spec(_identity(), _config(tmp_path),
         image="t:1", session_id=None, bridge_env={"GCP_API_KEY": "key-123"})
-    assert spec.environment["GCP_API_KEY"] == "key-123"
+    assert "GCP_API_KEY" not in spec.environment
 
 
-def test_neo4j_creds_passed_through(tmp_path):
+def test_neo4j_creds_not_forwarded(tmp_path):
+    """T11 (U-1): NEO4J_* are sidecar-held; absent even when in bridge_env."""
     spec = build_container_spec(_identity(), _config(tmp_path),
         image="t:1", session_id=None,
         bridge_env={
@@ -47,12 +51,13 @@ def test_neo4j_creds_passed_through(tmp_path):
             "NEO4J_USER": "neo",
             "NEO4J_PASSWORD": "n4j",
         })
-    assert spec.environment["NEO4J_URI"] == "bolt://nx:7687"
-    assert spec.environment["NEO4J_USER"] == "neo"
-    assert spec.environment["NEO4J_PASSWORD"] == "n4j"
+    assert "NEO4J_URI" not in spec.environment
+    assert "NEO4J_USER" not in spec.environment
+    assert "NEO4J_PASSWORD" not in spec.environment
 
 
-def test_neo4j_creds_optional(tmp_path):
+def test_neo4j_creds_absent_unconditionally(tmp_path):
+    """The old optional-when-unset case is now the always-true case."""
     spec = build_container_spec(_identity(), _config(tmp_path),
         image="t:1", session_id=None, bridge_env={})
     assert "NEO4J_URI" not in spec.environment
@@ -86,23 +91,30 @@ def test_dmac_path_mappings_redacted_in_repr(tmp_path):
     assert dumped["environment"]["DMAC_PATH_MAPPINGS"] == "<REDACTED>"
 
 
-def test_repr_redacts_neo4j_password(tmp_path):
-    """M1: redaction must actually fire in repr(), not just be in the set."""
+def test_neo4j_password_value_never_in_repr(tmp_path):
+    """T11: NEO4J_PASSWORD is no longer forwarded, so its value must appear
+    nowhere in repr(); redaction must still fire for forwarded secrets
+    (NEXTSEEK_PASSWORD from the identity)."""
     spec = build_container_spec(_identity(), _config(tmp_path),
         image="t:1", session_id=None,
         bridge_env={"NEO4J_PASSWORD": "secret-neo4j-value"})
     text = repr(spec)
+    assert "NEO4J_PASSWORD" not in spec.environment
     assert "secret-neo4j-value" not in text
-    assert "<REDACTED>" in text
+    assert "<REDACTED>" in text  # NEXTSEEK_PASSWORD still redacts
 
 
-def test_model_dump_redacts_gcp_api_key(tmp_path):
-    """M1: model_dump() must also redact."""
+def test_gcp_api_key_value_never_in_model_dump(tmp_path):
+    """T11: GCP_API_KEY is no longer forwarded, so it must be absent from
+    model_dump()'s environment entirely (containment beats redaction)."""
     spec = build_container_spec(_identity(), _config(tmp_path),
         image="t:1", session_id=None,
         bridge_env={"GCP_API_KEY": "secret-gcp-value"})
     dumped = spec.model_dump()
-    assert dumped["environment"]["GCP_API_KEY"] == "<REDACTED>"
+    assert "GCP_API_KEY" not in dumped["environment"]
+    assert "secret-gcp-value" not in repr(dumped)
+    # M1 regression: model_dump() still redacts forwarded secrets.
+    assert dumped["environment"]["NEXTSEEK_PASSWORD"] == "<REDACTED>"
 
 
 def test_data_output_mounted_ro(tmp_path):
