@@ -74,7 +74,7 @@ def bridge_config(tmp_path: Path) -> BridgeConfig:
 
 @pytest.fixture
 def configured_env(
-    monkeypatch: pytest.MonkeyPatch, bridge_config: BridgeConfig
+    monkeypatch: pytest.MonkeyPatch, bridge_config: BridgeConfig, tmp_path: Path
 ) -> None:
     """Publish the bridge config into the env so ``load_config()`` succeeds."""
     monkeypatch.setenv(
@@ -100,6 +100,13 @@ def configured_env(
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     # NB: intentionally do NOT set AWS_BEARER_TOKEN_BEDROCK on the host env.
     # Canary scan covers that secret via CANARY_SECRET.
+    # task-04R1: hermetic tests must not depend on the sidecar stack being up.
+    # Empty network -> falsy -> start_container skips the fail-fast network
+    # check (containers.py:440-455); tmp staging root -> the post-turn staging
+    # sweep (which DELETES swept request dirs) can never touch the real default
+    # ~/dmac-dev/nextseek-sidecar-staging.
+    monkeypatch.setenv("DMAC_SIDECAR_NETWORK", "")
+    monkeypatch.setenv("DMAC_SIDECAR_STAGING_ROOT", str(tmp_path / "sidecar-staging"))
 
 
 @pytest.fixture

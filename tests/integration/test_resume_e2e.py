@@ -74,6 +74,12 @@ def configure_live_bridge_env(
         live_env["AWS_BEARER_TOKEN_BEDROCK"],
     )
     monkeypatch.setenv("NEXTSEEK_URL", live_env["NEXTSEEK_URL"])
+    # task-04R1: the post-turn staging sweep DELETES swept request dirs; pin
+    # it into the test tmp tree so a live run can never sweep (and delete from)
+    # the real default ~/dmac-dev/nextseek-sidecar-staging. DMAC_SIDECAR_NETWORK
+    # is deliberately NOT pinned here: live runs exercise production parity and
+    # may legitimately attach to the running sidecar stack's network.
+    monkeypatch.setenv("DMAC_SIDECAR_STAGING_ROOT", str(tmp_path / "sidecar-staging"))
     return user_id, PROJECT_NAME
 
 

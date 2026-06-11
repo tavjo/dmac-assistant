@@ -137,6 +137,13 @@ def test_chat_ws_post_turn_copies_run(tmp_path, monkeypatch, eof_after_init, _al
     monkeypatch.setenv("DMAC_SCRATCH_ROOT", str(scratch))
     monkeypatch.setenv("DMAC_CLAUDE_USERS_ROOT", str(claude_users))
     monkeypatch.setenv("DMAC_DROPBOX_ROOT", str(dropbox))
+    # task-04R1: container start is mocked here, but the REAL post-turn staging
+    # sweep (`_sweep_then_diff`, ws.py:489) still runs with load_config()'s
+    # defaults — pin both sidecar vars so the sweep (which DELETES swept request
+    # dirs) no-ops in a tmp dir and never touches the real default
+    # ~/dmac-dev/nextseek-sidecar-staging.
+    monkeypatch.setenv("DMAC_SIDECAR_NETWORK", "")
+    monkeypatch.setenv("DMAC_SIDECAR_STAGING_ROOT", str(tmp_path / "sidecar-staging"))
 
     # Real subprotocol auth via dependency override. The test exercises the
     # `["dmac.bearer", "<token>"]` path (ws.py:73-110) — query strings like

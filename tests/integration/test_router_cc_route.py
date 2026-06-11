@@ -82,7 +82,7 @@ def bridge_config(tmp_path: Path) -> BridgeConfig:
 
 @pytest.fixture
 def configured_env(
-    monkeypatch: pytest.MonkeyPatch, bridge_config: BridgeConfig
+    monkeypatch: pytest.MonkeyPatch, bridge_config: BridgeConfig, tmp_path: Path
 ) -> None:
     """Publish bridge config and enable the router flag."""
     monkeypatch.setenv(
@@ -100,6 +100,13 @@ def configured_env(
     monkeypatch.setenv("NEXTSEEK_USERNAME", "stub-user")
     monkeypatch.setenv("NEXTSEEK_PASSWORD", "stub-pass")
     monkeypatch.setenv("DMAC_ROUTER_ENABLED", "1")
+    # task-04R1: hermetic tests must not depend on the sidecar stack being up.
+    # Empty network -> falsy -> start_container skips the fail-fast network
+    # check (containers.py:440-455); tmp staging root -> the post-turn staging
+    # sweep (which DELETES swept request dirs) can never touch the real default
+    # ~/dmac-dev/nextseek-sidecar-staging.
+    monkeypatch.setenv("DMAC_SIDECAR_NETWORK", "")
+    monkeypatch.setenv("DMAC_SIDECAR_STAGING_ROOT", str(tmp_path / "sidecar-staging"))
 
 
 @pytest.fixture
@@ -189,3 +196,33 @@ async def test_cc_route_real_container_with_mocked_exec(
     after_containers = _running_image_container_ids()
     leaked = after_containers - before_containers
     assert not leaked, f"router-on path left running container(s): {sorted(leaked)!r}"
+
+
+def test_configured_env_pins_sidecar_network_and_staging_off(
+    configured_env: None, tmp_path: Path
+) -> None:
+    """task-04R1 regression pin: the hermetic fixture must neutralize sidecar defaults.
+
+    `load_config()` defaults `sidecar_network` to "dmac-nextseek-net"
+    (config.py:214) and `start_container` fail-fasts when that network is
+    absent (containers.py:440-455). Under `configured_env` the network MUST be
+    falsy so the suite can never reach that fail-fast — i.e. gate 14 stays
+    deterministic whether or not the sidecar stack is up. The staging root MUST
+    live inside the test tmp tree so the destructive post-turn staging sweep
+    (ws.py `_sweep_then_diff` -> `sweep_sidecar_staging`, which DELETES swept
+    request dirs) can never touch the real default
+    ~/dmac-dev/nextseek-sidecar-staging.
+    """
+    from dmac_assistant.config import load_config
+
+    config = load_config()
+    assert config.sidecar_network in (None, ""), (
+        "hermetic fixture leaked a truthy sidecar_network — start_container's "
+        "network fail-fast is reachable and the suite depends on the sidecar "
+        "stack being up"
+    )
+    assert config.sidecar_staging_root is not None
+    assert config.sidecar_staging_root.is_relative_to(tmp_path), (
+        "sidecar_staging_root escaped the test tmp tree — the destructive "
+        "staging sweep could reach a real staging dir"
+    )
