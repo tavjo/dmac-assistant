@@ -79,14 +79,20 @@ def test_staging_sweep_publish_same_turn_real_artifact(tmp_path) -> None:
     to the user's output dir in ONE turn, through the production wiring with NO
     monkeypatch of `_sweep_then_diff`.
 
-    Why a test-seeded artifact (not a live report-op artifact): the local NExtSEEK
-    stack is data-empty, so the only artifact-emitting op (report) returns empty
-    `saved_files` (verified live this session). We therefore feed a real file to the
-    REAL sidecar `staging.make_stage`, then run the EXACT production sequence the WS
-    handler runs (`ws._sweep_then_diff` -> `dispatch_post_turn_copy`) — every line of
-    the `# pragma: no cover` router-on sweep+publish wiring executes against a genuine
-    staged artifact. A fully live report-op-driven version is escalated as needing
-    sample data on the target stack (see T12 report)."""
+    Why a test-seeded artifact (not a live report-op artifact): the report op was
+    *recorded* as returning empty `saved_files`, but that record was wrong. RESOLVED
+    2026-06-11 (see .claude/reports/2026-06-11-ns-t12-report-op-ddx-resolution.md): a
+    completed `run_reporter_summary("published","Published Data")` returns a NON-empty
+    `saved_files` dict (2 files written to /staging/_report_logs). The "data-empty"
+    rationale was false (50,887 samples exist); the original "empty" never reproduced.
+    The actual blocker for a live WS turn is operational — ChatConfig({}) cold-start
+    (~28s) exceeds the 20s WS keepalive, so the op times out (1011) before returning.
+    We feed a real file to the REAL sidecar `staging.make_stage`, then run the EXACT
+    production sequence the WS handler runs (`ws._sweep_then_diff` ->
+    `dispatch_post_turn_copy`) — every line of the sweep+publish FUNCTIONS executes
+    against a genuine staged artifact. What remains owed is driving these through the
+    `# pragma: no cover` `_chat_ws_router_on` closure via a real WS turn (warm the
+    sidecar / raise ping_timeout first; does NOT require loading data)."""
     from sidecar.app.contract import NsLogin
     from sidecar.app.staging import make_stage
     from dmac_assistant import ws as ws_module

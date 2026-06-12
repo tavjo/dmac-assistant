@@ -914,7 +914,13 @@ async def _chat_ws_router_on(  # pragma: no cover
     ns_session = _NsSessionState()
     pre_turn_files = snapshot_scratch_files(config.scratch_root, identity.user_id)
 
-    # TODO(T12-escalated): real-WS-turn artifact gate still owed - needs sample data on the E2E target stack; see .claude/plans/nextseek-sidecar-build-2026-06-09.md Wave 4/5 log + evidence/sidecar-e2e/20260611T025009Z/SUMMARY.txt
+    # TODO(T12-owed): real-WS-turn artifact gate still owed - drive a real router-on turn
+    # through this closure and assert publish-to-output same turn. The report op DOES
+    # stage real artifacts when it completes; the blocker is operational - ChatConfig({})
+    # cold-start (~28s) exceeds the 20s WS keepalive, so the op times out (1011) before
+    # returning. Warm the sidecar / raise ping_timeout first. The prior "needs sample data
+    # on a data-empty stack" rationale was WRONG (50,887 samples exist). Full diagnosis:
+    # .claude/reports/2026-06-11-ns-t12-report-op-ddx-resolution.md.
     async def fire_post_turn_copy() -> None:
         after, new = _sweep_then_diff(config, identity, pre_turn_files)
         if not new:
