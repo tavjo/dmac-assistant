@@ -13,8 +13,6 @@ attribute absent and the monkeypatch raises AttributeError (F-T15-3).
 """
 from __future__ import annotations
 
-from typing import Tuple
-
 import httpx
 
 from sidecar.app.ops import (
@@ -44,7 +42,7 @@ def _map_error(resp: httpx.Response) -> None:
     """
     status = resp.status_code
     if status == 401:
-        raise AuthFailedError(f"NExtSEEK returned 401 Unauthorized")
+        raise AuthFailedError("NExtSEEK returned 401 Unauthorized")
 
     # Try to parse the error envelope.
     try:
@@ -76,7 +74,7 @@ def call_op(
     body: dict,
     *,
     base_url: str,
-    auth: Tuple[str, str],
+    auth: tuple[str, str],
 ) -> dict:
     """POST a granular op to NExtSEEK and return the parsed JSON response dict.
 
@@ -114,7 +112,7 @@ def fetch_artifact(
     rel_url: str,
     *,
     base_url: str,
-    auth: Tuple[str, str],
+    auth: tuple[str, str],
 ) -> bytes:
     """GET a report/submission artifact from NExtSEEK and return raw bytes.
 
