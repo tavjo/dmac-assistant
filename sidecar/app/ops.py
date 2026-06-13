@@ -22,6 +22,18 @@ class WriteBlockedError(RuntimeError):
     """→ WRITE_BLOCKED / exit 5."""
 
 
+class AuthFailedError(RuntimeError):
+    """→ AUTH_FAILED / exit 8. Raised on HTTP 401 or non-participant 403."""
+
+
+class TransportError(RuntimeError):
+    """→ TRANSPORT_ERROR / exit 7. Raised on httpx.HTTPError (connect/read timeout)."""
+
+
+class AgentFailedError(RuntimeError):
+    """→ AGENT_FAILED / exit 4. Raised on CONFIG_ERROR, CONFIG_MISSING, and unexpected errors."""
+
+
 def ALLOW_ALL(*a, **k) -> None:  # T4 default; T5 replaces with the real gate
     return None
 
