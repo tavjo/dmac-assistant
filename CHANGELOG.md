@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format is loosely b
 
 ## [Unreleased]
 
+### Changed — 2026-06-14 — NExtSEEK shared-credential sidecar + thin-client rewire
+
+Removed shared institutional credentials from per-user agent containers. The agent container previously held `GCP_API_KEY`, `NEO4J_*`, `MYSQL_*`, and `SESSION_DB_*` in its process environment (exfiltrable by the in-container agent); they now live only on the bridge host (the router) and **server-side on NExtSEEK**, never in the agent container. This closes the NExtSEEK shared-credential exposure vector. (The separate `AWS_BEARER_TOKEN_BEDROCK` exposure remains open — see [Project status](README.md#project-status) production-blockers.)
+
+Architecture changes:
+
+- **Agent image slimmed 4.95 GB → 1.35 GB** — `chat_nextseek` and its `torch` / `sentence-transformers` dependency tree were removed from the agent image. The in-image `nextseek` plugin runner and the NS-route runner (`container/runner_ns.py`) are now thin clients; neither imports `chat_nextseek` in-process.
+- **`chat_nextseek` runs server-side on NExtSEEK.** NS-route queries (`run_query` / `run_query_plan`) go through the NExtSEEK assistant viewset over HTTP. The 7 granular plugin operations (entity, parse, graph, api-read, api-write, report, generate-submission) route through a docker-compose **sidecar** over WebSocket, which forwards to NExtSEEK's native HTTP endpoints.
+- **Sidecar is a thin HTTP forwarder** (image 210 MB). It holds only `NEXTSEEK_BASE_URL` + a staging directory — no backend credentials, no `chat_nextseek` runtime, no session store. Per-request user credentials travel as Basic-auth arguments, never via `os.environ`, eliminating a cross-user credential-bleed race.
+- **Report artifacts delivered over authenticated HTTP** — granular report / submission outputs are downloaded from NExtSEEK and staged for the bridge to publish to the per-user output root.
+- **`NEXTSEEK_MODE` is no longer injected** into the agent container; the classifier work it steered now runs server-side.
+
+New files:
+
+- `sidecar/` — docker-compose sidecar service: `app/server.py` (WebSocket server), `app/ops.py` (7-op dispatch), `app/ns_client.py` (NExtSEEK granular HTTP client), `app/granular_models.py`, `app/write_gate.py`, `app/contract.py`, `app/config.py`, `app/exceptions.py`, `app/staging.py`, `app/healthcheck.py`, plus `Dockerfile`, `docker-compose.yml`, and Make targets `sidecar-build` / `sidecar-up` / `sidecar-down`.
+- `src/dmac_assistant/staging_sweep.py` — bridge-side sweep of the sidecar staging directory before the post-turn output snapshot.
+
+Env contract changes:
+
+- The 16 shared-credential keys (`GCP_API_KEY`, `NEO4J_*`, `MYSQL_*`, `SESSION_DB_*`) are removed from `_build_environment`; only `DMAC_PATH_MAPPINGS` (plus the AWS / NEXTSEEK basics) are forwarded to the agent container.
+- New bridge-side vars `DMAC_SIDECAR_NETWORK` and `DMAC_SIDECAR_STAGING_ROOT`. The bridge attaches each agent container to the sidecar network with a fail-fast if the network is absent — `make sidecar-up` is required before any bridge run.
+
+Plan: `nextseek-sidecar-build-2026-06-09` (tasks T0a–T18 + Amendments A-1…A-5 + T14, 6 waves; Phase 7 independent adversarial reviewer PASS; hermetic suite 98.56%). Authoritative spec: [`docs/superpowers/specs/2026-06-08-nextseek-shared-cred-sidecar-design.md`](docs/superpowers/specs/2026-06-08-nextseek-shared-cred-sidecar-design.md).
+
 ### Changed — 2026-05-20 — Consolidated `baml_src/`
 
 Merged the two host-side BAML source trees (`src/dmac_assistant/router/baml_src/` and `tools/e2e/baml_src/`) into a single top-level [`baml_src/`](baml_src/). Both existing generated-client paths are preserved via dual `generator` blocks in `baml_src/generators.baml`:
