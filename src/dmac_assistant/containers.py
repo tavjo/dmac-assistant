@@ -135,6 +135,27 @@ class BridgeAttachSocket:
         self._raw = raw_socket
         self._stdout_stream = stdout_stream
         self._line_buffer: bytearray = bytearray()
+        # task-13R2: make the docker exec attach socket blocking (no read
+        # timeout). docker-py's client default timeout is 60s
+        # (docker.constants.DEFAULT_TIMEOUT_SECONDS), and the hijacked attach
+        # socket inherits it. In Python 3.12 `socket.timeout is TimeoutError is
+        # asyncio.TimeoutError`, so a turn whose stdout idles >60s (e.g. an NS
+        # discriminator or a chart query whose remote nextseek-query computes
+        # silently) raises TimeoutError out of recv(); ws.py's
+        # `except asyncio.TimeoutError` then mislabels it `exec_timeout` and
+        # kills the turn far below its real budget. The bridge already bounds
+        # each turn with `asyncio.wait_for(_read_and_dispatch(),
+        # timeout=_NS/_CC_TURN_TIMEOUT_SECONDS)` — that wait_for is the intended
+        # sole governor. Clearing the socket's own timeout here, in __init__,
+        # covers BOTH exec_cc_turn and exec_ns_turn (each wraps its raw_socket
+        # in this class) from one obvious seam. Log-streaming construction
+        # (stdout_stream set, no real socket) is harmless: _set_blocking is a
+        # no-op when the object lacks .settimeout.
+        # Residual (pre-existing, accepted): on a truly-hung remote the wait_for
+        # still fires exec_timeout + kill_exec_pid at the turn budget, but the
+        # blocking recv() in its asyncio.to_thread worker cannot be force-killed
+        # and lingers until the docker daemon closes the connection.
+        self._set_blocking()
         # Phase 7 residual #1 visibility (2026-05-18): when set, every stderr
         # frame's payload is written verbatim (untruncated) to this sink so the
         # in-container runner's debug output — including chat_nextseek's
@@ -203,6 +224,27 @@ class BridgeAttachSocket:
         if hasattr(self._raw, "read"):
             return self._raw.read(size)
         return self._transport().recv(size)
+
+    def _set_blocking(self) -> None:
+        """Clear any read timeout on the underlying attach socket (task-13R2).
+
+        Resolves the same underlying socket-like object as :meth:`_transport`
+        (docker-py wraps the real socket as ``._sock`` on a ``SocketIO``) and
+        calls ``settimeout(None)`` so reads block indefinitely. The
+        per-turn ``asyncio.wait_for`` in ``ws.py`` is then the only governor,
+        instead of docker-py's 60s default leaking through as a spurious
+        ``exec_timeout``. Defensive: never raises if the transport lacks
+        ``settimeout`` (log-streaming uses a non-socket ``stdout_stream``).
+        """
+        sock = self._transport()
+        settimeout = getattr(sock, "settimeout", None)
+        if callable(settimeout):
+            try:
+                settimeout(None)
+            except (OSError, ValueError):
+                # Some transports refuse settimeout once hijacked; the wait_for
+                # governor still bounds the turn, so degrade silently.
+                log.debug("attach socket settimeout(None) failed; ignoring")
 
     def _transport(self) -> Any:
         """Return the recv/send/shutdown-capable socket-like transport.
@@ -340,25 +382,12 @@ def _build_environment(
         env["AWS_BEARER_TOKEN_BEDROCK"] = bridge_env["AWS_BEARER_TOKEN_BEDROCK"]
     if "NEXTSEEK_URL" in bridge_env:
         env["NEXTSEEK_URL"] = bridge_env["NEXTSEEK_URL"]
-    for forwarded_key in (
-        "GCP_API_KEY",
-        "NEO4J_URI",
-        "NEO4J_USER",
-        "NEO4J_PASSWORD",
-        "DMAC_PATH_MAPPINGS",
-        "MYSQL_HOST_DEV",
-        "MYSQL_PORT",
-        "MYSQL_USER",
-        "MYSQL_DEV_PASSWORD",
-        "SESSION_DB_TYPE",
-        "SESSION_DB_HOST",
-        "SESSION_DB_PORT",
-        "SESSION_DB_USER",
-        "SESSION_DB_PASSWORD",
-        "SESSION_DB_NAME",
-        "SESSION_DB_PATH",
-        "NEO4J_DATABASE",
-    ):
+    # T10 (U-1): the 16 shared-credential keys (GCP_API_KEY, NEO4J_*, MYSQL_*,
+    # SESSION_DB_*) are NO LONGER forwarded — they live only in the sidecar.
+    # DMAC_PATH_MAPPINGS stays: it is NOT a credential; it carries the per-user
+    # scratch/output host-root mapping the in-container agent needs for reply
+    # hygiene (vet finding 7).
+    for forwarded_key in ("DMAC_PATH_MAPPINGS",):
         if forwarded_key in bridge_env:
             env[forwarded_key] = bridge_env[forwarded_key]
     # B17c: catalog file is always mounted; CATALOG_FILE points at the bind.
@@ -447,6 +476,24 @@ def start_container(
     }
     if spec.name is not None:
         run_kwargs["name"] = spec.name
+    # T10 (U-1/OD-1): attach the agent to the sidecar network so the in-container
+    # runner can reach ws://<sidecar>/. R-6: the bridge never creates or manages
+    # compose resources — a missing network is a deployment error, fail fast.
+    if getattr(config, "sidecar_network", None):
+        try:
+            client.networks.get(config.sidecar_network)
+        except NotFound as exc:
+            raise RuntimeError(
+                f"sidecar network {config.sidecar_network!r} does not exist; "
+                "start the sidecar stack first (`make sidecar-up`) — the "
+                "bridge never creates or manages the network (R-6)."
+            ) from exc
+        except APIError as exc:
+            raise RuntimeError(
+                f"could not check sidecar network {config.sidecar_network!r}: "
+                "the Docker daemon may be unreachable."
+            ) from exc
+        run_kwargs["network"] = config.sidecar_network
     return client.containers.run(**run_kwargs)
 
 
@@ -541,20 +588,11 @@ def _build_exec_environment(
     env["API_USER"] = identity.user_id
     env["API_PASS"] = identity.password.get_secret_value()
     env["NEXTSEEK_BASE_URL"] = bridge_env.get("NEXTSEEK_BASE_URL", "")
-    if route == "ns":
-        if ns_session_id is None:
-            # Defensive guard for direct helper misuse. Public exec_ns_turn()
-            # requires session_id: str, so this branch is unreachable there.
-            raise ValueError(  # pragma: no cover
-                "ns_session_id required for route='ns'",
-            )
-        env["OUTPUTS_DIR"] = (
-            f"/data/scratch/{identity.user_id}/chat_nextseek/{ns_session_id}/"
-        )
-        env["CHAT_NEXTSEEK_SESSION_DB"] = (
-            "/home/user/.claude/chat_nextseek/sessions.sqlite"
-        )
-        env["NEXTSEEK_MODE"] = "gcp"
+    # T10 (U-8): the NS route no longer receives chat_nextseek env
+    # (OUTPUTS_DIR / CHAT_NEXTSEEK_SESSION_DB / NEXTSEEK_MODE) — session state
+    # and outputs live in the sidecar; the thin runner_ns talks to the viewset.
+    # `route`/`ns_session_id` are kept in the signature for call-site stability.
+    del route, ns_session_id
     return env
 
 
@@ -666,15 +704,23 @@ def exec_ns_turn(
     container: Container,
     *,
     query: str,
-    session_id: str,
+    session_id: str | None,
     identity: AuthenticatedIdentity,
     config: BridgeConfig,
     bridge_env: Mapping[str, str],
     client: Any | None = None,
 ) -> BridgeAttachSocket:
-    """Run one NExtSEEK turn against the idle container via docker exec."""
+    """Run one NExtSEEK turn against the idle container via docker exec.
+
+    task-13R: ``session_id`` is the viewset-issued NExtSEEK session UUID, or
+    ``None`` on the first turn of a WS connection. When ``None``, ``--session``
+    is omitted so the assistant viewset creates a fresh session (passing a
+    non-UUID id is 422-rejected); the returned UUID is captured by the bridge.
+    """
     api_client = client or container.client
-    cmd: list[str] = ["python", "/opt/dmac/runner_ns.py", "--session", session_id]
+    cmd: list[str] = ["python", "/opt/dmac/runner_ns.py"]
+    if session_id is not None:
+        cmd += ["--session", session_id]
     environment = _build_exec_environment(
         identity,
         bridge_env,

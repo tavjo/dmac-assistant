@@ -243,36 +243,46 @@ def test_no_gemini_api_key_anywhere(doc_sources: dict[Path, str]) -> None:
         )
 
 
-def test_gcp_api_key_docs_do_not_claim_not_forwarded(
+def test_docs_state_shared_creds_not_forwarded(
     doc_sources: dict[Path, str],
 ) -> None:
-    """Docs must not claim `GCP_API_KEY` is unforwarded — impl forwards it.
+    """T11 INVERTS the old `test_gcp_api_key_docs_do_not_claim_not_forwarded`
+    pin: since the sidecar plan (T10, U-1), `_build_environment` in
+    `src/dmac_assistant/containers.py` forwards only `DMAC_PATH_MAPPINGS`
+    (plus the AWS/NEXTSEEK basics) and the 16 shared-cred keys
+    (`GCP_API_KEY`, `NEO4J_*`, `MYSQL_*`, `SESSION_DB_*`) never reach the
+    agent container — they are sidecar-held.
 
-    `src/dmac_assistant/containers.py::_build_environment` unconditionally
-    forwards `GCP_API_KEY` to the container env when present in `bridge_env`
-    (containers.py:313-333), and the locked design spec lists it under
-    "Both routes" exec env (`docs/superpowers/specs/2026-05-13-llm-router-design.md`
-    lines 125 and 665: "forwarded so in-container plugins can call GCP too").
-
-    Phase 7 independent reviewer caught the docs/impl contradiction
-    (`.codex/reports/llm-router-independent-final-evaluation-2026-05-18.md`
-    residual debt #3). This pinning test prevents the contradiction from
-    reappearing.
+    Docs must now SAY so: the bridge README's env reference must state the
+    shared creds are not forwarded to the agent container and name the
+    sidecar as their holder; and no scanned doc may still claim GCP_API_KEY
+    IS forwarded to the container.
     """
+    bridge_src = doc_sources[BRIDGE_README]
+    assert re.search(
+        r"(GCP_API_KEY|shared\s+credentials?)[^\n]{0,300}"
+        r"no(?:t|\s+longer)\s+forwarded\s+to\s+the\s+agent\s+container",
+        bridge_src,
+        re.IGNORECASE,
+    ), (
+        "docs/bridge/README.md must state that the shared credentials "
+        "(GCP_API_KEY, NEO4J_*, MYSQL_*, SESSION_DB_*) are not forwarded to "
+        "the agent container (T11/U-1 containment)."
+    )
+    assert re.search(r"sidecar", bridge_src, re.IGNORECASE), (
+        "docs/bridge/README.md must name the sidecar as the holder of the "
+        "shared credentials."
+    )
+
+    # And no scanned doc may still claim the bridge forwards GCP_API_KEY to
+    # the agent container (the pre-sidecar behavior).
     forbidden_patterns = (
-        # Catches "does not forward GCP_API_KEY" and "do not forward GCP_API_KEY"
         re.compile(
-            r"do(?:es)?\s+not\s+forward\s+[^\n.]{0,120}GCP_API_KEY",
+            r"forwards?\s+`?GCP_API_KEY`?\s+to\s+the\s+container",
             re.IGNORECASE,
         ),
-        # Catches "GCP_API_KEY ... not forwarded" / "is not forwarded to the container"
         re.compile(
-            r"GCP_API_KEY[^\n.]{0,120}not\s+forwarded",
-            re.IGNORECASE,
-        ),
-        # Catches "Not forwarded to the container" in the GCP_API_KEY row of a table
-        re.compile(
-            r"GCP_API_KEY[^\n]{0,400}Not\s+forwarded\s+to\s+the\s+container",
+            r"GCP_API_KEY[^\n.]{0,120}\bforwarded\s+to\s+the\s+container",
             re.IGNORECASE,
         ),
     )
@@ -280,13 +290,10 @@ def test_gcp_api_key_docs_do_not_claim_not_forwarded(
         for pat in forbidden_patterns:
             match = pat.search(src)
             assert match is None, (
-                f"{path.name} states `GCP_API_KEY` is not forwarded to the "
-                f"container, but `_build_environment` in "
-                f"`src/dmac_assistant/containers.py:313-333` forwards it when "
-                f"set, and the locked design spec lists it under 'Both routes' "
-                f"exec env. Either update the docs to match impl/spec, or open "
-                f"`/ultraplan amend` to change the forwarding behavior. "
-                f"Matched: {match.group(0)!r}"
+                f"{path.name} still claims `GCP_API_KEY` is forwarded to the "
+                f"agent container, but T10 removed the shared-cred forwarding "
+                f"from `_build_environment` (sidecar-held now). Update the "
+                f"doc. Matched: {match.group(0)!r}"
             )
 
 

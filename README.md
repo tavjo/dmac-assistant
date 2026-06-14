@@ -12,7 +12,7 @@ DMAC Assistant is **not** a custom agent framework. It is a deliberately small b
 
 1. **A FastAPI bridge** (`src/dmac_assistant/`) that authenticates lab users, resolves the project directories they're authorized to read, starts a per-user Docker container, and relays chat messages between a browser UI and Claude Code's `stream-json` output.
 2. **A Docker image** (`dmac-assistant:poc`) that contains Claude Code, [`uv`](https://github.com/astral-sh/uv), the `nextseek` plugin, and the in-container agent instructions.
-3. **Plugin and documentation surfaces** that the in-container Claude runtime reads from fixed paths inside the image — most importantly the NExtSEEK API documentation and the `chat_nextseek` Python orchestrator.
+3. **Plugin and documentation surfaces** that the in-container Claude runtime reads from fixed paths inside the image — most importantly the NExtSEEK API documentation and the `nextseek` plugin (SKILL.md, CLI tools, and cached catalogs). The plugin reaches `chat_nextseek` over the network (via the sidecar / NExtSEEK); `chat_nextseek` is no longer installed inside the image.
 4. **An offline reliability-analysis pipeline** (`src/dmac_assistant/eval/hibayes_runtime_reliability/`) that consumes the HiBayes-ready CSV emitted by `tools/hibayes/exporter.py` and produces per-task-family Bayesian posterior estimates of agent success probability, plus a self-contained HTML report. Runs inside a sibling Docker image (`hibayes-runtime-reliability:dev`) — see [Reliability analysis pipeline](#reliability-analysis-pipeline) below.
 
 The agent runs **inside the container**. The bridge process never executes user-supplied code; it just forwards bytes.
@@ -47,12 +47,12 @@ The agent runs **inside the container**. The bridge process never executes user-
                                             │ │ claude --print            │ │
                                             │ │   --output-format         │ │
                                             │ │   stream-json             │ │
-                                            │ │   --dangerously-skip-     │ │
-                                            │ │   permissions             │ │
+                                            │ │   --permission-mode       │ │
+                                            │ │   auto                    │ │
                                             │ └─────────┬─────────────────┘ │
                                             │           │                   │
                                             │ Plugins:  ▼                   │
-                                            │   nextseek (chat_nextseek)    │
+                                            │   nextseek (thin client)      │
                                             │                               │
                                             │ Mounts:                       │
                                             │   /data/projects/<name> (ro)  │
@@ -121,7 +121,7 @@ The `.env.example` file is the canonical schema. Required for the bridge to star
 - `NEXTSEEK_USERNAME`, `NEXTSEEK_PASSWORD`, `NEXTSEEK_URL` — fallback creds (production reuses chat-UI login)
 - `DMAC_DEV_MODE=1` — selects macOS-friendly default path roots (`~/dmac-dev/...`)
 
-Optional (forwarded to the container if set): `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`. **`GCP_API_KEY` is conditionally required**: optional when the LLM router is off (the default), but required when `DMAC_ROUTER_ENABLED=1` because the router uses Gemini Pro via BAML for route decisions. See [LLM router](#llm-router).
+Optional (bridge/sidecar-side only — **not forwarded to the agent container**): `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`. **`GCP_API_KEY` is conditionally required**: optional when the LLM router is off (the default), but required when `DMAC_ROUTER_ENABLED=1` because the router uses Gemini Pro via BAML for route decisions; it is likewise not forwarded to the agent container. The shared backend credentials (`GCP_API_KEY`, `NEO4J_*`, `MYSQL_*`) live server-side on NExtSEEK; the agent reaches NExtSEEK through the sidecar, and `GCP_API_KEY` is needed only on the bridge host (for the router's BAML route decisions). See [LLM router](#llm-router).
 
 ---
 
@@ -235,7 +235,7 @@ If you change `run_tracker.py`, `copier.py`, or `ws.py`'s `dispatch_post_turn_co
 
 ## Image build
 
-The image is named `dmac-assistant:poc` (~1.27 GB; specific SHA rotates with each build — run `docker image inspect dmac-assistant:poc --format '{{.Id}}'` for the current digest). It is `linux/amd64` and contains Python 3.14, `uv`, Claude Code (Node-based with native-binary wrapper), the `nextseek` plugin, the vendored `chat_nextseek` Python source, and the BAML-generated router client.
+The image is named `dmac-assistant:poc` (~1.35 GB; specific SHA rotates with each build — run `docker image inspect dmac-assistant:poc --format '{{.Id}}'` for the current digest). It is `linux/amd64` and contains Python 3.14, `uv`, Claude Code (Node-based with native-binary wrapper), the `nextseek` plugin (now a thin WebSocket/HTTP client), and the BAML-generated router client. `chat_nextseek` and `torch` are **no longer installed in this image** — they were removed (~3.6 GB saved, down from ~4.95 GB) when execution moved out of the agent container to the NExtSEEK sidecar; `vendor/chat_nextseek` is retained in the repo only for the bridge's host-side model-catalog default, not installed into the image.
 
 ```sh
 make sync-vendor-deps    # clone chat_nextseek pinned source into vendor/ (HTTPS, uses GH Keychain auth)
@@ -243,7 +243,7 @@ make image-build         # builds with Buildx, runs the drift guard, pins claude
 make image-stage         # stages plugin + docs into build_context/ (used by image-build)
 ```
 
-The Dockerfile uses `uv sync --locked --no-dev` for the bridge package and `uv pip install --system` for the vendored chat_nextseek source. **`--system` must NOT appear in the final image build output** (a drift guard test catches re-introduction). Image rebuilds are deterministic given a pinned `chat_nextseek` SHA in `scripts/sync-vendor-deps.sh`.
+The Dockerfile installs all Python deps with `uv sync --locked` into an on-PATH venv (`/opt/dmac-venv`); the thin-client deps the runner needs (`websockets`, `httpx`) arrive that way. **`--system` must NOT appear anywhere in the Dockerfile** (a drift guard test catches re-introduction). The agent image no longer installs `chat_nextseek` — the plugin runner reaches it over the network via the sidecar (see [LLM router](#llm-router)); `make sync-vendor-deps` still clones the pinned source into `vendor/` for the bridge's host-side model catalog.
 
 See [`docs/bridge/`](docs/bridge/) for protocol-level documentation of the WebSocket contract and the `stream-json` event shape.
 
@@ -253,7 +253,7 @@ See [`docs/bridge/`](docs/bridge/) for protocol-level documentation of the WebSo
 
 A per-turn LLM router is inserted between the WebSocket bridge and Claude. For each user message, the router picks one of two execution routes:
 
-- `nextseek_query` - runs the deterministic `chat_nextseek` orchestrator pipeline as a sidecar process inside the long-lived `dmac-assistant:poc` container. Used for catalog/sample/study/lineage queries against NExtSEEK. Selected when the router classifies the message as a structured query.
+- `nextseek_query` - dispatches the message to a thin in-image NExtSEEK runner that calls NExtSEEK's assistant API over the network; the deterministic `chat_nextseek` orchestrator pipeline runs server-side on NExtSEEK, not inside the agent container. Used for catalog/sample/study/lineage queries against NExtSEEK. Selected when the router classifies the message as a structured query.
 - `container_cc` - runs Claude Code inside the same container with a router-chosen model class (`"opus"`, `"sonnet"`, or `"haiku"`). Used for everything else.
 
 The router is flag-gated by **`DMAC_ROUTER_ENABLED`**. With the flag unset or falsy, the bridge dispatch path is byte-identical to the pre-router build (no router agent invocation, no `route_decided` frame, no per-turn exec - turns go to the long-lived Claude attach socket as before).

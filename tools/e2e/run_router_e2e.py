@@ -61,6 +61,35 @@ REQUIRED_CREDENTIALS = (
     "GCP_API_KEY",
 )
 
+# T13: the NS-route discriminators now traverse agent -> sidecar / assistant
+# viewset (T9 moved NS parsing OUT of the agent). The agent container is on the
+# `dmac-nextseek-net` sidecar network ONLY, so the viewset must be reached via the
+# host gateway, not `localhost` (which is the container itself in-container). The
+# host-side harness never calls NEXTSEEK_URL directly (it logs into its own
+# 127.0.0.1 bridge), so this translation affects ONLY the value forwarded into the
+# agent container. NEVER edit .env — this is a per-invocation, container-only seam.
+#
+# SEAM (E2E target = the LOCAL NExtSEEK stack, NOT the dev server). The host-side
+# validation guard (build_tools.verify_env) requires NEXTSEEK_URL to be an https
+# `dev` URL, so it cannot be repointed to the local http stack without making the
+# live suite skip. The local target is therefore carried by a SEPARATE override,
+# `DMAC_E2E_NS_URL` (host terms, default http://localhost:8000); NEXTSEEK_URL keeps
+# its validated dev value (presence-checked here) while the agent is pointed at the
+# local stack via the gateway-translated override below.
+_AGENT_NS_GATEWAY_HOST = "host.docker.internal"
+_LOCALHOST_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0"})
+_DEFAULT_E2E_NS_URL = "http://localhost:8000"
+
+# T13: the sidecar must be reachable before the NS-route queries run. The harness
+# does NOT own the compose lifecycle (it would race the operator's `make
+# sidecar-up`/`-down` and the live_docker pytest fixture's session-scoped bring-up).
+# Instead it ASSERTS the precondition and fails fast and loud — the operator brings
+# the stack up via `make sidecar-up` (Step 3 run command) per R-6. The bridge's own
+# start_container also fails fast on a missing network, but that surfaces only as a
+# per-query transport error in bridge.stderr.log; this up-front check is louder.
+_SIDECAR_NETWORK = os.environ.get("DMAC_SIDECAR_NETWORK", "dmac-nextseek-net")
+_SIDECAR_CONTAINER = "dmac-nextseek-sidecar-nextseek-sidecar-1"
+
 # OI-4/OI-5 demo set: 3 NS + 2 container_cc (lab-data TASKS, not the off-topic-
 # knowledge queries that now route `unrelated`) + 1 unrelated (Taylor Swift).
 DISCRIMINATORS: tuple[tuple[str, str], ...] = (
@@ -181,6 +210,126 @@ def _check_image() -> bool:
     return "dmac-assistant:poc" in result.stdout
 
 
+def _agent_nextseek_url() -> str:
+    """The NEXTSEEK_URL value to FORWARD INTO the agent container.
+
+    Prefers the local-stack override `DMAC_E2E_NS_URL` (default
+    http://localhost:8000); falls back to `NEXTSEEK_URL`. Translates a host-local
+    host (`localhost`/`127.0.0.1`) to the Docker host gateway so the in-container
+    thin runner_ns -> assistant viewset call resolves. A non-local host (the dev
+    server, an in-network DNS name) is passed through unchanged.
+
+    FOOTGUN (root-caused 2026-06-11): with `DMAC_E2E_NS_URL` UNSET this falls back to
+    `.env`'s `NEXTSEEK_URL`, which is the dev server — if that is down (it was on
+    2026-06-11), every NS-route POST transport-fails and surfaces as
+    `ns_query_complete_with_error`, masquerading as a NExtSEEK pipeline failure. To
+    target the local stack, export `DMAC_E2E_NS_URL=http://localhost:8000`.
+    `_check_ns_target_reachable` now fails the run fast and loud when the resolved
+    target is unreachable instead of letting it look like a pipeline error.
+    """
+    import urllib.parse
+
+    raw = (
+        os.environ.get("DMAC_E2E_NS_URL")
+        or os.environ.get("NEXTSEEK_URL")
+        or _DEFAULT_E2E_NS_URL
+    )
+    parsed = urllib.parse.urlsplit(raw)
+    if parsed.hostname in _LOCALHOST_HOSTS:
+        netloc = _AGENT_NS_GATEWAY_HOST
+        if parsed.port:
+            netloc = f"{netloc}:{parsed.port}"
+        return urllib.parse.urlunsplit(parsed._replace(netloc=netloc))
+    return raw
+
+
+def _check_sidecar() -> str | None:
+    """Return a human error string if the sidecar precondition is unmet, else None.
+
+    Verifies (a) the sidecar Docker network exists and (b) the sidecar container is
+    running. Both are required for the NS-route discriminators to traverse
+    agent -> sidecar / viewset. Best-effort: a docker CLI failure is reported, not
+    swallowed.
+    """
+    try:
+        net = subprocess.run(
+            ["docker", "network", "inspect", _SIDECAR_NETWORK, "--format", "{{.Name}}"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if net.returncode != 0 or _SIDECAR_NETWORK not in net.stdout:
+            return (
+                f"sidecar network {_SIDECAR_NETWORK!r} not found; "
+                "run `make sidecar-up` first"
+            )
+        ps = subprocess.run(
+            ["docker", "ps", "--filter", f"name={_SIDECAR_CONTAINER}",
+             "--filter", "status=running", "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if _SIDECAR_CONTAINER not in ps.stdout:
+            return (
+                f"sidecar container {_SIDECAR_CONTAINER!r} not running; "
+                "run `make sidecar-up` first"
+            )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return f"could not verify sidecar precondition: {type(exc).__name__}"
+    return None
+
+
+def _check_ns_target_reachable(only_ids: frozenset[str] | None) -> str | None:
+    """Return a human error string if the agent's NS target is unreachable, else None.
+
+    Root cause captured 2026-06-11: ``_agent_nextseek_url()`` falls back to ``.env``'s
+    ``NEXTSEEK_URL`` (the dev server) when ``DMAC_E2E_NS_URL`` is unset, and passes a
+    non-local host through unchanged. If that server is down, every NS-route query's
+    POST transport-fails and the bridge emits ``ns_query_complete_with_error``
+    (``status:"error"``) — a failure that LOOKS like a NExtSEEK pipeline error but is
+    really "the harness was pointed at a dead server." This precheck fails fast and
+    loud instead, naming ``DMAC_E2E_NS_URL`` as the remedy.
+
+    Only runs when at least one selected discriminator routes ``nextseek_query`` —
+    a ``--ids`` subset of only container_cc/unrelated queries makes the NS target
+    irrelevant, so the check is skipped (and no probe is issued).
+
+    The agent target uses ``host.docker.internal`` (resolvable only from inside a
+    container); the HOST process probes the equivalent ``localhost:<port>`` (same
+    published port). Any HTTP response — including 401/404 — proves the server is
+    alive; only a transport error (connect/read timeout, refused) is a failure.
+    """
+    ns_selected = [
+        qid
+        for qid, expected in DISCRIMINATORS
+        if expected == "nextseek_query" and (only_ids is None or qid in only_ids)
+    ]
+    if not ns_selected:
+        return None
+
+    import urllib.parse
+
+    agent_url = _agent_nextseek_url()
+    parsed = urllib.parse.urlsplit(agent_url)
+    probe_parsed = parsed
+    if parsed.hostname == _AGENT_NS_GATEWAY_HOST:
+        netloc = "localhost"
+        if parsed.port:
+            netloc = f"{netloc}:{parsed.port}"
+        probe_parsed = parsed._replace(netloc=netloc)
+    probe_url = urllib.parse.urlunsplit(probe_parsed._replace(path="/", query="", fragment=""))
+
+    try:
+        with httpx.Client(timeout=8.0) as client:
+            client.get(probe_url)
+    except httpx.TransportError as exc:
+        return (
+            f"agent NS target {agent_url!r} is unreachable "
+            f"(host probe to {probe_url!r} failed: {type(exc).__name__}). "
+            "NEXTSEEK_URL defaults to the dev server, which may be down; export "
+            "DMAC_E2E_NS_URL=http://localhost:8000 to target the local stack, or "
+            "bring the intended server up before running the NS discriminators."
+        )
+    return None
+
+
 def _load_corpus(corpus_path: pathlib.Path) -> dict[str, str]:
     if not corpus_path.exists():
         raise FileNotFoundError(f"corpus not found: {corpus_path}")
@@ -205,6 +354,7 @@ def _build_child_env(
     output_root: pathlib.Path,
     dropbox_root: pathlib.Path,
     catalog_file: pathlib.Path,
+    ns_stderr_dir: pathlib.Path,
 ) -> dict[str, str]:
     child_env = os.environ.copy()
     pythonpath_parts = [str(REPO_ROOT / "src"), str(REPO_ROOT)]
@@ -225,6 +375,17 @@ def _build_child_env(
     child_env["DMAC_OUTPUT_ROOT"] = str(output_root)
     child_env["DMAC_CATALOG_FILE_HOST_PATH"] = str(catalog_file)
     child_env["DMAC_ROUTER_ENABLED"] = "1"
+    # T13: forward the AGENT-reachable NEXTSEEK_URL (host-gateway-translated) so the
+    # in-container runner_ns -> assistant viewset call resolves from inside the
+    # sidecar-network-only agent container. The host-side harness keeps using its
+    # own 127.0.0.1 bridge for login, so this only changes the container's view.
+    child_env["NEXTSEEK_URL"] = _agent_nextseek_url()
+    # Persist the bridge's NS runner stderr per ns_session_id so a failing
+    # NS turn's underlying runner_ns / NExtSEEK error detail is captured on
+    # disk (otherwise the per-query record only holds the bridge's collapsed
+    # `ns_query_complete_with_error` / detail="error" frame). Writes
+    # <ns_stderr_dir>/<ns_session_id>.stderr.log (see ws._open_ns_stderr_capture).
+    child_env["DMAC_BRIDGE_NS_STDERR_DIR"] = str(ns_stderr_dir)
     return child_env
 
 
@@ -346,7 +507,12 @@ async def _run_one_query(
     return record
 
 
-async def _async_main(*, corpus_path: pathlib.Path, run_dir: pathlib.Path) -> int:
+async def _async_main(
+    *,
+    corpus_path: pathlib.Path,
+    run_dir: pathlib.Path,
+    only_ids: frozenset[str] | None = None,
+) -> int:
     queries_by_id = _load_corpus(corpus_path)
     run_id = run_dir.name
     started_at = _utc_now()
@@ -358,21 +524,40 @@ async def _async_main(*, corpus_path: pathlib.Path, run_dir: pathlib.Path) -> in
     output_root.mkdir(parents=True, exist_ok=True)
     dropbox_root.mkdir(parents=True, exist_ok=True)
     (dropbox_root / _synthetic_project()).mkdir(parents=True, exist_ok=True)
+    ns_stderr_dir = run_dir / "ns-stderr"
+    ns_stderr_dir.mkdir(parents=True, exist_ok=True)
 
-    # Use the real chat_nextseek agent-model catalog so the NS-route parser runs
-    # against the same model (gemini-3.1-pro-preview + thinking_budget=16000) as
-    # production. A stub `{"default": {}}` catalog silently downgrades the parser
-    # to a non-thinking fallback model that emits `"uids": null` for empty lists
-    # and fails Pydantic `list_type` validation (Phase 7 residual #1 root cause,
-    # confirmed 2026-05-18 prompt-bytes diff:
-    # .claude/reviews/post-may8-bridge-audit-2026-05-18.md).
+    # T13 vendored-catalog decision (vet finding 18): KEPT as a documented
+    # invariant, NOT relaxed. RATIONALE: the in-agent NS parser that historically
+    # consumed this catalog (gemini-3.1-pro-preview + thinking_budget=16000) no
+    # longer runs in the agent — T9 moved NS parsing to the NExtSEEK assistant
+    # viewset, and the 16 shared-cred keys are stripped from the agent env. So the
+    # catalog is no longer load-bearing for the NS ROUTE'S ANSWER. It is, however,
+    # still REQUIRED because the bridge's _build_volumes ALWAYS bind-mounts the
+    # catalog file into every agent container (containers.py: catalog -> CATALOG_FILE,
+    # ro) and a missing host file makes the mount fail. Keeping the existence check
+    # therefore preserves a real precondition (container boot) rather than a stale
+    # one (a parser that no longer runs). The container_cc route does not read it.
     catalog_file = REPO_ROOT / "vendor" / "chat_nextseek" / "agent_model_catalog.json"
     if not catalog_file.exists():
         raise FileNotFoundError(
             f"chat_nextseek agent-model catalog not found at {catalog_file}; "
-            "the E2E harness requires the vendored catalog to drive the parser "
-            "against the same model used in production."
+            "the E2E harness requires it because the bridge always bind-mounts a "
+            "catalog file into every agent container (CATALOG_FILE) — without it "
+            "the container mount fails. NS parsing itself moved to the viewset (T9)."
         )
+
+    sidecar_problem = _check_sidecar()
+    if sidecar_problem is not None:
+        print(f"[run_router_e2e] sidecar precondition failed: {sidecar_problem}",
+              file=sys.stderr)
+        return 2
+
+    ns_target_problem = _check_ns_target_reachable(only_ids)
+    if ns_target_problem is not None:
+        print(f"[run_router_e2e] NS target precondition failed: {ns_target_problem}",
+              file=sys.stderr)
+        return 2
 
     port = _free_port()
     child_env = _build_child_env(
@@ -380,6 +565,7 @@ async def _async_main(*, corpus_path: pathlib.Path, run_dir: pathlib.Path) -> in
         output_root=output_root,
         dropbox_root=dropbox_root,
         catalog_file=catalog_file,
+        ns_stderr_dir=ns_stderr_dir,
     )
     stdout_log = run_dir / "bridge.stdout.log"
     stderr_log = run_dir / "bridge.stderr.log"
@@ -403,6 +589,8 @@ async def _async_main(*, corpus_path: pathlib.Path, run_dir: pathlib.Path) -> in
             return 2
         token = _login(port=port)
         for query_id, expected in DISCRIMINATORS:
+            if only_ids is not None and query_id not in only_ids:
+                continue
             query_text = queries_by_id[query_id]
             print(
                 f"[run_router_e2e] running {query_id!r} ({expected})...",
@@ -552,7 +740,28 @@ def main(argv: list[str] | None = None) -> int:
         default=OUTPUT_BASE,
         help=f"Output root for per-run dirs (default: {OUTPUT_BASE})",
     )
+    parser.add_argument(
+        "--ids",
+        default=None,
+        help="Comma-separated discriminator IDs to run (default: all 6). "
+        "Use to re-run a single query, e.g. --ids Search-Basic-1.",
+    )
     args = parser.parse_args(argv)
+    only_ids = (
+        frozenset(s.strip() for s in args.ids.split(",") if s.strip())
+        if args.ids
+        else None
+    )
+    if only_ids is not None:
+        valid = {qid for qid, _ in DISCRIMINATORS}
+        unknown = only_ids - valid
+        if unknown:
+            print(
+                f"[run_router_e2e] unknown --ids: {sorted(unknown)!r}; "
+                f"valid IDs: {sorted(valid)!r}",
+                file=sys.stderr,
+            )
+            return 2
 
     load_dotenv(REPO_ROOT / ".env", override=False)
 
@@ -578,7 +787,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return asyncio.run(
             asyncio.wait_for(
-                _async_main(corpus_path=args.corpus, run_dir=run_dir),
+                _async_main(
+                    corpus_path=args.corpus,
+                    run_dir=run_dir,
+                    only_ids=only_ids,
+                ),
                 timeout=OVERALL_TIMEOUT_S,
             )
         )

@@ -1,0 +1,61 @@
+# NS shared-cred sidecar (spec U-10): compose owns ONLY this service + the network.
+# The bridge stays host-run and attaches agent containers to the network by name.
+# R-8 gate 15: no `ports:` — the WS port is reachable only on the Docker network.
+name: dmac-nextseek-sidecar
+
+services:
+  nextseek-sidecar:
+    build:
+      context: ..
+      dockerfile: sidecar/Dockerfile
+    image: dmac-nextseek-sidecar:poc
+    # Amendment A-2 (2026-06-10): local-nextseek-db.env + local-nextseek.env are
+    # gitignored copies of the local stack's db.env + nextseek.env (that order —
+    # nextseek.env interpolates $MYSQL_HOST/$NEXTSEEK_MYSQL_DATABASE from
+    # db.env). They layer over ../.env (last file wins) so the sidecar's
+    # SESSION_DB_* / shared-cred families target the local instance while it is
+    # the E2E target. Optional: delete both when the dev server is back and the
+    # sidecar reverts to plain .env values.
+    env_file:
+      - path: ../.env
+      - path: ./local-nextseek-db.env
+        required: false
+      - path: ./local-nextseek.env
+        required: false
+      # dmac-vantage overrides layered LAST: the stack copies above stay
+      # verbatim (re-copyable), but e.g. their NEXTSEEK_BASE_URL
+      # (http://127.0.0.1:8000) is self-referential inside the nextseek
+      # container and wrong from the sidecar.
+      - path: ./local-nextseek-dmac.env
+        required: false
+    environment:
+      # T17 (A-5): SESSION_DB_*, READ_SAFE_ENDPOINTS_PATH, CATALOG_FILE,
+      # CHAT_NEXTSEEK_DB_ENV, NEXTSEEK_MODE, CHAT_NEXTSEEK_CONFIG_VERBOSE
+      # removed — the sidecar no longer runs the NS runtime in-process (T16);
+      # all granular ops are now HTTP forwarders to NExtSEEK's native endpoints.
+      SIDECAR_WS_PORT: "8765"
+      SIDECAR_STAGING_DIR: /staging
+    volumes:
+      - ${DMAC_SIDECAR_STAGING_ROOT:?set DMAC_SIDECAR_STAGING_ROOT to an absolute path (make sidecar-up exports it)}:/staging
+    networks:
+      - dmac-net
+      # Amendment A-1 (2026-06-10): join the local NExtSEEK stack's network so
+      # sessions.py + healthcheck reach seek-mysql (db:3306). Sidecar-only —
+      # agent containers stay off this network. Requires the local stack to be
+      # up (external network), so sidecar-up fails fast without it.
+      - nextseek-local
+    healthcheck:
+      test: ["CMD", "python", "-m", "sidecar.app.healthcheck"]
+      interval: 10s
+      timeout: 8s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+networks:
+  dmac-net:
+    name: ${DMAC_SIDECAR_NETWORK:-dmac-nextseek-net}
+    driver: bridge
+  nextseek-local:
+    external: true
+    name: nextseek_default

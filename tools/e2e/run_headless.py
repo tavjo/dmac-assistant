@@ -62,30 +62,45 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+# T11R2 (HIGH-1): the 16 sidecar-held shared-credential keys. Post-T10 the
+# production bridge (_build_environment, src/dmac_assistant/containers.py)
+# no longer forwards these into the agent container — they live only in the
+# sidecar. This harness mimics the bridge env, so the CC route's container
+# relay must withhold them too: they are excluded from the _ENV_KEYS
+# allowlist below AND filtered at run_one's env-file build (defense in depth
+# for caller-supplied env dicts, e.g. router_dispatch.dispatch_cc). Canonical
+# copy for the harness; tests pin parity with the other repo copies.
+SHARED_CRED_KEYS = frozenset({
+    "GCP_API_KEY",
+    "NEO4J_URI",
+    "NEO4J_USER",
+    "NEO4J_PASSWORD",
+    "NEO4J_DATABASE",
+    "MYSQL_HOST_DEV",
+    "MYSQL_PORT",
+    "MYSQL_USER",
+    "MYSQL_DEV_PASSWORD",
+    "SESSION_DB_TYPE",
+    "SESSION_DB_HOST",
+    "SESSION_DB_PORT",
+    "SESSION_DB_USER",
+    "SESSION_DB_PASSWORD",
+    "SESSION_DB_NAME",
+    "SESSION_DB_PATH",
+})
+
 # Env keys forwarded into the container. CATALOG_FILE is set to the in-container
-# bind path automatically; the rest come from .env if present.
+# bind path automatically; the rest come from .env if present. The former
+# chat_nextseek DB/Neo4j/session-DB entries were removed in T11R2: the thin
+# runners are sidecar clients, so those creds stay sidecar-side (see
+# SHARED_CRED_KEYS above for the dev-side 16; the *_PROD variants were
+# dropped with their only consumer, chat_nextseek, gone from the image).
 _ENV_KEYS = {
     "API_USER", "API_PASS",
     "NEXTSEEK_USERNAME", "NEXTSEEK_PASSWORD", "NEXTSEEK_URL",
     "AWS_REGION", "AWS_BEARER_TOKEN_BEDROCK", "CLAUDE_CODE_USE_BEDROCK",
-    "GCP_API_KEY", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "CATALOG_FILE",
-    # DB credentials read by chat_nextseek's reporter / context bootstrap.
-    # Without these forwarded, reporter-mode queries fail with
-    # `[CONFIG][DB] Host not configured for env '<env>'`. The runner's
-    # _sanitize_env_quotes() strips surrounding quotes before chat_nextseek
-    # reads them.
-    "MYSQL_HOST_PROD", "MYSQL_HOST_DEV", "MYSQL_PORT", "MYSQL_USER",
-    "MYSQL_PROD_PASSWORD", "MYSQL_DEV_PASSWORD",
-    # Neo4j credentials read by the graph agent.
-    "NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD", "NEO4J_DATABASE",
-    "NEO4J_URI_PROD", "NEO4J_USER_PROD", "NEO4J_PASSWORD_PROD",
-    "NEO4J_DATABASE_PROD",
-    # Session DB (chat_nextseek SQLiteSessionState + future remote session
-    # store). Forwarded so the remote variant works when the deployment
-    # opts into it.
-    "SESSION_DB_HOST", "SESSION_DB_USER", "SESSION_DB_PASSWORD",
-    "SESSION_DB_NAME", "SESSION_DB_PATH", "SESSION_DB_TYPE",
 }
 _TIMEOUT_HARD_MAX = 180  # seconds; project rule
 
@@ -252,7 +267,14 @@ def run_one(*, query_text: str, query_id: str, image: str,
     stdin_path.write_text(build_input_jsonl(query_text))
 
     env_path = output_dir / f"{query_id}.env"
-    env_path.write_text("\n".join(f"{k}={v}" for k, v in env.items()) + "\n")
+    # T11R2 (HIGH-1): the env-file is the container relay. Filter the 16
+    # sidecar-held shared-cred keys here regardless of how the caller built
+    # `env` (load_env_file already excludes them via _ENV_KEYS, but batch
+    # drivers like router_dispatch.dispatch_cc pass caller-supplied dicts).
+    relay_env = {k: v for k, v in env.items() if k not in SHARED_CRED_KEYS}
+    env_path.write_text(
+        "\n".join(f"{k}={v}" for k, v in relay_env.items()) + "\n"
+    )
     env_path.chmod(0o600)
 
     stdout_path = output_dir / f"{query_id}.stdout.jsonl"
@@ -275,21 +297,12 @@ def run_one(*, query_text: str, query_id: str, image: str,
     # because we own the mount, so inject it here. Without this the user
     # sees `/data/scratch/...` which doesn't exist on the host.
     path_mappings = json.dumps({"/data/scratch": str(scratch_dir)})
-    # CHAT_NEXTSEEK_DB_ENV: only dev credentials are populated in our .env
-    # (MYSQL_HOST_DEV / MYSQL_DEV_PASSWORD). Without this var, chat_nextseek's
-    # reporter / context bootstrap defaults to env="prod" and fails with
-    # `[CONFIG][DB] Host not configured for env 'prod'`. Caller can override
-    # by setting CHAT_NEXTSEEK_DB_ENV in the .env file (env-file wins over
-    # later -e flags only if the same key isn't repeated; we set it here as
-    # the headless default so a stock .env Just Works).
+    # T11R2 (MEDIUM-2): the former CHAT_NEXTSEEK_DB_ENV injection is gone —
+    # chat_nextseek left the agent image (the thin runners are sidecar
+    # clients), so nothing in the container reads it anymore.
     env_overrides = [
         "-e", f"DMAC_PATH_MAPPINGS={path_mappings}",
     ]
-    if os.environ.get("CHAT_NEXTSEEK_DB_ENV"):
-        env_overrides.extend(["-e",
-            f"CHAT_NEXTSEEK_DB_ENV={os.environ['CHAT_NEXTSEEK_DB_ENV']}"])
-    else:
-        env_overrides.extend(["-e", "CHAT_NEXTSEEK_DB_ENV=dev"])
     cmd = [
         "docker", "run", "--rm", "-i",
         "--env-file", str(env_path),

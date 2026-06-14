@@ -10,9 +10,9 @@ import json
 import subprocess
 from pathlib import Path
 
-import pytest
-
-pytest.importorskip("chat_nextseek")
+# T11 (U-11): the chat_nextseek importorskip gate is GONE — the shim execs
+# the thin _nextseek_runner.py (sidecar/viewset client), which imports no
+# chat_nextseek. These subprocess tests run on host AND inside the image.
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SHIM_DIR = REPO_ROOT / "build_context" / "plugins" / "nextseek" / "bin"

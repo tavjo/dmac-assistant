@@ -1,21 +1,25 @@
 """Real-turn NextSEEK-Query integration test for the router-on bridge path.
 
-Phase 7 residual debt #6 remediation: the original T4.2 NS integration test
-only exercises the empty-query error path, so it proves WS lifecycle but not
-that a real chat_nextseek run completes in-image. This test sends a
-non-empty NS-shaped query and asserts the runner drives the turn through
-to a real terminal event (success or chat_nextseek-emitted error) plus the
-canonical session_ended frame.
+Originated as Phase 7 residual debt #6: the original T4.2 NS integration test
+only exercised the empty-query error path, proving WS lifecycle but not that a
+real NS turn completes in-image. This test sends a non-empty NS-shaped query and
+drives the turn end-to-end.
 
-Notes on assertions:
-- The test does NOT assert on assistant-message *content* — that is Phase 7
-  residual #1 (NS happy-path quality), which is OUT OF SCOPE for this
-  remediation. The goal here is to prove the bridge<->runner<->chat_nextseek
-  pipeline completes a real turn, not that any specific NS answer is correct.
-- A "successful turn" means either an `assistant_message` plus
-  `session_ended`, OR an `error` frame followed by `session_ended` — both
-  are valid runner-side terminal outcomes. The lifecycle invariant is that
-  `session_ended` fires regardless of NS answer quality.
+T13 (sidecar architecture): the NS route no longer runs chat_nextseek IN the
+agent — `runner_ns.py` is a thin client that talks to the NExtSEEK assistant
+viewset (and, for granular ops, the shared-cred sidecar over the Docker network).
+So this test exercises the bridge<->runner_ns<->assistant-viewset pipeline. It
+runs against tavjo's LOCAL NExtSEEK stack (the E2E target); the stack is
+data-sparse but every reply is still substantive text.
+
+Notes on assertions (T13 tightening — carry-forward from W3):
+- The terminal assertion previously tolerated an `error` frame, so it could pass
+  even on a BROKEN NS path. It now REQUIRES a substantive `assistant_message`
+  reply (non-empty content) before `session_ended`. An empty-data answer ("no
+  samples match") is still substantive text and passes; an error frame fails.
+- It does NOT judge answer *correctness* (no semantic verdict here — that is the
+  router E2E's BAML judge). "Substantive" = a non-empty assistant reply, not an
+  error stub.
 
 Skip behavior matches `tests/integration/test_router_cc_route_real.py`:
 docker, image, and `.env` gating only.
@@ -35,6 +39,7 @@ from dmac_assistant.auth import TokenStore, get_token_store
 from dmac_assistant.config import BridgeConfig, UserRecord
 from dmac_assistant.router.baml_client.types import Route, RouterDecision
 from tests.harness.containers import IMAGE_TAG, docker_available, ensure_image
+from tests.integration import _sidecar_e2e_helpers as H
 
 
 pytestmark = [
@@ -114,8 +119,22 @@ def live_configured_env(
     monkeypatch.setenv("DMAC_CATALOG_FILE_HOST_PATH", str(bridge_config.catalog_file))
     for key, value in live_env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setenv("NEXTSEEK_BASE_URL", live_env["NEXTSEEK_URL"])
+    # T13: the E2E target is the LOCAL NExtSEEK stack, not the dev server that
+    # live_env["NEXTSEEK_URL"] validates to. Point the AGENT container's NS URL at
+    # the local stack via the host gateway (the agent is on the sidecar network
+    # only; localhost is self-referential in-container). Same constant the T12
+    # sidecar suite uses. NEVER edit .env — per-invocation override.
+    monkeypatch.setenv("NEXTSEEK_URL", H.AGENT_NEXTSEEK_URL)
+    monkeypatch.setenv("NEXTSEEK_BASE_URL", H.AGENT_NEXTSEEK_URL)
     monkeypatch.setenv("DMAC_ROUTER_ENABLED", "1")
+    # task-04R1: the post-turn staging sweep DELETES swept request dirs; pin
+    # it into the test tmp tree so a live run can never sweep (and delete from)
+    # the real default ~/dmac-dev/nextseek-sidecar-staging. DMAC_SIDECAR_NETWORK
+    # is deliberately NOT pinned here: live runs exercise production parity and
+    # may legitimately attach to the running sidecar stack's network.
+    monkeypatch.setenv(
+        "DMAC_SIDECAR_STAGING_ROOT", str(bridge_config.scratch_root.parent / "sidecar-staging")
+    )
 
 
 @pytest.fixture
@@ -144,9 +163,9 @@ async def test_ns_route_real_turn_against_image(
 ) -> None:
     """Drive a real NS turn through `runner_ns.py` in-image.
 
-    Phase 7 residual #6 spirit: prove the bridge<->runner_ns.py<->chat_nextseek
-    pipeline completes a real turn end-to-end and emits `session_ended`
-    regardless of NS answer quality (#1 is out of scope here).
+    T13: prove the bridge<->runner_ns.py<->assistant-viewset pipeline completes a
+    real turn end-to-end, emits `session_ended`, AND surfaces a substantive
+    assistant reply (not an error frame) against the local stack.
     """
     from dmac_assistant import ws as ws_module
     from dmac_assistant.app import app
@@ -194,19 +213,29 @@ async def test_ns_route_real_turn_against_image(
     assert route_decided[0]["route"] == "nextseek_query"
     assert route_decided[0].get("model_class") is None
 
-    # Lifecycle invariant: NS turn must reach session_ended. The chat_nextseek
-    # answer may be "unsupported operation" (Phase 7 #1, out of scope) — the
-    # bridge still must close the turn cleanly.
+    # Lifecycle invariant: NS turn must reach session_ended.
     assert "session_ended" in frame_types, (
         f"real NS turn did not reach session_ended; "
         f"frame_types={frame_types!r}"
     )
 
-    # Must have either an assistant_message (chat_nextseek answered) or an
-    # error frame (chat_nextseek failed cleanly). Both are valid terminals.
-    assert any(t in {"assistant_message", "error"} for t in frame_types), (
-        f"real NS turn produced neither assistant_message nor error before "
-        f"session_ended; frame_types={frame_types!r}"
+    # T13 tightening (W3 carry-forward): require a SUBSTANTIVE assistant reply,
+    # not an error frame. The viewset path must produce a real answer against the
+    # local stack — a data-sparse "no samples match" reply is still substantive
+    # text. An `error` frame (broken NS path) now FAILS this assertion.
+    assert "error" not in frame_types, (
+        f"real NS turn emitted an error frame (broken NS path); "
+        f"frame_types={frame_types!r}"
+    )
+    assistant_msgs = [f for f in frames if f.get("type") == "assistant_message"]
+    assert assistant_msgs, (
+        f"real NS turn produced no assistant_message before session_ended; "
+        f"frame_types={frame_types!r}"
+    )
+    reply_text = "".join(str(f.get("content") or "") for f in assistant_msgs).strip()
+    assert reply_text, (
+        f"real NS turn assistant_message(s) carried no substantive content; "
+        f"frames={assistant_msgs!r}"
     )
 
     await asyncio.sleep(2.0)

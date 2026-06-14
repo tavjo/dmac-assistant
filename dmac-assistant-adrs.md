@@ -220,7 +220,9 @@ Develop and test on the local MBP. The Dockerfile targets `linux/amd64` (the def
 
 ## ADR-012: Skip Claude Code Permission Prompts (`--dangerously-skip-permissions`)
 
-**Status:** Accepted
+**Status:** Superseded for real turns (2026-06-05, OI-5) — see the Update note below.
+
+> **Update (2026-06-05, OI-5):** `--permission-mode auto` (a per-tool-call classifier with turn/budget caps and a trusted-infra `autoMode.environment` allowlist) **replaced** `--dangerously-skip-permissions` for every real per-turn CC invocation, in commit `f9ce6af` (merged `189bfa3`). The bypass flag survives only in the idle-container boot CMD (`containers.py` `_BASE_COMMAND`), which is cosmetic — idle containers run `sleep infinity`, and every real turn is `docker exec`'d under auto mode via `exec_cc_turn`. The Docker-isolation reasoning below still holds; auto mode adds defense-in-depth on top of it. This does NOT retire the Bedrock-token exfiltration production-blocker (see ADR-013 and `known-issues/bedrock-token-exposure.md`).
 
 **Context:**  
 By default, Claude Code prompts the user for approval before executing bash commands, writing files, or performing other potentially impactful actions (e.g., "Allow Claude to run `python transform.py`? [y/n]"). In an interactive terminal, this is a useful safety check. However, in this system Claude Code runs headlessly behind a chat UI — there is no terminal for the user to approve prompts. Even if approval were relayed through the chat UI, the constant interruptions ("Can I run this command?", "Can I write this file?") would degrade the user experience significantly for a tool meant to operate autonomously on the user's behalf.
@@ -246,3 +248,54 @@ The system's security is not provided by Claude Code's permission prompts — it
 - **Positive:** Seamless user experience — users give natural-language instructions and Claude Code executes without interruption, as intended for an autonomous assistant.
 - **Positive:** Enables true headless operation. Without this flag, the system would need complex logic to relay permission prompts through the WebSocket bridge and back.
 - **Negative:** The flag name ("dangerously") signals that this is a power-user setting. It is safe here *only because* the Docker isolation layer provides the actual security boundary. If the isolation model changes (e.g., running Claude Code directly on the host without Docker), this flag must be removed immediately.
+
+---
+
+## ADR-013: NExtSEEK Shared-Credential Sidecar Containment
+
+**Status:** Accepted (2026-06-14, `nextseek-sidecar-build`)
+
+**Context:**
+The NExtSEEK plugin originally ran the `chat_nextseek` orchestrator **in-process inside each per-user agent container** (see ADR-008). To do its work, `chat_nextseek` needed the lab's shared institutional backend credentials — `GCP_API_KEY`, `NEO4J_*`, `MYSQL_*`, and `SESSION_DB_*`. Injecting those into the per-user agent container meant the in-container agent could read and exfiltrate institutional secrets that are **not** the user's own (unlike `NEXTSEEK_USERNAME`/`NEXTSEEK_PASSWORD`, which are the user's own NExtSEEK login and are fine to expose). This widened the credential-exfiltration surface documented in `known-issues/bedrock-token-exposure.md` beyond the Bedrock token alone.
+
+**Decision:**
+Move `chat_nextseek` execution out of the per-user agent container and behind a separate, high-trust hop, so the shared backend credentials never enter the agent container's runtime environment. The agent container's NExtSEEK env is reduced to only the user's own login (`NEXTSEEK_USERNAME`/`NEXTSEEK_PASSWORD`, translated to `API_USER`/`API_PASS` by the entrypoint) plus `NEXTSEEK_URL`. `src/dmac_assistant/containers.py::_build_environment` stops forwarding the 16 shared-credential keys (T10/U-1).
+
+**As built (A-5 rewire, 2026-06-13/14):** the sidecar itself does **not** hold the shared backend credentials either. It is a thin HTTP forwarder to NExtSEEK's native granular assistant endpoints; it forwards the user's own NExtSEEK login per request as HTTP Basic auth and otherwise requires only `NEXTSEEK_BASE_URL` plus a staging directory (`sidecar/app/config.py`). The shared `GCP_API_KEY`/`NEO4J_*`/`MYSQL_*` credentials live **server-side on NExtSEEK**, which is where `chat_nextseek` actually runs. Per-request user credentials travel as Basic-auth arguments to the HTTP client and are never written into process env, so the earlier per-request `os.environ` mutation (and its cross-user-bleed race class) is removed, not merely mitigated.
+
+**Relationship to existing ADRs (this is a pointer, not an amendment):**
+- **ADR-005 (Secrets as Runtime Environment Variables Only)** is *extended*, not superseded: shared NExtSEEK backend secrets are removed from the agent container's runtime env entirely; ADR-005's invariant (secrets live only in ephemeral runtime env, never on disk or in images) still holds and now governs a much smaller in-agent secret set.
+- **ADR-003 (Read-Only Data Mounts with Separate Scratch Area)** is reused: report/submission artifacts are downloaded from NExtSEEK over HTTP into per-user sidecar staging, swept into the user's scratch, then published to the output root via the existing post-turn copier — the same staging → scratch → publish path ADR-003 defines. (Delivery target is the current bridge output root `~/dmac-dev/output/<user_id>/…`; the separate Dropbox publish-path redesign is out of scope.)
+- **ADR-006 (FastAPI WebSocket Bridge)** is reused: the agent↔sidecar hop rides a WebSocket contract analogous to the chat-UI↔bridge one.
+
+**Consequences:**
+- **Positive:** The in-container agent can no longer read or exfiltrate the shared institutional backend credentials — they are not present in its environment. Only the user's own NExtSEEK login is exposed, consistent with the NExtSEEK access-control model (ADR-009).
+- **Positive:** A single high-trust boundary (the sidecar, and ultimately NExtSEEK) holds backend access; the per-user agent containers are de-credentialed for everything except the user's own identity.
+- **Negative / scope limit:** This ADR contains the **NExtSEEK shared** credentials only. The Bedrock token (`AWS_BEARER_TOKEN_BEDROCK`) is **still present** in the agent container and remains the open production-blocker tracked in `known-issues/bedrock-token-exposure.md` and OI-3 (Option B Bedrock proxy sidecar) — a separate effort that reuses this sidecar's networking pattern.
+- **Negative:** The NExtSEEK route now depends on NExtSEEK being reachable (the agent no longer carries a self-contained `chat_nextseek`); the sidecar must be running for any NExtSEEK granular op.
+
+---
+
+## ADR-014: NExtSEEK Plugin Runner as a Thin Client
+
+**Status:** Accepted (2026-06-14, `nextseek-sidecar-build`)
+
+**Context:**
+The `nextseek` plugin runner (`_nextseek_runner.py`) originally imported `chat_nextseek` in-process at ~16 sites and executed the full orchestrator pipeline inside the agent container. That coupling is what forced the shared-credential exposure addressed in ADR-013 and bloated the agent image with `chat_nextseek` plus its heavy transitive dependencies (`torch`, `sentence-transformers`, ~2 GB). It also duplicated `chat_nextseek` across two runtimes (agent image vs. NExtSEEK's Django backend) — open item OI-2.
+
+**Decision:**
+Make the plugin runner a **thin network client** while keeping Claude Code's tool surface unchanged. The runner no longer imports `chat_nextseek`:
+- The 7 granular ops (`entity`/`parse`/`graph`/`api-read`/`api-write`/`report`/`generate-submission`) are dispatched over a **WebSocket** to the sidecar (`_sidecar_client.py`); the sidecar (per ADR-013, as built) forwards them to NExtSEEK's native granular HTTP endpoints.
+- `query`/`query_plan` are dispatched over **HTTP** to NExtSEEK's assistant viewset (async submit + progress polling) by the in-image viewset client (`runner_ns.py`).
+
+The CC-visible 9-tool surface, the `SKILL.md` contract, and the bridge's UI frame contract are all unchanged — only the runner's *transport* changed (in-process import → network client).
+
+**Relationship to existing ADRs (this is a pointer, not an amendment):**
+- **ADR-008 (Plugin Architecture — CLI Tools with Markdown Documentation)** still holds: the plugin remains CLI-invocable scripts plus markdown docs; the in-container agent invokes the same tools and reads the same `SKILL.md`. Only the runner's implementation moved from an in-process library call to a network call.
+- **ADR-006 (FastAPI WebSocket Bridge)** is reused for the agent↔sidecar granular-op transport.
+
+**Consequences:**
+- **Positive:** Removing `chat_nextseek` + `torch` from the agent image shrank it from ~4.95 GB to ~1.35 GB; the sidecar image (which no longer runs `chat_nextseek` after the A-5 rewire) is ~210 MB. (`vendor/chat_nextseek` is retained in the repo only for the bridge's host-side model-catalog default, not installed into either image.)
+- **Positive:** Resolves OI-2: `chat_nextseek` no longer runs inside the agent container, so the agent-vs-NExtSEEK duplication is gone at the runtime level.
+- **Positive:** Write-safety enforcement (L2) moved server-side (see the write-safety section of `SKILL.md`): the sidecar refuses `api-write` unless `confirmed_write` is exactly `True`, and NExtSEEK enforces its own server-side gate — the in-container agent cannot bypass either because neither runs in a process it controls.
+- **Negative:** The runner now has a network dependency (sidecar WS + NExtSEEK HTTP) where it previously had a self-contained library; failures surface as typed transport/auth errors rather than in-process exceptions.

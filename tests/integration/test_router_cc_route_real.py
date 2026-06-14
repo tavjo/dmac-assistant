@@ -127,6 +127,14 @@ def live_configured_env(
     # consumers want it explicit. Belt-and-braces; harmless on CC route.
     monkeypatch.setenv("NEXTSEEK_BASE_URL", live_env["NEXTSEEK_URL"])
     monkeypatch.setenv("DMAC_ROUTER_ENABLED", "1")
+    # task-04R1: the post-turn staging sweep DELETES swept request dirs; pin
+    # it into the test tmp tree so a live run can never sweep (and delete from)
+    # the real default ~/dmac-dev/nextseek-sidecar-staging. DMAC_SIDECAR_NETWORK
+    # is deliberately NOT pinned here: live runs exercise production parity and
+    # may legitimately attach to the running sidecar stack's network.
+    monkeypatch.setenv(
+        "DMAC_SIDECAR_STAGING_ROOT", str(bridge_config.scratch_root.parent / "sidecar-staging")
+    )
 
 
 @pytest.fixture

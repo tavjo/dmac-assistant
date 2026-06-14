@@ -17,6 +17,13 @@ build_context/docs/
 # Local env file for live runs
 .env
 
+# Sidecar local-NExtSEEK overlays (Amendment A-2): copies of the local stack's
+# db.env + nextseek.env, layered over .env for the sidecar service only while
+# the E2E target is tavjo's local instance (nextseek.env interpolates
+# $MYSQL_HOST/$NEXTSEEK_MYSQL_DATABASE from db.env, so both are needed, in
+# stack order). Never committed.
+sidecar/local-nextseek*.env
+
 # Local Codex planning artifacts
 .codex/
 .claude/

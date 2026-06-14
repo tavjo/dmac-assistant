@@ -29,6 +29,7 @@ import os
 import re as _re
 import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -272,6 +273,26 @@ async def _send_stdin_line(
         return False
 
 
+def _sweep_then_diff(config, identity, pre_turn_files):
+    """OD-2 ordering: sweep sidecar staging into scratch, THEN snapshot+diff so
+    swept artifacts are included in new_files and published this turn (§10)."""
+    swept: set[str] = set()
+    if getattr(config, "sidecar_staging_root", None) is not None:
+        from dmac_assistant.staging_sweep import sweep_sidecar_staging
+        try:
+            swept = sweep_sidecar_staging(
+                staging_root=config.sidecar_staging_root,
+                scratch_root=config.scratch_root,
+                user_id=identity.user_id,
+                api_user=identity.user_id,  # bridge user_id == NS api_user (recon:containers §5)
+            )
+        except Exception as exc:  # noqa: BLE001 — sweep failure must not kill the session
+            log.warning("staging sweep failed for user=%s: %s", identity.user_id, type(exc).__name__)
+    after = snapshot_scratch_files(config.scratch_root, identity.user_id)
+    new = diff_files(pre_turn_files, after) | swept
+    return after, new
+
+
 def dispatch_post_turn_copy(
     *,
     scratch_root: Path,
@@ -466,8 +487,7 @@ async def chat_ws(
         )
 
         async def fire_post_turn_copy() -> None:
-            after = snapshot_scratch_files(config.scratch_root, identity.user_id)
-            new = diff_files(pre_turn_files, after)
+            after, new = _sweep_then_diff(config, identity, pre_turn_files)
             if not new:
                 return
             await asyncio.to_thread(
@@ -853,6 +873,26 @@ def _get_router_agent() -> RouterAgent:  # pragma: no cover
     return _router_agent
 
 
+@dataclass
+class _NsSessionState:
+    """Per-WS-connection NExtSEEK conversation continuity (task-13R).
+
+    Replaces the old non-UUID ``ns_session_key`` (``{user}-ws-{epoch}``), which
+    the assistant viewset 422-rejected because ``QueryRequest.session_id`` must
+    be a server-issued UUID. ``session_id`` starts ``None``; the first NS turn
+    sends no session id (the viewset creates a session and returns its UUID in
+    the terminal ``query_complete`` event), the bridge captures that UUID here,
+    and subsequent NS turns in the same WS connection reuse it so multi-turn NS
+    context is preserved (pre-sidecar parity). Lifetime == one WS connection:
+    a new connection constructs a fresh holder, so there is no cross-connection
+    or cross-user leak.
+    """
+
+    session_id: str | None = None
+
+
+# T12 gate CLOSED 2026-06-14 (A-5 fix): live E2E in run_t18_rewire_e2e.py step3 + hermetic
+# test_t18_router_on_sidecar_publish.py drive the real bridge-WS closure with provenance.
 async def _chat_ws_router_on(  # pragma: no cover
     *,
     websocket: WebSocket,
@@ -869,14 +909,21 @@ async def _chat_ws_router_on(  # pragma: no cover
     current_session_id: str | None = requested_session_id
     session_started_emitted = False
     session_ended_emitted = False
-    ns_session_key = (
-        f"{identity.user_id}-ws-{int(asyncio.get_running_loop().time())}"
-    )
+    # task-13R: per-WS-connection NS conversation state. Starts empty; the
+    # viewset-issued session UUID is captured after the first NS turn and
+    # reused for the rest of this connection.
+    ns_session = _NsSessionState()
     pre_turn_files = snapshot_scratch_files(config.scratch_root, identity.user_id)
 
+    # T12 router-on artifact gate: CLOSED (A-5 fix, 2026-06-14).
+    # The gate now drives a real bridge-WS turn through THIS closure via TestClient in
+    # tools/e2e/run_t18_rewire_e2e.py step3_t12_router_on_gate (live E2E + hermetic
+    # coverage in tests/integration/test_t18_router_on_sidecar_publish.py). Provenance:
+    # _sweep_then_diff is wrapped to assert the closure called it (not out-of-band);
+    # sha256 of published output matches the staged NExtSEEK source artifact.
+    # Original diagnosis: .claude/reports/2026-06-11-ns-t12-report-op-ddx-resolution.md.
     async def fire_post_turn_copy() -> None:
-        after = snapshot_scratch_files(config.scratch_root, identity.user_id)
-        new = diff_files(pre_turn_files, after)
+        after, new = _sweep_then_diff(config, identity, pre_turn_files)
         if not new:
             return
         await asyncio.to_thread(
@@ -914,7 +961,7 @@ async def _chat_ws_router_on(  # pragma: no cover
             session_started_emitted=session_started_emitted,
             session_ended_emitted=session_ended_emitted,
             requested_session_id=requested_session_id,
-            ns_session_key=ns_session_key,
+            ns_session=ns_session,
             post_turn_callback=fire_post_turn_copy,
         )
 
@@ -943,7 +990,7 @@ async def _chat_ws_router_on(  # pragma: no cover
                 session_started_emitted=session_started_emitted,
                 session_ended_emitted=session_ended_emitted,
                 requested_session_id=current_session_id,
-                ns_session_key=ns_session_key,
+                ns_session=ns_session,
                 post_turn_callback=fire_post_turn_copy,
             )
     finally:
@@ -964,7 +1011,7 @@ async def _dispatch_one_turn(
     session_started_emitted: bool,
     session_ended_emitted: bool,
     requested_session_id: str | None = None,
-    ns_session_key: str | None = None,
+    ns_session: _NsSessionState | None = None,
     post_turn_callback: Callable[[], Awaitable[None]] | None = None,
 ) -> tuple[bool, bool, str | None]:
     """Route one user_message, emit route_decided, then dispatch the turn."""
@@ -1035,7 +1082,7 @@ async def _dispatch_one_turn(
         identity=identity,
         config=config,
         bridge_env=bridge_env,
-        ns_session_key=ns_session_key,
+        ns_session=ns_session,
     )
     if post_turn_callback is not None:
         await post_turn_callback()
@@ -1189,11 +1236,21 @@ async def _dispatch_ns_turn(
     identity: AuthenticatedIdentity,
     config: BridgeConfig,
     bridge_env: dict[str, str],
-    ns_session_key: str | None = None,
+    ns_session: _NsSessionState | None = None,
 ) -> None:
-    """Run one NExtSEEK turn via T3.1 exec primitives."""
+    """Run one NExtSEEK turn via T3.1 exec primitives.
+
+    task-13R: ``ns_session`` carries the viewset-issued NExtSEEK session UUID
+    across turns of one WS connection. The outbound viewset session id is
+    ``ns_session.session_id`` (``None`` on the first turn → the viewset creates
+    a fresh session); the UUID it returns in the terminal ``query_complete``
+    event is captured back into the holder for the next turn. This is distinct
+    from ``ns_session_id`` below, which is the UI-facing frame session id.
+    """
     ns_session_id = f"ns-{uuid.uuid4().hex[:12]}"
     terminal_emitted = False
+    captured_session_id: str | None = None
+    outbound_session_id = ns_session.session_id if ns_session is not None else None
     sock: Any = None
     stderr_capture_fh = _open_ns_stderr_capture(ns_session_id)
     try:
@@ -1202,7 +1259,7 @@ async def _dispatch_ns_turn(
                 exec_ns_turn,
                 container,
                 query=query,
-                session_id=ns_session_key,
+                session_id=outbound_session_id,
                 identity=identity,
                 config=config,
                 bridge_env=bridge_env,
@@ -1225,7 +1282,7 @@ async def _dispatch_ns_turn(
         )
 
         async def _read_and_dispatch() -> None:
-            nonlocal terminal_emitted
+            nonlocal terminal_emitted, captured_session_id
             event_index = 0
             while True:
                 line = await asyncio.to_thread(sock.read_event_line)
@@ -1239,6 +1296,13 @@ async def _dispatch_ns_turn(
                 except (TypeError, ValueError):
                     log.debug("ns invalid jsonl line dropped")
                     continue
+                # task-13R: capture the viewset-issued session UUID from the
+                # terminal query_complete event so the next turn of this WS
+                # connection can resume the same NExtSEEK conversation.
+                if isinstance(event, dict) and event.get("event") == "query_complete":
+                    sid = (event.get("payload") or {}).get("session_id")
+                    if isinstance(sid, str) and sid:
+                        captured_session_id = sid
                 frames, is_terminal = ns_event_to_frames(
                     event, session_id=ns_session_id, event_index=event_index
                 )
@@ -1274,6 +1338,11 @@ async def _dispatch_ns_turn(
                 {"type": "session_ended", "session_id": ns_session_id},
             )
     finally:
+        # task-13R: persist the viewset session UUID for subsequent turns of
+        # this WS connection. Only overwrite on a real capture so a failed /
+        # truncated / timed-out turn leaves the prior UUID (or None) intact.
+        if ns_session is not None and captured_session_id is not None:
+            ns_session.session_id = captured_session_id
         if sock is not None:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(sock.close)

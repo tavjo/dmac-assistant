@@ -264,7 +264,10 @@ except: pass
 "
 fi
 
-# Launch Claude Code in headless mode
+# Launch Claude Code in headless mode (idle-container boot CMD).
+# NOTE (OI-5, 2026-06-05): real per-turn CC turns are docker-exec'd with
+# `--permission-mode auto` (a per-tool-call classifier), NOT the bypass flag;
+# this boot CMD is cosmetic — idle containers run `sleep infinity`. See ADR-012.
 cd /app
 exec claude --print --output-format stream-json --dangerously-skip-permissions "$@"
 ```
@@ -287,16 +290,15 @@ exec claude --print --output-format stream-json --dangerously-skip-permissions "
 | `AWS_REGION` | Passed from backend, defaults to `us-east-1` | Yes |
 | `NEXTSEEK_USERNAME` | User's login credentials | Yes |
 | `NEXTSEEK_PASSWORD` | User's login credentials | Yes |
-| `GCP_API_KEY` | Passed from bridge env (host process env) | Optional (Plan A) — required when `chat_nextseek` uses the `gcp:current` LLM profile |
-| `NEO4J_URI` | Passed from bridge env | Optional — disables graph queries gracefully if unset |
-| `NEO4J_USER` | Passed from bridge env | Optional — same as above |
-| `NEO4J_PASSWORD` | Passed from bridge env | Optional — same as above; **exfiltration surface** (see Known Issues) |
+| `GCP_API_KEY` | Bridge host process env only — **not forwarded to the agent container** (sidecar build, T10/U-1) | Optional — needed only on the bridge host for the LLM router's BAML route decisions; `chat_nextseek`'s GCP-profile use runs server-side on NExtSEEK |
+| `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PASSWORD` | **Not forwarded to the agent container** (sidecar build, T10/U-1) | n/a in-container — NExtSEEK holds Neo4j access server-side for graph queries; `NEO4J_PASSWORD` is no longer an in-container exfiltration surface |
 | `DMAC_PATH_MAPPINGS` | Bridge-constructed JSON; emitted by `_build_bridge_env(config, identity)` | Yes (Plan A) — maps container roots `/data/output` and `/data/scratch` to per-user host roots so plugins can report host-side paths to users |
 
 #### New environment variables (Plan A) — detail
 
-- `GCP_API_KEY` — passed through to the in-container plugin for chat_nextseek's `gcp:current` profile. **Exfiltration surface** (see Known Issues — Bedrock token exposure file enumerates this).
-- `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PASSWORD` — passed through for the in-container graph agent. Soft-optional: missing values disable graph queries gracefully. **`NEO4J_PASSWORD` is an exfiltration surface** (see Known Issues).
+- `GCP_API_KEY` — **no longer forwarded to the agent container** (sidecar build, T10/U-1). It is needed only on the bridge host for the LLM router's BAML route decisions; `chat_nextseek`'s GCP-profile use now runs server-side on NExtSEEK. The former in-container exfiltration surface is closed; the Bedrock token (`AWS_BEARER_TOKEN_BEDROCK`) remains the open one (see Known Issues — Bedrock token exposure).
+- `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PASSWORD` — **no longer forwarded to the agent container** (sidecar build, T10/U-1). NExtSEEK holds Neo4j access server-side for graph queries; these are absent from the agent container, so `NEO4J_PASSWORD` is no longer an in-container exfiltration surface.
+- `MYSQL_*` / `SESSION_DB_*` — **not forwarded to the agent container** either; they are among the 16 shared-credential keys `_build_environment` removed (T10/U-1). NExtSEEK's MySQL / session store is reached server-side; these credentials are not present in the agent container. (Together, `GCP_API_KEY` + `NEO4J_*` + `MYSQL_*` + `SESSION_DB_*` are the full set ADR-013 describes as contained.)
 - `DMAC_OUTPUT_ROOT` — host directory mounted at `/data/output/` ro inside the container. Bridge writes to this directory via the post-turn copier (see "Bridge-side artifact copier" below). **D19 (CC reports host-side paths to the user) is implemented end-to-end: the bridge injects `DMAC_PATH_MAPPINGS` (Plan A T9b) and the `nextseek` plugin's `SKILL.md` consumes it (Plan B, merged 2026-05-06).**
 
 #### D19 — Host-path reporting

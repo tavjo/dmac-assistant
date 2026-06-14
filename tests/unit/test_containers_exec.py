@@ -294,6 +294,25 @@ def test_ns_argv_includes_session_when_supplied(tmp_path: Path) -> None:
     assert cmd == ["python", "/opt/dmac/runner_ns.py", "--session", NS_SESSION_ID]
 
 
+def test_ns_argv_omits_session_when_none(tmp_path: Path) -> None:
+    # task-13R: the first NS turn of a WS connection has no captured viewset
+    # session UUID yet (session_id=None). exec_ns_turn must omit --session
+    # entirely so the assistant viewset creates a fresh session and returns its
+    # UUID in the terminal query_complete event.
+    container = _FakeContainer()
+    exec_ns_turn(
+        container,
+        query="hello",
+        session_id=None,
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env_with_url(),
+    )
+    cmd = container.client.api.exec_create_calls[0]["cmd"]
+    assert cmd == ["python", "/opt/dmac/runner_ns.py"]
+    assert "--session" not in cmd
+
+
 def test_ns_stdin_is_raw_query_with_newline(tmp_path: Path) -> None:
     container = _FakeContainer()
     query = "What samples are in the GBM study?"
@@ -363,7 +382,10 @@ def test_nextseek_base_url_equals_bridge_url_value(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("which", ["cc", "ns"])
-def test_neo4j_database_forwarded_when_set(which: str, tmp_path: Path) -> None:
+def test_neo4j_database_never_forwarded(which: str, tmp_path: Path) -> None:
+    """T11 (U-1): NEO4J_DATABASE is one of the 16 sidecar-held shared-cred
+    keys — it must be ABSENT from the per-exec env even when set in
+    bridge_env, on both routes."""
     container = _FakeContainer()
     bridge_env = {**_bridge_env_with_url(), "NEO4J_DATABASE": "neo4j-prod"}
     common_kwargs = dict(
@@ -377,7 +399,7 @@ def test_neo4j_database_forwarded_when_set(which: str, tmp_path: Path) -> None:
     else:
         exec_ns_turn(container, session_id=NS_SESSION_ID, **common_kwargs)
     env = container.client.api.exec_create_calls[0]["environment"]
-    assert env["NEO4J_DATABASE"] == "neo4j-prod"
+    assert "NEO4J_DATABASE" not in env
 
 
 @pytest.mark.parametrize("which", ["cc", "ns"])
@@ -399,7 +421,11 @@ def test_neo4j_database_omitted_when_unset(which: str, tmp_path: Path) -> None:
     assert "NEO4J_DATABASE" not in env
 
 
-def test_ns_env_has_outputs_dir(tmp_path: Path) -> None:
+def test_ns_env_omits_chat_nextseek_keys(tmp_path: Path) -> None:
+    """T11 (U-8): the NS route execs a thin client of the sidecar/viewset —
+    OUTPUTS_DIR / CHAT_NEXTSEEK_SESSION_DB / NEXTSEEK_MODE were chat_nextseek
+    process config and moved to the sidecar with it (T10 removed them from
+    the NS exec env). They must be ABSENT."""
     container = _FakeContainer()
     exec_ns_turn(
         container,
@@ -410,39 +436,9 @@ def test_ns_env_has_outputs_dir(tmp_path: Path) -> None:
         bridge_env=_bridge_env_with_url(),
     )
     env = container.client.api.exec_create_calls[0]["environment"]
-    assert env["OUTPUTS_DIR"] == (
-        f"/data/scratch/{USER_ID}/chat_nextseek/{NS_SESSION_ID}/"
-    )
-
-
-def test_ns_env_has_chat_nextseek_session_db(tmp_path: Path) -> None:
-    container = _FakeContainer()
-    exec_ns_turn(
-        container,
-        query="hi",
-        session_id=NS_SESSION_ID,
-        identity=_identity(),
-        config=_config(tmp_path),
-        bridge_env=_bridge_env_with_url(),
-    )
-    env = container.client.api.exec_create_calls[0]["environment"]
-    assert env["CHAT_NEXTSEEK_SESSION_DB"] == (
-        "/home/user/.claude/chat_nextseek/sessions.sqlite"
-    )
-
-
-def test_ns_env_has_nextseek_mode_literal_gcp(tmp_path: Path) -> None:
-    container = _FakeContainer()
-    exec_ns_turn(
-        container,
-        query="hi",
-        session_id=NS_SESSION_ID,
-        identity=_identity(),
-        config=_config(tmp_path),
-        bridge_env=_bridge_env_with_url(),
-    )
-    env = container.client.api.exec_create_calls[0]["environment"]
-    assert env["NEXTSEEK_MODE"] == "gcp"
+    assert "OUTPUTS_DIR" not in env
+    assert "CHAT_NEXTSEEK_SESSION_DB" not in env
+    assert "NEXTSEEK_MODE" not in env
 
 
 def test_cc_env_omits_outputs_dir(tmp_path: Path) -> None:
@@ -566,6 +562,93 @@ def test_kill_exec_pid_returns_on_kill_start_apierror(tmp_path: Path) -> None:
     pre_exec_count = len(api.exec_create_calls)
     kill_exec_pid(container, "exec-1")
     assert len(api.exec_create_calls) == pre_exec_count
+
+
+# --------------------------------------------------------------------------
+# task-13R2: the docker exec attach socket must be made blocking so only the
+# per-turn asyncio.wait_for in ws.py governs idle time. docker-py's client
+# default 60s timeout otherwise leaks through recv() as a TimeoutError that
+# ws.py mislabels `exec_timeout`. These tests pin that the attach socket is
+# blocking (gettimeout() is None) after BOTH exec_cc_turn and exec_ns_turn.
+# --------------------------------------------------------------------------
+
+
+class _TimeoutRecordingSocket(_RawSocketFake):
+    """Raw-socket fake that models docker-py's inherited 60s read timeout.
+
+    Starts with the docker default timeout (60.0s) and records every
+    settimeout call so the test can prove the bridge cleared it to None.
+    """
+
+    def __init__(self, data: bytes = b"") -> None:
+        super().__init__(data)
+        # docker.constants.DEFAULT_TIMEOUT_SECONDS — the value the real
+        # hijacked attach socket inherits and that misfires at 60s.
+        self._timeout: float | None = 60.0
+        self.settimeout_calls: list[float | None] = []
+
+    def settimeout(self, value: float | None) -> None:
+        self.settimeout_calls.append(value)
+        self._timeout = value
+
+    def gettimeout(self) -> float | None:
+        return self._timeout
+
+
+class _TimeoutRecordingAPI(_FakeDockerAPI):
+    def exec_start(self, exec_id: str, **kwargs: Any) -> _TimeoutRecordingSocket:
+        sock = _TimeoutRecordingSocket()
+        self._sockets.append(sock)
+        self.exec_start_calls.append(
+            {"exec_id": exec_id, "kwargs": kwargs, "socket": sock}
+        )
+        return sock
+
+
+class _TimeoutRecordingContainer(_FakeContainer):
+    def __init__(self, *, container_id: str = "ctr-deadbeef") -> None:
+        super().__init__(container_id=container_id)
+        self.client.api = _TimeoutRecordingAPI()
+
+
+def test_exec_cc_turn_makes_attach_socket_blocking(tmp_path: Path) -> None:
+    container = _TimeoutRecordingContainer()
+    exec_cc_turn(
+        container,
+        query="hi",
+        model_id=MODEL_ID,
+        session_id=None,
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env_with_url(),
+    )
+    raw_sock = container.client.api.exec_start_calls[0]["socket"]
+    # Pre-fix: docker's 60s default was never cleared, so this fails.
+    assert raw_sock.gettimeout() is None
+    assert raw_sock.settimeout_calls, "settimeout was never called on the attach socket"
+    assert raw_sock.settimeout_calls[-1] is None
+
+
+def test_exec_ns_turn_makes_attach_socket_blocking(tmp_path: Path) -> None:
+    container = _TimeoutRecordingContainer()
+    exec_ns_turn(
+        container,
+        query="hi",
+        session_id=NS_SESSION_ID,
+        identity=_identity(),
+        config=_config(tmp_path),
+        bridge_env=_bridge_env_with_url(),
+    )
+    raw_sock = container.client.api.exec_start_calls[0]["socket"]
+    assert raw_sock.gettimeout() is None
+    assert raw_sock.settimeout_calls[-1] is None
+
+
+def test_bridge_attach_socket_set_blocking_defensive_no_settimeout() -> None:
+    # Log-streaming construction (no real socket); _set_blocking must not raise
+    # when the transport lacks settimeout.
+    sock = BridgeAttachSocket(object(), stdout_stream=iter([b""]))
+    assert sock is not None
 
 
 def test_returns_socket_with_exec_id_attribute(tmp_path: Path) -> None:

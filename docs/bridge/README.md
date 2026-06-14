@@ -108,7 +108,7 @@ Only the following bridge-configurable variables are assigned in [`.env.example`
 
 At runtime the bridge also injects `NEXTSEEK_USERNAME` and `NEXTSEEK_PASSWORD` into the container. Those values are derived from the authenticated login, not configured separately for `/ws/chat`.
 
-When the LLM router is enabled (see below), `GCP_API_KEY` must also be set on the bridge host - the router calls Gemini Pro (currently `gemini-3.1-pro-preview`) via BAML to classify each turn into a route. The bridge also forwards `GCP_API_KEY` to the container when set, so in-container plugins that need GCP access can read it from their process environment.
+When the LLM router is enabled (see below), `GCP_API_KEY` must also be set on the bridge host - the router calls Gemini Pro (currently `gemini-3.1-pro-preview`) via BAML to classify each turn into a route. The shared credentials (`GCP_API_KEY`, `NEO4J_*`, `MYSQL_*`, `SESSION_DB_*`) are **no longer forwarded to the agent container**: they are held only by the bridge host and the NExtSEEK sidecar, which runs the chat_nextseek agents on the agent's behalf. In-container plugins reach those services through the sidecar, not through process-environment credentials.
 
 ## Routing and model selection
 
@@ -125,12 +125,12 @@ Bridge-side env vars added by the router:
 | Variable | Purpose |
 |---|---|
 | `DMAC_ROUTER_ENABLED` | When truthy, enables the per-turn router. Default: unset (router off, byte-identical legacy behavior). |
-| `GCP_API_KEY` | Required when `DMAC_ROUTER_ENABLED=1`. Consumed by the BAML `GCPReasoner` client that drives the route-decision call. Also forwarded to the container when set (both routes) so in-container plugins can reach GCP. Redacted in `ContainerSpec.__repr__` / `model_dump`. |
+| `GCP_API_KEY` | Required when `DMAC_ROUTER_ENABLED=1`. Consumed by the BAML `GCPReasoner` client that drives the route-decision call. **Not forwarded to the agent container** — sidecar-held shared credential (the sidecar's chat_nextseek agents consume it). Redacted in `ContainerSpec.__repr__` / `model_dump`. |
 
-Per-exec env vars the bridge passes on `docker exec` when the router is enabled. `docker exec` does **not** run the entrypoint shim, so the bridge re-derives the env that the entrypoint would have set; the list below highlights what is new or different on a per-turn exec relative to a long-lived `docker run` of the same image. Any bridge-host env var that `_build_environment` forwards (e.g. `GCP_API_KEY`, `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`) is included automatically when set on the bridge, because the per-exec env builder calls `_build_environment` first.
+Per-exec env vars the bridge passes on `docker exec` when the router is enabled. `docker exec` does **not** run the entrypoint shim, so the bridge re-derives the env that the entrypoint would have set; the list below highlights what is new or different on a per-turn exec relative to a long-lived `docker run` of the same image. Any bridge-host env var that `_build_environment` forwards (e.g. `NEXTSEEK_URL`, `DMAC_PATH_MAPPINGS`) is included automatically when set on the bridge, because the per-exec env builder calls `_build_environment` first. Shared credentials (`GCP_API_KEY`, `NEO4J_*`, `MYSQL_*`, `SESSION_DB_*`) are NOT in this set — they are sidecar-held and never appear in the per-exec env.
 
 - Always set on every exec: `API_USER`, `API_PASS`, `NEXTSEEK_BASE_URL`, `AWS_REGION`, `AWS_BEARER_TOKEN_BEDROCK`.
-- When `route="nextseek_query"`: `NEXTSEEK_MODE=gcp` (selects Gemini Flash-Lite for chat_nextseek's own classifier calls), `NEO4J_DATABASE`, `OUTPUTS_DIR`, `CHAT_NEXTSEEK_SESSION_DB`.
+- When `route="nextseek_query"`: no chat_nextseek process config remains — the exec runs the thin runner (`runner_ns.py`), which talks to the NExtSEEK assistant viewset / sidecar; session state and outputs live sidecar-side.
 - When `route="container_cc"`: `CLAUDE_CODE_USE_BEDROCK=1` plus the model-class-specific Bedrock model ID (resolved via `build_context/router_model_class_map.json`).
 
 When the router decides a route but the BAML call fails (network error, rate limit, schema mismatch), the bridge falls back to `route=container_cc, model_class=sonnet` and logs the failure with `extra={"router_fallback": True, "exc_type": <type>}`.

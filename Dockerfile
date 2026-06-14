@@ -51,6 +51,13 @@ COPY container/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
 COPY container/runner_ns.py /opt/dmac/runner_ns.py
 RUN chmod 0755 /opt/dmac/runner_ns.py
+# T11 (U-11): runner_ns.py is a thin client of the sidecar/viewset; its sibling
+# helper modules must sit next to it at /opt/dmac/ (the plugin bin copies of
+# the same files ride along in the broad plugin COPY above for the shims).
+COPY build_context/plugins/nextseek/bin/_ws_contract.py /opt/dmac/_ws_contract.py
+COPY build_context/plugins/nextseek/bin/_assistant_models.py /opt/dmac/_assistant_models.py
+COPY build_context/plugins/nextseek/bin/_assistant_client.py /opt/dmac/_assistant_client.py
+COPY build_context/plugins/nextseek/bin/_sidecar_client.py /opt/dmac/_sidecar_client.py
 
 # DD-37: claude-code discovers CLAUDE.md from cwd / project tree, not /app/.
 # Symlink the image-baked spec into the WORKDIR so the in-container Claude
@@ -80,21 +87,11 @@ RUN cd /tmp/dmac-deps \
     && uv sync --locked --no-install-project \
     && echo "uv sync done; deps installed into /opt/dmac-venv"
 
-# chat_nextseek (vendor pin 1217c95+) pulls sentence-transformers transitively,
-# which requires torch. The default PyPI torch wheel is the CUDA build (~2 GB);
-# the bridge does not need GPU. Install torch from PyTorch's CPU-only index
-# FIRST so the subsequent chat_nextseek install sees torch as already satisfied
-# and skips re-resolving it from PyPI default. The CPU wheel is ~200 MB.
-RUN uv pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-# Plan A T8 Amendment 4 (vendored-source): install chat_nextseek from the
-# host-side vendor/ tree (populated by `make sync-vendor-deps`). No
-# build-time GitHub egress; the image rebuilds wheels in its own
-# linux/amd64 + Python 3.14 environment. With the venv active via PATH +
-# VIRTUAL_ENV, uv pip install targets the venv automatically.
-COPY vendor/chat_nextseek /tmp/chat_nextseek
-RUN uv pip install /tmp/chat_nextseek \
-    && chmod -R a+rX /opt/uv-cache /opt/dmac-venv
+# T11 (U-11, resolves OI-2): chat_nextseek + torch are NO LONGER installed in
+# the agent image — they live only in the sidecar image (sidecar/Dockerfile).
+# The plugin runner is a thin WS/viewset client (_nextseek_runner.py) whose
+# deps (websockets, httpx) arrive via `uv sync --locked` above.
+RUN chmod -R a+rX /opt/uv-cache /opt/dmac-venv
 
 # T5 (e2e plan) — bake the JudgeUITranscript BAML client into the image.
 # COPY before RUN: without the COPY, baml-cli generate fails "directory not found".

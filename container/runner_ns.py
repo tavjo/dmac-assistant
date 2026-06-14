@@ -9,18 +9,17 @@ Responsibilities (in execution order):
      events are written exclusively to _EVENTS_FD via os.write().
   2. Test opt-out via DMAC_RUNNER_NS_NO_REMAP env var.
   3. Read user query from stdin (one line).
-  4. Construct ChatConfig + SessionState from env + --session arg.
-  5. Call chat_nextseek.orchestrator.run_query with a REDACTING send_event
-     callback (defense in depth — see locked spec lines 481-498).
-  6. On uncaught exception, emit {"event": "ns_runner_error", "payload":
-     {"error_type": "<TypeName>"}} and exit non-zero.
+  4. Build AssistantClient from env (NEXTSEEK_URL, API_USER, API_PASS).
+  5. Call client.run_query, translate terminal/events to the JSONL contract
+     the bridge ns_adapter expects (recon:nsRoute section 3).
+  6. On uncaught exception, emit ns_runner_error and exit non-zero.
 
-See docs/superpowers/specs/2026-05-13-llm-router-design.md for the full design.
+See docs/superpowers/specs/2026-06-08-nextseek-shared-cred-sidecar-design.md.
 """
 
 # THIS BLOCK MUST BE THE FIRST EXECUTABLE STATEMENT IN THE MODULE, AT MODULE
 # LEVEL (NOT INSIDE __main__). DO NOT INSERT ANY IMPORT THAT BINDS OR WRAPS
-# sys.stdout / sys.stderr ABOVE THIS BLOCK. Plain `import os` is fine — it
+# sys.stdout / sys.stderr ABOVE THIS BLOCK. Plain `import os` is fine -- it
 # does not touch sys.stdout. The risk is any line that calls
 # `sys.stdout = ...` or wraps the stream in a Tee-like object.
 import os as _os
@@ -43,23 +42,54 @@ else:  # pragma: no cover  -- production-only branch; tests always set DMAC_RUNN
 # test exercises _perform_event_channel_remap() under a controlled
 # fd capture instead.
 
-# All other imports go below — they may touch sys.stdout but only after the
+# All other imports go below -- they may touch sys.stdout but only after the
 # remap is complete.
 import argparse  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 import sys  # noqa: E402
-from collections.abc import Callable  # noqa: E402
+from collections.abc import Sequence  # noqa: E402
 from typing import Any  # noqa: E402
 
+# httpx is imported here at module level (stage-2 import block) so the except
+# clauses in main() that reference httpx.HTTPStatusError / httpx.TransportError
+# always resolve the name from module scope. If httpx import were deferred into
+# the try block inside main(), a failure of that import would leave httpx unbound
+# as a function-local name; the first except clause would then raise
+# UnboundLocalError, escaping the BaseException catch-all and producing a
+# traceback with no ns_runner_error JSONL. httpx emits nothing to stdout on
+# import, so moving it here is safe relative to the fd-remap invariant above.
+import httpx  # noqa: E402
 
-# Failure-signal helpers for the redacting wrapper.
+# Path resolution: in the image, runner_ns.py is at /opt/dmac/runner_ns.py and
+# _assistant_client.py/_assistant_models.py are COPYd to /opt/dmac/ (T11).
+# For host unit tests, those modules live in build_context/plugins/nextseek/bin/.
+# We try the script's own directory first, then fall back to the repo bin dir
+# relative to this file's location.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_BIN_DIR = os.path.join(
+    os.path.dirname(_SCRIPT_DIR), "build_context", "plugins", "nextseek", "bin"
+)
+# Insert in reverse-priority order so that after both inserts, _SCRIPT_DIR ends
+# up at a lower index (higher precedence) than _REPO_BIN_DIR.
+for _p in (_REPO_BIN_DIR, _SCRIPT_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
+
+# Failure-signal constants -- preserved from the original runner, aligned with
+# recon:nsRoute section 1b and ns_adapter._has_failure_signal logic.
 _FAILURE_STATUSES = frozenset({"error", "partial", "failure"})
+
+# The exact error string the AssistantClient emits when the polling deadline
+# passes or the task ends with no terminal event and no result (see
+# _assistant_client.STREAM_ENDED_SENTINEL). Used to distinguish a synthetic-
+# terminal sentinel from a genuine query_error. Drift-pinned in test_runner_ns.py.
+_STREAM_ENDED_WITHOUT_TERMINAL = "stream ended without terminal event"
 
 
 def _has_failure_signal(payload: dict[str, Any]) -> bool:
-    """True if ANY of the 5 union'd failure signals is present per spec line 491."""
+    """True if ANY of the 5 union'd failure signals is present per recon:nsRoute section 1b."""
     if payload.get("status") in _FAILURE_STATUSES:
         return True
     if payload.get("error_type"):
@@ -74,175 +104,220 @@ def _has_failure_signal(payload: dict[str, Any]) -> bool:
     return False
 
 
-def _redact_send_event(event_name: str, payload: dict[str, Any]) -> None:
-    """Mutate payload in-place to redact credential-carrying fields.
-
-    Per locked spec lines 481-498. Runs BEFORE each JSONL line is written.
-    """
-    if event_name == "query_error":
-        if payload.get("error"):
-            payload["error"] = "<redacted>"
-        return
-
-    if event_name != "query_complete":
-        return
-
-    # query_complete: union'd failure signals trigger reply redaction.
-    debug = payload.get("debug") or {}
-    if debug.get("error"):
-        debug["error"] = "<redacted>"
-    if debug.get("fatal_error"):
-        debug["fatal_error"] = "<redacted>"
-
-    if _has_failure_signal(payload) and payload.get("reply") is not None:
-        payload["reply"] = "<redacted; see ns_query_complete_with_error frame>"
-
-
 def _emit_jsonl(event_name: str, payload: dict[str, Any]) -> None:
     """Write one JSONL event line to the saved fd via os.write (NEVER print)."""
     line = json.dumps({"event": event_name, "payload": payload}, ensure_ascii=False)
     os.write(_EVENTS_FD, line.encode("utf-8") + b"\n")
 
 
-def _make_redacting_send_event() -> Callable[[str, dict[str, Any]], None]:
-    """Return a `send_event` callback that redacts then emits.
+def _build_assistant_client() -> Any:
+    """Construct AssistantClient from environment variables.
 
-    Per locked spec line 486 (F-T1.3-1-3 round-1 hardener): on `query_error`,
-    after the redacted main line is emitted, a SECOND JSONL line is emitted —
-    `{"event": "ns_runner_error_type", "payload": {"agent": <agent>,
-    "error_type": "RedactedByRunner"}}` — so the bridge can DEBUG-log the
-    type-name signal that was redacted out of the main payload.
+    Reads NEXTSEEK_URL, NEXTSEEK_ASSISTANT_PREFIX (default nextseek_api/assistant),
+    API_USER, API_PASS -- mirrors the pattern used by T8's _run_viewset in
+    build_context/plugins/nextseek/bin/_nextseek_runner.py.
     """
+    import _assistant_client as ac  # noqa: PLC0415 -- deferred for path resolution
 
-    def send_event(event_name: str, payload: dict[str, Any]) -> None:
-        _redact_send_event(event_name, payload)
-        _emit_jsonl(event_name, payload)
-        if event_name == "query_error":
-            # Locked spec line 486: emit a separate post-event line carrying the
-            # known-safe `agent` value + a sentinel `error_type`. The original
-            # exception type-name is not recoverable here (the runner does not
-            # have the exception object), so the literal "RedactedByRunner" is
-            # the spec-mandated sentinel.
-            _emit_jsonl(
+    return ac.AssistantClient(
+        base_url=os.environ["NEXTSEEK_URL"],
+        assistant_prefix=os.environ.get(
+            "NEXTSEEK_ASSISTANT_PREFIX", "nextseek_api/assistant"
+        ),
+        auth=(os.environ.get("API_USER", ""), os.environ.get("API_PASS", "")),
+    )
+
+
+def _typed_failure_events(
+    error_type: str,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Return the ordered (event_name, payload) pairs for a typed failure.
+
+    Used by the AUTH_FAILED, non-401 HTTPStatusError, and TRANSPORT_ERROR
+    exception branches, which all share the same two-event shape:
+      1. ns_runner_error_type companion (carries error_type for bridge debug log)
+      2. failure-shaped query_complete (carries reply, status, error_type)
+
+    Debug propagation is intentionally not wired here because the HTTP-error
+    branches have no terminal dict to propagate debug from; the terminal-
+    translation path uses _translate_terminal instead.
+    """
+    return [
+        (
+            "ns_runner_error_type",
+            {"agent": None, "error_type": error_type},
+        ),
+        (
+            "query_complete",
+            {
+                "reply": "<redacted; see ns_query_complete_with_error frame>",
+                "status": "error",
+                "error_type": error_type,
+            },
+        ),
+    ]
+
+
+def _translate_terminal(terminal: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Translate a terminal dict from AssistantClient into ordered (event_name, payload) pairs.
+
+    Covers four cases:
+      1. Genuine __error__ (non-sentinel) -> query_error + ns_runner_error_type companion
+      2. Stream-ended sentinel (__error__ == _STREAM_ENDED_WITHOUT_TERMINAL, agent is None)
+         -> synthetic failure-shaped query_complete (no companion)
+      3. Failure-signal terminal (no __error__, but _has_failure_signal) ->
+         ns_runner_error_type companion + failure-shaped query_complete
+      4. Clean success -> query_complete with reply/bundle_id/session_id/debug
+
+    Callers must emit the returned list in order via _emit_jsonl.
+    """
+    if "__error__" in terminal:
+        # Distinguish the stream-ended-without-terminal sentinel from a
+        # genuine query_error. The client represents the sentinel as
+        # {"__error__": _assistant_client.STREAM_ENDED_SENTINEL, "agent": None}
+        # (emitted when polling deadline passes or status becomes terminal with
+        # no terminal event in progress). A genuine query_error carries a
+        # non-None agent or a different error string.
+        sentinel_error = terminal.get("__error__", "")
+        agent = terminal.get("agent")
+        is_synthetic_sentinel = (
+            sentinel_error == _STREAM_ENDED_WITHOUT_TERMINAL and agent is None
+        )
+
+        if is_synthetic_sentinel:
+            # Match the old runner's synthetic-terminal shape so the bridge's
+            # _detect_query_complete_failure fires and routes to
+            # ns_query_complete_with_error (not bare ns_exec_truncated).
+            return [
+                (
+                    "query_complete",
+                    {
+                        "reply": (
+                            "<runner synthetic terminal: assistant viewset "
+                            "stream ended without query_complete or query_error>"
+                        ),
+                        "status": "error",
+                        "error_type": "RunnerSyntheticTerminal",
+                    },
+                )
+            ]
+        else:
+            # Genuine query_error from the viewset. Redact the error text;
+            # emit ns_runner_error_type companion for the bridge's debug log.
+            return [
+                (
+                    "query_error",
+                    {"error": "<redacted>", "agent": agent},
+                ),
+                (
+                    "ns_runner_error_type",
+                    {"agent": agent, "error_type": "RedactedByRunner"},
+                ),
+            ]
+
+    elif _has_failure_signal(terminal):
+        # query_complete with a failure signal -- redact the reply so the
+        # bridge's _detect_query_complete_failure routes to
+        # ns_query_complete_with_error (vet findings 11/13/19).
+        #
+        # The plan deliberately propagates `debug` unredacted here (vet
+        # finding 19: a soft-failure signal the detection misses must still
+        # reach the bridge unchanged; error text now originates from the
+        # NExtSEEK viewset, not a creds-holding in-container library), while
+        # query_error.error stays the redacted literal above.
+        return [
+            (
                 "ns_runner_error_type",
                 {
-                    "agent": payload.get("agent"),
-                    "error_type": "RedactedByRunner",
+                    "agent": None,
+                    "error_type": terminal.get("error_type") or "UnknownFailure",
+                },
+            ),
+            (
+                "query_complete",
+                {
+                    "reply": "<redacted; see ns_query_complete_with_error frame>",
+                    "status": "error",
+                    "debug": terminal.get("debug"),
+                },
+            ),
+        ]
+
+    else:
+        # Clean success -- propagate reply, bundle_id, session_id, debug.
+        #
+        # The plan deliberately propagates `debug` unredacted (vet finding 19:
+        # a soft-failure signal the detection misses must still reach the bridge
+        # unchanged; error text now originates from the NExtSEEK viewset, not a
+        # creds-holding in-container library), while query_error.error stays the
+        # redacted literal.
+        return [
+            (
+                "query_complete",
+                {
+                    "reply": terminal["reply"],
+                    "bundle_id": terminal.get("bundle_id"),
+                    "session_id": terminal.get("session_id"),
+                    "debug": terminal.get("debug"),
                 },
             )
-
-    return send_event
-
-
-def _run_chat_nextseek_run_query(  # pragma: no cover  -- DD-11 deferred chat_nextseek import; host-uncoverable, tests stub this helper
-    session: Any,
-    config: Any,
-    user_text: str,
-    *,
-    send_event: Callable[[str, dict[str, Any]], None],
-    credentials: dict[str, str] | None = None,
-) -> dict[str, Any]:
-    """Indirection layer for chat_nextseek.orchestrator.run_query.
-
-    DD-11: chat_nextseek import is DEFERRED to inside this helper so the host
-    venv (Python 3.12) can import container.runner_ns for unit tests without
-    needing chat_nextseek (Python 3.14-only). Tests stub this function via
-    monkeypatch.setattr(runner_ns, "_run_chat_nextseek_run_query", fake).
-
-    The function body is excluded from host coverage measurement (`# pragma:
-    no cover` at the def line) because under the test strategy this code path
-    is replaced by the stub; the original body lines record zero hits per
-    coverage.py mechanics (F-T1.3-4-1 round-4 hardener). The deferred body is
-    exercised end-to-end in T4.2's 3.14-image integration tests.
-    """
-    from chat_nextseek.orchestrator import run_query
-
-    return run_query(session, config, user_text, send_event=send_event, credentials=credentials)
+        ]
 
 
-def _build_chat_nextseek_session_and_config(session_id: str) -> tuple[Any, Any]:  # pragma: no cover  -- DD-11 deferred chat_nextseek import; host-uncoverable, tests stub this helper
-    """Construct chat_nextseek SessionState + ChatConfig from env + session id.
-
-    Per F-T1.3-1-1 / F-T1.3-1-2 round-1 hardener (verified against
-    `vendor/chat_nextseek/src/chat_nextseek/config.py:14-15` and
-    `vendor/chat_nextseek/src/chat_nextseek/session.py:56-66`):
-
-    - `ChatConfig()` is the correct no-arg form (NOT `ChatConfig.from_env()` —
-      that classmethod does NOT exist). `ChatConfig.__init__(config_map={})`
-      reads env vars via `_get_env_config()` internally.
-    - `SQLiteSessionState(db_path=..., session_id=...)` is the correct concrete
-      class (NOT the abstract base `SessionState` which has no `__init__`).
-      The `db_path` defaults to the locked-spec NS-only env value
-      `CHAT_NEXTSEEK_SESSION_DB=/home/user/.claude/chat_nextseek/sessions.sqlite`
-      per spec line 552.
-
-    Also deferred so host tests don't need chat_nextseek importable.
-    """
-    from chat_nextseek.config import ChatConfig
-    from chat_nextseek.session import SQLiteSessionState
-
-    config = ChatConfig()
-    db_path = os.environ.get(
-        "CHAT_NEXTSEEK_SESSION_DB",
-        "/home/user/.claude/chat_nextseek/sessions.sqlite",
-    )
-    session = SQLiteSessionState(db_path=db_path, session_id=session_id)
-    return session, config
-
-
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Sequence[str] = ()) -> int:
     """Entry point: read query from stdin, drive run_query, emit JSONL events."""
     parser = argparse.ArgumentParser(prog="runner_ns")
-    parser.add_argument("--session", default=None, help="chat_nextseek session id")
+    parser.add_argument("--session", default=None, help="session id (passed to AssistantClient)")
     args = parser.parse_args(argv)
 
     # Read the single-line query from stdin (spec line 90).
+    # Blocks until the bridge writes the query line; the bridge's turn deadline is the backstop.
     user_text = sys.stdin.readline().rstrip("\n")
     if not user_text:
         _emit_jsonl("ns_runner_error", {"error_type": "EmptyQuery"})
         sys.exit(2)
 
-    redacting_send_event = _make_redacting_send_event()
-    terminal_emitted = False
-
-    def tracking_send_event(event_name: str, payload: dict[str, Any]) -> None:
-        # Locked design spec L107: track whether chat_nextseek emitted a
-        # terminal event so the runner can synthesize one after run_query
-        # returns if it did not.
-        nonlocal terminal_emitted
-        if event_name in ("query_complete", "query_error"):
-            terminal_emitted = True
-        redacting_send_event(event_name, payload)
+    def _forward_progress(name: str, data: dict[str, Any]) -> None:
+        """on_event callback: forward only the names the bridge recognises."""
+        if name in ("agent_started", "agent_complete"):
+            _emit_jsonl(name, dict(data))
 
     try:
-        session, config = _build_chat_nextseek_session_and_config(args.session or "default")
-        _run_chat_nextseek_run_query(
-            session, config, user_text, send_event=tracking_send_event, credentials=None
+        client = _build_assistant_client()
+        terminal, _ = client.run_query(
+            user_text,
+            mode="standard",
+            session_id=args.session,
+            on_event=_forward_progress,
         )
-        if not terminal_emitted:
-            # Defense in depth against future chat_nextseek changes that might
-            # silently drop the terminal-event contract. status=error +
-            # error_type=RunnerSyntheticTerminal routes through the existing
-            # _has_failure_signal path on the bridge side so the truncation
-            # surfaces as ns_query_complete_with_error rather than masquerading
-            # as success.
-            _emit_jsonl(
-                "query_complete",
-                {
-                    "reply": (
-                        "<runner synthetic terminal: chat_nextseek run_query "
-                        "returned without query_complete or query_error>"
-                    ),
-                    "status": "error",
-                    "error_type": "RunnerSyntheticTerminal",
-                },
-            )
+
+        # -- Translate the terminal dict --
+        for event_name, payload in _translate_terminal(terminal):
+            _emit_jsonl(event_name, payload)
+
         return 0
-    except BaseException as exc:  # noqa: BLE001 — R-03 demands BaseException catch
+
+    except httpx.HTTPStatusError as exc:
+        # 401 from the viewset -> AUTH_FAILED typed failure. Never echo creds.
+        if exc.response.status_code == 401:
+            for event_name, payload in _typed_failure_events("AUTH_FAILED"):
+                _emit_jsonl(event_name, payload)
+        else:
+            for event_name, payload in _typed_failure_events("HTTPStatusError"):
+                _emit_jsonl(event_name, payload)
+        sys.exit(1)
+
+    except httpx.TransportError:
+        # Viewset unreachable (DNS failure, connection refused, etc.)
+        for event_name, payload in _typed_failure_events("TRANSPORT_ERROR"):
+            _emit_jsonl(event_name, payload)
+        sys.exit(1)
+
+    except BaseException as exc:  # noqa: BLE001 -- R-03 demands BaseException catch
         # R-03: NEVER str(exc), NEVER repr(exc), NEVER exc.args.
         _emit_jsonl("ns_runner_error", {"error_type": type(exc).__name__})
         sys.exit(1)
 
 
 if __name__ == "__main__":  # pragma: no cover  -- entry-point guard; tests call main() directly
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

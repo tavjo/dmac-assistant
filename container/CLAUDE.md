@@ -18,16 +18,17 @@ When a user asks about NExtSEEK data, read the SKILL.md first. The plugin's CLI 
 
 ## NExtSEEK reference catalogs
 
-`chat_nextseek` ships static reference catalogs at `/opt/dmac-venv/lib/python3.14/site-packages/chat_nextseek/context/`. Read them directly with the `Read` tool — no plugin call, no network, no credentials — to ground answers about NExtSEEK vocabulary (sample types, assays, projects, endpoints, graph schema), even when you are not invoking any chat_nextseek code.
+The image ships static reference catalogs at `/app/plugins/nextseek/context/`. Read them directly with the `Read` tool — no plugin call, no network, no credentials — to ground answers about NExtSEEK vocabulary (sample types, assays, projects, endpoints, graph schema). These are baked into the image from the `nextseek` plugin; `chat_nextseek` is no longer installed in this container, so do not look for them under any `site-packages/chat_nextseek/` path.
 
-Files (prefer the `min_*` variant when grounding a single term):
+Files (the `min_*` variants are the compact forms — prefer them when grounding a single term):
 
 - `capabilities.md` — sample-type code table, assay table, known investigations. Start here.
-- `min_sampletypes_db.json` / `sampletypes_db.json` — sample-type catalog (codes, labels, clades).
-- `min_assays_db.json` / `assays_db.json` — assay catalog (names, descriptions, sample-type compatibilities).
+- `min_sampletypes_db.json` — sample-type catalog (codes, labels, clades).
+- `min_assays_db.json` — assay catalog (names, descriptions, sample-type compatibilities).
 - `projects_db.json` — projects / investigations (name, id, description).
-- `min_api_endpoints.json` / `min_api_endpoints_enriched.json` / `nextseek_api.yaml` — REST endpoint catalog + OpenAPI spec.
-- `min_graph_schema.json` / `neo4j_schema*.json` / `neo4j_protocol_schema.json` / `neo4j_assay-sample-conn.json` — Neo4j schema, protocol vocabulary, assay→sample connection map.
+- `min_api_endpoints.json` / `min_api_endpoints_enriched.json` — REST endpoint catalog.
+- `read_safe_endpoints.json` — the read-safe endpoint allowlist.
+- `min_graph_schema.json` / `neo4j_schema.json` — Neo4j graph schema.
 
 Read-only.
 
@@ -35,11 +36,11 @@ Read-only.
 
 Treat every environment value as a secret (API keys, passwords, tokens, DB credentials). **Never log, print, write to a file, send over the network, or otherwise exfiltrate credentials.**
 
-**Never** run bare `env`, `printenv`, or `set` — the full output (including `NEXTSEEK_PASSWORD`, `GCP_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`) lands in the Bash tool_result block and is logged to the host transcript. When debugging env vars, either mask values or filter to non-secret prefixes:
+**Never** run bare `env`, `printenv`, or `set` — the full output (including `NEXTSEEK_PASSWORD` and `AWS_BEARER_TOKEN_BEDROCK`) lands in the Bash tool_result block and is logged to the host transcript. (The shared `GCP_API_KEY` / `NEO4J_*` / `MYSQL_*` backend credentials are **not** present in this container — they live server-side on NExtSEEK; see "Router-aware behavior" below.) When debugging env vars, either mask values or filter to non-secret prefixes:
 
 ```bash
 env | grep -E '<your filter>' | sed 's/=.*/=***/'
-env | grep -E '(NEXTSEEK_(URL|MODE|USERNAME)|CATALOG_FILE|USE_DEV_API)' | sort
+env | grep -E '(NEXTSEEK_(URL|USERNAME)|CATALOG_FILE|DMAC_RUNTIME_MODE)' | sort
 ```
 
 To check whether a specific variable is set without revealing its value, use `[ -n "$VAR" ] && echo VAR=set || echo VAR=unset`.
@@ -53,12 +54,12 @@ To check whether a specific variable is set without revealing its value, use `[ 
 
 ## Router-aware behavior
 
-When the bridge runs you with `DMAC_ROUTER_ENABLED=1`, your turn arrived via the `container_cc` route - the bridge already decided that this turn is general agent work (not a structured NExtSEEK query). The other route, `nextseek_query`, is handled by `chat_nextseek` running as a sidecar process inside this same container; you will not see those turns at all.
+When the bridge runs you with `DMAC_ROUTER_ENABLED=1`, your turn arrived via the `container_cc` route - the bridge already decided that this turn is general agent work (not a structured NExtSEEK query). The other route, `nextseek_query`, is handled by a thin NExtSEEK runner that calls NExtSEEK's assistant API over the network — the `chat_nextseek` pipeline runs server-side on NExtSEEK, **not** inside this container; you will not see those turns at all.
 
 What this means for you:
 
 - **You handle one turn at a time, via a fresh `docker exec`.** With `DMAC_ROUTER_ENABLED=1` the container starts in idle mode (`DMAC_RUNTIME_MODE=idle`) and the bridge `docker exec`'s Claude per turn. There is no long-lived Claude process to share state with across turns; per-turn state lives in `/home/user/.claude/` exactly as before.
-- **You may see `NEXTSEEK_MODE` set in your env.** When set to `gcp` (the router's default for NS-route work), it selects Gemini Flash-Lite for chat_nextseek's internal classifier calls. For `container_cc` turns you can ignore the value - it doesn't affect Claude Code behavior - but it WILL show up in `env` output, so apply the credential-masking rule above (never bare `env`).
+- **You will NOT see `NEXTSEEK_MODE` in your env.** Earlier router builds injected `NEXTSEEK_MODE` per turn to steer `chat_nextseek`'s internal classifier. The sidecar architecture moved that work server-side onto NExtSEEK, so `NEXTSEEK_MODE` is no longer injected into this container (`containers.py` no longer sets it on either route). Nothing for you to do with it.
 - **The model class you're running as comes from the router.** `model_class` (one of `"opus"`, `"sonnet"`, `"haiku"`) is resolved into a Bedrock model ID by the bridge and passed via the existing Bedrock auth path. You do not need to do anything with this - Claude Code consumes it transparently.
 - **Do not assume your environment is the same as previous turns.** Per-turn exec means env vars and credentials are re-injected per turn. Treat each turn as a fresh process; do not cache env values across `Bash` invocations within a turn unless you have a specific reason to.
 
