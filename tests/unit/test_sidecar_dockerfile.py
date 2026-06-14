@@ -29,8 +29,18 @@ def test_no_chat_nextseek_in_sidecar_dockerfile():
 
 
 def test_httpx_in_sidecar_dockerfile():
-    """T17 Step 1: httpx must be explicitly installed (was only transitive via chat_nextseek)."""
-    assert "httpx" in SIDECAR_DOCKERFILE, (
-        "sidecar/Dockerfile must explicitly install httpx — it was previously "
-        "present only transitively via chat_nextseek (T17, A-5)."
+    """T17 Step 1: httpx must be in an active (non-comment) instruction.
+
+    A plain `"httpx" in SIDECAR_DOCKERFILE` would false-pass if httpx appeared
+    only in a comment — exactly the pre-T17 state this guards against (httpx was
+    transitive-only via chat_nextseek, not explicitly installed).
+    """
+    active_lines = "\n".join(
+        line for line in SIDECAR_DOCKERFILE.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    )
+    assert "httpx" in active_lines, (
+        "sidecar/Dockerfile must explicitly install httpx in an active (non-comment) "
+        "instruction — it was previously present only transitively via chat_nextseek "
+        "(T17, A-5)."
     )
