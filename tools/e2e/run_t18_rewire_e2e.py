@@ -386,15 +386,18 @@ def step2_free_ops(run_dir: pathlib.Path, ns_user: str, ns_pass: str) -> StepRes
             result.add("ns-client-provenance-docker-log", True,
                        "explicit NExtSEEK assistant line found in sidecar docker logs")
         else:
-            # Expected: httpx is silent by default — INCONCLUSIVE is honest.
+            # Expected: httpx is silent by default — record an honest SKIP (NOT a PASS:
+            # we did not observe the log line, so we must not claim the check passed).
             # Step 0 import-absence + step 2a status=ok are the load-bearing proofs.
             lines.append("  (httpx silent by default; import-absence in step 0 is the load-bearing proof)")
-            result.add("ns-client-provenance-docker-log", True,
-                       "INCONCLUSIVE: httpx silent by default; import-absence (step 0) is authoritative")
+            result.sub.append(StepResult(
+                name="ns-client-provenance-docker-log", status="SKIP",
+                detail="INCONCLUSIVE (no log line observed; httpx silent by default); import-absence (step 0) is authoritative"))
     except Exception as exc:
         lines.append(f"  docker logs failed: {exc}")
-        result.add("ns-client-provenance-docker-log", True,
-                   "INCONCLUSIVE: docker logs unavailable; import-absence (step 0) is authoritative")
+        result.sub.append(StepResult(
+            name="ns-client-provenance-docker-log", status="SKIP",
+            detail=f"INCONCLUSIVE (docker logs unavailable: {type(exc).__name__}); import-absence (step 0) is authoritative"))
 
     # ── 2b: api-read → response ok + ≥1 result row ──
     # Use advanced_search (POST safe) with a keyword filter so the result set is
