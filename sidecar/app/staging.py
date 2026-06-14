@@ -1,7 +1,12 @@
 """Per-user artifact staging (§10, OD-2, U-7). Never mounts scratch; writes to a
 host-bind staging dir the bridge sweeps. Hashed user key (never raw api_user as a
 path segment). Atomic publish via a sibling `<request>.complete` marker the bridge
-waits on. The bridge maps the hashed dir back to identity.user_id (T10)."""
+waits on. The bridge maps the hashed dir back to identity.user_id (T10).
+
+T16: adds make_stage_bytes(cfg, login, request_id) -> (writer, commit) pair for
+the download-and-stage path (report/generate-submission). The writer stages raw bytes;
+the committer writes the .complete marker exactly once after all artifacts are staged.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -51,6 +56,48 @@ def make_stage(cfg: Any, login: NsLogin, request_id: str) -> Callable[[str, dict
         return out
 
     return stage
+
+
+def make_stage_bytes(
+    cfg: Any, login: NsLogin, request_id: str
+) -> tuple[Callable[[str, str, bytes], str], Callable[[], None]]:
+    """Return a (stage_bytes, commit) pair for the download-and-stage path (T16, DD-A5-5).
+
+    stage_bytes(op, key, data):
+        Writes downloaded artifact bytes into the per-user hashed dir layout under a
+        filename derived from key. Returns the staged path. Does NOT write the .complete
+        marker — that is commit()'s job (F-T16-2-B).
+
+    commit():
+        Writes the atomic .complete marker (the bridge-sweep signal) EXACTLY ONCE,
+        after ALL artifacts have been staged by calling stage_bytes per artifact.
+        The ops.py report/generate-submission handlers call commit() once outside the
+        per-artifact loop — never inside it.
+    """
+    base = Path(cfg.staging_dir) / _user_hash(login.api_user)
+    req_dir = base / request_id
+    marker = base / f"{request_id}.complete"
+
+    def stage_bytes(op: str, key: str, data: bytes) -> str:
+        """Write artifact bytes to staging; return the staged file path."""
+        try:
+            req_dir.mkdir(parents=True, exist_ok=True)
+            # Sanitize key to a safe filename (strip path separators)
+            safe_name = key.replace("/", "_").replace("\\", "_")
+            dst = req_dir / safe_name
+            dst.write_bytes(data)
+        except OSError as exc:
+            raise StagingError(f"staging bytes failed for {key!r}: {type(exc).__name__}") from exc
+        return str(dst)
+
+    def commit() -> None:
+        """Write the atomic .complete marker after all artifacts have been staged."""
+        try:
+            marker.write_text("")
+        except OSError as exc:
+            raise StagingError(f"commit marker failed: {type(exc).__name__}") from exc
+
+    return stage_bytes, commit
 
 
 def cleanup_request(cfg: Any, api_user: str, request_id: str) -> None:

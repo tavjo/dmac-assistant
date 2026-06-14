@@ -1,88 +1,74 @@
-"""Host-side healthcheck tests with fake mysql.connector module."""
+"""Healthcheck tests (T16): verifies config + NEXTSEEK_BASE_URL reachability via /me/ → 401."""
 import sys
 from types import ModuleType
 
 import pytest
 
 
-def _install_fake_mysql(monkeypatch, *, connect_ok: bool = True):
-    fake = ModuleType("mysql")
-    connector = ModuleType("mysql.connector")
-
-    class FakeCursor:
-        def execute(self, _sql):
-            return None
-
-        def fetchall(self):
-            return [(1,)]
-
-    class FakeConn:
-        def cursor(self):
-            return FakeCursor()
-
-        def close(self):
-            return None
-
-    def connect(**_kwargs):
-        if not connect_ok:
-            raise OSError("connection refused")
-        return FakeConn()
-
-    connector.connect = connect
-    fake.connector = connector
-    monkeypatch.setitem(sys.modules, "mysql", fake)
-    monkeypatch.setitem(sys.modules, "mysql.connector", connector)
+REQUIRED_ENV = {
+    "NEXTSEEK_BASE_URL": "http://nextseek_nginx",
+    "SIDECAR_STAGING_DIR": "/staging",
+}
 
 
-def test_healthcheck_ok(monkeypatch, tmp_path):
-    allowlist = tmp_path / "allowlist.json"
-    allowlist.write_text('[{"method": "GET", "path": "/x"}]', encoding="utf-8")
-    for key, val in {
-        "SESSION_DB_HOST": "db.example",
-        "SESSION_DB_USER": "u",
-        "SESSION_DB_PASSWORD": "p",
-        "SESSION_DB_NAME": "n",
-        "SIDECAR_STAGING_DIR": "/staging",
-        "READ_SAFE_ENDPOINTS_PATH": str(allowlist),
-    }.items():
-        monkeypatch.setenv(key, val)
-    _install_fake_mysql(monkeypatch)
+def _install_fake_httpx(monkeypatch, *, status_code: int = 401, raise_error: bool = False):
+    """Install a fake httpx module that returns a stubbed response or raises."""
+    fake_httpx = ModuleType("httpx")
+
+    class FakeResponse:
+        def __init__(self, sc):
+            self.status_code = sc
+
+    class HTTPError(Exception):
+        pass
+
+    def get(url, *, timeout=5.0):
+        if raise_error:
+            raise HTTPError("connection refused")
+        return FakeResponse(status_code)
+
+    fake_httpx.get = get
+    fake_httpx.HTTPError = HTTPError
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+
+def test_healthcheck_ok_on_401(monkeypatch):
+    """401 from /me/ = endpoint is up + we're unauthenticated = healthy."""
+    for k, v in REQUIRED_ENV.items():
+        monkeypatch.setenv(k, v)
+    _install_fake_httpx(monkeypatch, status_code=401)
     from sidecar.app import healthcheck
-
     assert healthcheck.main() == 0
 
 
-def test_healthcheck_fails_on_empty_allowlist(monkeypatch, tmp_path):
-    allowlist = tmp_path / "allowlist.json"
-    allowlist.write_text("[]", encoding="utf-8")
-    for key, val in {
-        "SESSION_DB_HOST": "db.example",
-        "SESSION_DB_USER": "u",
-        "SESSION_DB_PASSWORD": "p",
-        "SESSION_DB_NAME": "n",
-        "SIDECAR_STAGING_DIR": "/staging",
-        "READ_SAFE_ENDPOINTS_PATH": str(allowlist),
-    }.items():
-        monkeypatch.setenv(key, val)
-    _install_fake_mysql(monkeypatch)
+def test_healthcheck_ok_on_200(monkeypatch):
+    """200 from /me/ is also healthy (some environments allow unauthenticated health)."""
+    for k, v in REQUIRED_ENV.items():
+        monkeypatch.setenv(k, v)
+    _install_fake_httpx(monkeypatch, status_code=200)
     from sidecar.app import healthcheck
+    assert healthcheck.main() == 0
 
+
+def test_healthcheck_fails_on_connection_error(monkeypatch):
+    for k, v in REQUIRED_ENV.items():
+        monkeypatch.setenv(k, v)
+    _install_fake_httpx(monkeypatch, raise_error=True)
+    from sidecar.app import healthcheck
     assert healthcheck.main() == 1
 
 
-def test_healthcheck_fails_on_db_error(monkeypatch, tmp_path):
-    allowlist = tmp_path / "allowlist.json"
-    allowlist.write_text('[{"method": "GET", "path": "/x"}]', encoding="utf-8")
-    for key, val in {
-        "SESSION_DB_HOST": "db.example",
-        "SESSION_DB_USER": "u",
-        "SESSION_DB_PASSWORD": "p",
-        "SESSION_DB_NAME": "n",
-        "SIDECAR_STAGING_DIR": "/staging",
-        "READ_SAFE_ENDPOINTS_PATH": str(allowlist),
-    }.items():
-        monkeypatch.setenv(key, val)
-    _install_fake_mysql(monkeypatch, connect_ok=False)
+def test_healthcheck_fails_on_unexpected_status(monkeypatch):
+    """500 from /me/ = unhealthy."""
+    for k, v in REQUIRED_ENV.items():
+        monkeypatch.setenv(k, v)
+    _install_fake_httpx(monkeypatch, status_code=500)
     from sidecar.app import healthcheck
+    assert healthcheck.main() == 1
 
+
+def test_healthcheck_fails_on_missing_config(monkeypatch):
+    for k in REQUIRED_ENV:
+        monkeypatch.delenv(k, raising=False)
+    from sidecar.app import healthcheck
     assert healthcheck.main() == 1

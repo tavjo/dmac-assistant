@@ -1,14 +1,14 @@
-"""Sidecar configuration. All credential I/O flows through this object.
+"""Sidecar configuration (T16, DD-A5-7). Simplified: holds NEXTSEEK_BASE_URL + staging dir.
 
-The sidecar is the sole holder of shared creds (spec U-1). chat_nextseek reads its
-own env (recon:chatNs §4), so SidecarConfig validates presence/shape for the
-sidecar's OWN needs (session DB, staging, allowlist path, port) and leaves
-chat_nextseek's env keys (GCP_API_KEY, NEO4J_*, MYSQL_*) in the process env.
+The shared backend creds (GCP/Neo4j/MySQL) remain in the process env for NExtSEEK
+to use server-side; the sidecar no longer needs SESSION_DB_* (sessions removed T16)
+or READ_SAFE_ENDPOINTS_PATH (allowlist gate retired to NExtSEEK T16). Per-request
+user creds travel as Basic auth args, never via os.environ (DD-A5-6).
 """
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 class SidecarConfigError(RuntimeError):
@@ -16,24 +16,21 @@ class SidecarConfigError(RuntimeError):
 
 
 _REQUIRED = (
-    "SESSION_DB_HOST", "SESSION_DB_USER",
-    "SESSION_DB_PASSWORD", "SESSION_DB_NAME",
-    "SIDECAR_STAGING_DIR", "READ_SAFE_ENDPOINTS_PATH",
+    "NEXTSEEK_BASE_URL",
+    "SIDECAR_STAGING_DIR",
 )
 
 
 @dataclass(frozen=True)
 class SidecarConfig:
-    session_db: dict = field(repr=False)
+    nextseek_base_url: str
     staging_dir: str
-    read_safe_endpoints_path: str
     ws_port: int = 8765
 
     def __repr__(self) -> str:
         return (
-            f"SidecarConfig(session_db={{'host': {self.session_db['host']!r}, "
-            f"'password': 'REDACTED'}}, staging_dir={self.staging_dir!r}, "
-            f"ws_port={self.ws_port})"
+            f"SidecarConfig(nextseek_base_url={self.nextseek_base_url!r}, "
+            f"staging_dir={self.staging_dir!r}, ws_port={self.ws_port})"
         )
 
     @classmethod
@@ -42,14 +39,7 @@ class SidecarConfig:
         if missing:
             raise SidecarConfigError(f"missing required env: {missing}")
         return cls(
-            session_db={
-                "host": os.environ["SESSION_DB_HOST"],
-                "port": int(os.environ.get("SESSION_DB_PORT", "3306")),
-                "user": os.environ["SESSION_DB_USER"],
-                "password": os.environ["SESSION_DB_PASSWORD"],
-                "database": os.environ["SESSION_DB_NAME"],
-            },
+            nextseek_base_url=os.environ["NEXTSEEK_BASE_URL"],
             staging_dir=os.environ["SIDECAR_STAGING_DIR"],
-            read_safe_endpoints_path=os.environ["READ_SAFE_ENDPOINTS_PATH"],
             ws_port=int(os.environ.get("SIDECAR_WS_PORT", "8765")),
         )

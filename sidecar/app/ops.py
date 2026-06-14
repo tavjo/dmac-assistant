@@ -1,37 +1,34 @@
-"""The 7 granular sidecar ops, each calling chat_nextseek portable.py (recon:chatNs §1).
+"""The 7 granular sidecar ops, each calling the NExtSEEK native HTTP endpoint via ns_client.
 
-Call shapes mirror the pre-sidecar runner dispatchers (recon:runner §1j) so behavior
-is preserved. portable.py imports are lazy (chat_nextseek is image-only).
+Call shapes mirror the pre-sidecar runner dispatchers so behavior is preserved.
 write_gate(op, api_plan_endpoint, api_plan_method, confirmed_write) -> None|raises.
-stage(op, result) -> result' (T7 rewrites artifact paths to staged paths; default identity).
+stage(op, result) -> result' (T7 path-copy stage; used when no download block).
+stage_bytes(op, key, data) -> staged_path (bytes writer for download block; writes NO marker).
+commit_bytes() -> None (writes the atomic .complete marker once after all artifacts staged).
 """
 from __future__ import annotations
 
 import json
+import tempfile
 import os
 from typing import Any, Callable
 
+from sidecar.app import ns_client
 from sidecar.app.contract import SIDECAR_OPS
+from sidecar.app.exceptions import (
+    AgentFailedError,
+    AuthFailedError,
+    OpValidationError,
+    TransportError,
+    WriteBlockedError,
+)
 
-
-class OpValidationError(ValueError):
-    """→ VALIDATION / exit 3."""
-
-
-class WriteBlockedError(RuntimeError):
-    """→ WRITE_BLOCKED / exit 5."""
-
-
-class AuthFailedError(RuntimeError):
-    """→ AUTH_FAILED / exit 8. Raised on HTTP 401 or non-participant 403."""
-
-
-class TransportError(RuntimeError):
-    """→ TRANSPORT_ERROR / exit 7. Raised on httpx.HTTPError (connect/read timeout)."""
-
-
-class AgentFailedError(RuntimeError):
-    """→ AGENT_FAILED / exit 4. Raised on CONFIG_ERROR, CONFIG_MISSING, and unexpected errors."""
+# Re-export for callers that import exceptions from ops (server.py, write_gate.py, etc.)
+__all__ = [
+    "AgentFailedError", "AuthFailedError", "OpValidationError",
+    "TransportError", "WriteBlockedError",
+    "ALLOW_ALL", "NO_STAGE", "NO_STAGE_BYTES", "NO_COMMIT", "run_op",
+]
 
 
 def ALLOW_ALL(*a, **k) -> None:  # T4 default; T5 replaces with the real gate
@@ -42,14 +39,25 @@ def NO_STAGE(op: str, result: dict) -> dict:  # T4 default; T7 replaces
     return result
 
 
-def _dump(obj: Any) -> Any:
-    return obj.model_dump() if hasattr(obj, "model_dump") else obj
+def NO_STAGE_BYTES(op: str, key: str, data: bytes) -> str:
+    """Default no-op bytes writer for tests: writes to a temp file, returns the path.
+    Writes NO .complete marker (that's commit_bytes's job)."""
+    fd, path = tempfile.mkstemp(prefix=f"sidecar_{op}_{key}_", suffix=".bin")
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+    return path
+
+
+def NO_COMMIT() -> None:
+    """Default no-op marker committer."""
+    return None
 
 
 def _load_parser_plan(args: dict) -> Any:
     """Parse args["parser_plan"] as JSON; malformed input → OpValidationError so the
-    server maps it to VALIDATION/exit 3 (pre-sidecar runner parity, recon:runner §1j:
-    `_err("VALIDATION", "--parser-plan is not valid JSON: ...", 3)`), not AGENT_FAILED."""
+    server maps it to VALIDATION/exit 3 (pre-sidecar runner parity), not AGENT_FAILED."""
     try:
         return json.loads(args["parser_plan"])
     except ValueError as exc:  # json.JSONDecodeError is a ValueError subclass
@@ -57,73 +65,94 @@ def _load_parser_plan(args: dict) -> Any:
 
 
 def run_op(op: str, args: dict, *, config: Any, session: Any,
-           write_gate: Callable, stage: Callable) -> dict:
+           write_gate: Callable, stage: Callable,
+           stage_bytes: Callable = NO_STAGE_BYTES,
+           commit_bytes: Callable = NO_COMMIT) -> dict:
     if op not in SIDECAR_OPS:
         raise OpValidationError(f"not a sidecar op: {op!r}")
     handler = _HANDLERS[op]
-    return handler(args, config, session, write_gate, stage)
+    return handler(args, config, session, write_gate, stage, stage_bytes, commit_bytes)
 
 
-def _entity(args, config, session, write_gate, stage):
-    from chat_nextseek.portable import entity_agent
-    return _dump(entity_agent(config, args["query"]))
+def _entity(args, config, session, write_gate, stage, stage_bytes, commit_bytes):
+    envelope = ns_client.call_op("entity", {"query": args["query"]},
+                                 base_url=config.base_url, auth=config.auth)
+    return envelope["result"]
 
 
-def _parse(args, config, session, write_gate, stage):
-    from chat_nextseek.portable import entity_agent, parser_agent
-    entity_out = entity_agent(config, args["query"])
-    return _dump(parser_agent(session, config, args["query"], entity_out))
+def _parse(args, config, session, write_gate, stage, stage_bytes, commit_bytes):
+    envelope = ns_client.call_op("parse", {"query": args["query"]},
+                                 base_url=config.base_url, auth=config.auth)
+    return envelope["result"]
 
 
-def _graph(args, config, session, write_gate, stage):
-    from chat_nextseek.portable import entity_agent, graph_agent
-    entity_out = entity_agent(config, args["query"])
-    return _dump(graph_agent(config, args["query"], entity_out))
+def _graph(args, config, session, write_gate, stage, stage_bytes, commit_bytes):
+    envelope = ns_client.call_op("graph", {"query": args["query"]},
+                                 base_url=config.base_url, auth=config.auth)
+    return envelope["result"]
 
 
-def _api_read(args, config, session, write_gate, stage):
-    from chat_nextseek import helpers
-    from chat_nextseek.portable import api_agent_build_request
-    plan = api_agent_build_request(config, _load_parser_plan(args))
-    endpoint, method = plan.endpoint, plan.method.upper()
-    write_gate("api-read", endpoint, method, False)  # raises WriteBlocked if not read-safe
-    result = helpers.tool_nextseek_api_request(config, endpoint, method,
-                                               requestBody=plan.requestBody,
-                                               queryParameters=plan.queryParameters)
-    return {"endpoint": endpoint, "method": method, "api_plan": _dump(plan), "response": result}
+def _api_read(args, config, session, write_gate, stage, stage_bytes, commit_bytes):
+    # Validate parser_plan JSON before forwarding (OpValidationError parity)
+    _load_parser_plan(args)  # raises OpValidationError on bad JSON
+    body = {"parser_plan": args["parser_plan"]}
+    envelope = ns_client.call_op("api-read", body,
+                                 base_url=config.base_url, auth=config.auth)
+    return envelope["result"]
 
 
-def _api_write(args, config, session, write_gate, stage):
-    from chat_nextseek import helpers
-    from chat_nextseek.portable import api_agent_build_request
+def _api_write(args, config, session, write_gate, stage, stage_bytes, commit_bytes):
     confirmed = args.get("confirmed_write", False)
-    write_gate("api-write", None, None, confirmed)  # raises WriteBlocked if confirmed is not True
-    plan = api_agent_build_request(config, _load_parser_plan(args))
-    result = helpers.tool_nextseek_api_request(config, plan.endpoint, plan.method,
-                                               requestBody=plan.requestBody,
-                                               queryParameters=plan.queryParameters)
-    return {"endpoint": plan.endpoint, "method": plan.method.upper(),
-            "api_plan": _dump(plan), "response": result}
+    # Local pre-check (defense-in-depth; NExtSEEK gates again server-side — DD-A5-4)
+    write_gate("api-write", None, None, confirmed)  # raises WriteBlockedError if not True
+    # Validate parser_plan JSON before forwarding
+    _load_parser_plan(args)  # raises OpValidationError on bad JSON
+    body = {"parser_plan": args["parser_plan"], "confirmed_write": confirmed}
+    if "query" in args and args["query"]:
+        body["query"] = args["query"]
+    envelope = ns_client.call_op("api-write", body,
+                                 base_url=config.base_url, auth=config.auth)
+    return envelope["result"]
 
 
-def _report(args, config, session, write_gate, stage):
-    from chat_nextseek import helpers
-    from chat_nextseek.schemas.chat import ReporterPlan
-    mode = args["mode"]
-    summary_mode = "RPPR" if mode == "rppr" else mode
-    rp = ReporterPlan(project=args["project"], reporter_mode="summary", summary_mode=summary_mode)
-    log_dir = os.environ.get("NEXTSEEK_OUTPUTS_DIR", "/staging/_report_logs")
-    result, saved, summary = helpers.run_reporter_summary(config, rp, log_dir)
-    return stage("report", {"summary": summary, "saved_files": saved, "rows": result})
+def _report(args, config, session, write_gate, stage, stage_bytes, commit_bytes):
+    body = {"mode": args["mode"], "project": args["project"]}
+    envelope = ns_client.call_op("report", body,
+                                 base_url=config.base_url, auth=config.auth)
+    result = envelope["result"]
+    download = envelope.get("download")
+    if download:
+        # DD-A5-5: loop per-artifact, then commit once after the loop (F-T16-2-B)
+        for art in download["artifacts"]:
+            data = ns_client.fetch_artifact(art["url"],
+                                            base_url=config.base_url, auth=config.auth)
+            staged_path = stage_bytes("report", art["key"], data)
+            result["saved_files"][art["key"]] = staged_path
+        commit_bytes()  # exactly once after ALL artifacts are staged
+        return result
+    return stage("report", result)
 
 
-def _generate_submission(args, config, session, write_gate, stage):
-    from chat_nextseek.portable import report_writer_agent
-    from chat_nextseek.schemas.chat import ReportWriterPlan
-    uids = [u.strip() for u in args["uids"].split(",") if u.strip()]
-    plan = ReportWriterPlan(report_type=args["type"], reporter_context={"uids": uids})
-    out = report_writer_agent(config, args.get("query") or "", plan)
-    return stage("generate-submission", _dump(out))
+def _generate_submission(args, config, session, write_gate, stage, stage_bytes, commit_bytes):
+    body = {"type": args["type"], "uids": args["uids"]}
+    if "query" in args and args["query"]:
+        body["query"] = args["query"]
+    envelope = ns_client.call_op("generate-submission", body,
+                                 base_url=config.base_url, auth=config.auth)
+    result = envelope["result"]
+    download = envelope.get("download")
+    if download:
+        # DD-A5-5: for generate-submission, write staged_files (new dict, not saved_files)
+        staged_files = {}
+        for art in download["artifacts"]:
+            data = ns_client.fetch_artifact(art["url"],
+                                            base_url=config.base_url, auth=config.auth)
+            staged_path = stage_bytes("generate-submission", art["key"], data)
+            staged_files[art["key"]] = staged_path
+        commit_bytes()  # exactly once after ALL artifacts are staged
+        result["staged_files"] = staged_files
+        return result
+    return stage("generate-submission", result)
 
 
 _HANDLERS: dict[str, Callable] = {

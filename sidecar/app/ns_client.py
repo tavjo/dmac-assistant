@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import httpx
 
-from sidecar.app.ops import (
+from sidecar.app.exceptions import (
     AgentFailedError,
     AuthFailedError,
     OpValidationError,

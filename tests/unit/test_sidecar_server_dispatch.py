@@ -1,6 +1,9 @@
-"""handle_message validates the T2 envelope, routes to run_op, maps errors to codes."""
+"""handle_message validates the T2 envelope, routes to run_op, maps errors to codes.
+T16: _build_user_session REMOVED; _build_stage_bytes ADDED; no env mutation for user creds;
+AUTH_FAILED and TRANSPORT_ERROR now mapped; session=None passed to run_op.
+"""
 import json
-import sys
+import os
 import types
 
 import pytest
@@ -32,16 +35,14 @@ def patched(monkeypatch, allow_unix_socket_only):
             return {"echo": args}
         raise server.ops.OpValidationError("bad")
     monkeypatch.setattr(server.ops, "run_op", fake_run_op)
-    # config + session factories stubbed so no chat_nextseek / DB is touched
+    # config factory stubbed so no HTTP / env mutation is touched
     monkeypatch.setattr(server, "_build_user_config", lambda login: object())
-    monkeypatch.setattr(server, "_build_user_session", lambda login, cfg: object())
-    # DOCUMENTED SEAM (T4): the spec fixture omits these two; without stubbing them
-    # the real builders import the not-yet-built T5/T7 modules (sidecar.app.write_gate,
-    # sidecar.app.staging) and _CFG is None, so the setup try-block would raise and
-    # test_ok_envelope would wrongly hit CONFIG_ERROR. Stub to the T4 passthrough defaults,
-    # consistent with the fixture's own docstring.
+    # NOTE: _build_user_session has been REMOVED from server.py (T16)
+    # DOCUMENTED SEAM (T4 updated T16): stub the four post-T16 builders.
     monkeypatch.setattr(server, "_build_write_gate", lambda: server.ops.ALLOW_ALL)
     monkeypatch.setattr(server, "_build_stage", lambda rid, login: server.ops.NO_STAGE)
+    monkeypatch.setattr(server, "_build_stage_bytes",
+                        lambda rid, login: (server.ops.NO_STAGE_BYTES, server.ops.NO_COMMIT))
 
 
 def _msg(op, args):
@@ -79,9 +80,6 @@ async def test_malformed_json_is_transport_error(patched):
 
 @pytest.mark.asyncio
 async def test_int_request_id_returns_typed_validation(patched):
-    # T4 review fix 1a: a non-str request_id must NOT escape handle_message as a
-    # ValidationError from _err_response (SidecarResponse won't coerce int→str),
-    # which would kill the WS connection (1011) instead of replying VALIDATION.
     raw = json.dumps({"op": "entity", "args": {"query": "x"},
                       "ns_login": {"api_user": "u", "api_pass": "p"},
                       "request_id": 123})
@@ -102,8 +100,6 @@ async def test_null_request_id_returns_typed_validation(patched):
 
 @pytest.mark.asyncio
 async def test_top_level_array_returns_typed_validation(patched):
-    # T4 review fix 1b: SidecarRequest(**list) raises TypeError, not ValidationError;
-    # uncaught it kills the connection instead of replying VALIDATION.
     resp = json.loads(await server.handle_message('["not", "a", "dict"]'))
     assert resp["status"] == "error" and resp["error"]["code"] == "VALIDATION"
     assert isinstance(resp["request_id"], str)
@@ -131,22 +127,15 @@ async def test_run_op_validation_maps_to_validation(patched, monkeypatch):
 async def test_invalid_parser_plan_maps_to_validation(allow_unix_socket_only, monkeypatch):
     # T4 review fix 2 (server level): malformed parser_plan JSON → VALIDATION (exit-3
     # parity with the pre-sidecar runner), NOT AGENT_FAILED. Builders are stubbed as in
-    # `patched`, but ops.run_op is left REAL so the ops._api_read fix is exercised;
-    # chat_nextseek is faked via sys.modules (image-only) just enough for the handler's
-    # imports — json.loads raises before api_agent_build_request is ever called.
+    # `patched`, but ops.run_op is left REAL so the ops._api_read fix is exercised.
+    # T16: _build_user_session removed; _build_stage_bytes added.
     monkeypatch.setattr(server, "_build_user_config", lambda login: object())
-    monkeypatch.setattr(server, "_build_user_session", lambda login, cfg: object())
     monkeypatch.setattr(server, "_build_write_gate", lambda: server.ops.ALLOW_ALL)
     monkeypatch.setattr(server, "_build_stage", lambda rid, login: server.ops.NO_STAGE)
-    pkg = types.ModuleType("chat_nextseek")
-    portable = types.ModuleType("chat_nextseek.portable")
-    helpers = types.ModuleType("chat_nextseek.helpers")
-    portable.api_agent_build_request = lambda *a, **k: pytest.fail("must not be reached")
-    pkg.portable = portable
-    pkg.helpers = helpers
-    monkeypatch.setitem(sys.modules, "chat_nextseek", pkg)
-    monkeypatch.setitem(sys.modules, "chat_nextseek.portable", portable)
-    monkeypatch.setitem(sys.modules, "chat_nextseek.helpers", helpers)
+    monkeypatch.setattr(server, "_build_stage_bytes",
+                        lambda rid, login: (server.ops.NO_STAGE_BYTES, server.ops.NO_COMMIT))
+    # The _api_read handler now raises OpValidationError directly from _load_parser_plan
+    # before any HTTP call — no need to fake chat_nextseek modules.
     resp = json.loads(await server.handle_message(_msg("api-read", {"parser_plan": "{not json"})))
     assert resp["status"] == "error" and resp["error"]["code"] == "VALIDATION"
     assert "parser_plan" in resp["error"]["message"]
@@ -163,11 +152,6 @@ async def test_write_blocked_maps_to_write_blocked(patched, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_staging_error_maps_to_staging_error(patched, monkeypatch):
-    # 2R1 item 1: staging.py defines StagingError ("→ STAGING_ERROR / exit 9") and the
-    # contract defines the STAGING_ERROR code, but dispatch caught only OpValidationError,
-    # WriteBlockedError, then generic Exception → AGENT_FAILED, so a staging failure
-    # surfaced as AGENT_FAILED and STAGING_ERROR was dead. The StagingError arm must sit
-    # BEFORE the generic Exception arm.
     from sidecar.app import staging
 
     def raise_staging(op, args, **k):
@@ -188,62 +172,98 @@ async def test_downstream_failure_maps_to_agent_failed(patched, monkeypatch):
     assert resp["status"] == "error" and resp["error"]["code"] == "AGENT_FAILED"
 
 
-# ---- the T4-seam builder wiring (real bodies, with the T5/T6/T7 modules faked) -----
-def test_build_user_config_binds_login_and_returns_chatconfig(monkeypatch):
-    captured = {}
-    cfgmod = types.ModuleType("chat_nextseek.config")
+# ---- T16: new error mapping tests ----------------------------------------
 
-    class ChatConfig:
-        def __init__(self, d):
-            import os
-            captured["d"] = d
-            # T4 review fix 3: snapshot env AT CONSTRUCTION TIME. The real ChatConfig
-            # captures API_USER/API_PASS when constructed, so the production code MUST
-            # set env BEFORE ChatConfig({}) — reordering (construct first, set after)
-            # reintroduces the cross-user credential bleed and must fail this test.
-            captured["env_at_init"] = (os.environ.get("API_USER"), os.environ.get("API_PASS"))
-
-    cfgmod.ChatConfig = ChatConfig
-    monkeypatch.setitem(sys.modules, "chat_nextseek.config", cfgmod)
-    monkeypatch.setenv("API_USER", "")  # register for monkeypatch cleanup
-    monkeypatch.setenv("API_PASS", "")
-
-    import os
-    out = server._build_user_config(NsLogin(api_user="alice", api_pass="pw"))
-    assert isinstance(out, ChatConfig)
-    assert os.environ["API_USER"] == "alice"  # per-call user login bound (U-2)
-    assert captured["env_at_init"] == ("alice", "pw")  # env was set BEFORE capture
-    assert captured["d"] == {}
+def _stub_build_helpers(monkeypatch, *, config=True):
+    if config:
+        monkeypatch.setattr(server, "_build_user_config", lambda login: object())
+    monkeypatch.setattr(server, "_build_write_gate", lambda: server.ops.ALLOW_ALL)
+    monkeypatch.setattr(server, "_build_stage", lambda rid, login: server.ops.NO_STAGE)
+    monkeypatch.setattr(server, "_build_stage_bytes",
+                        lambda rid, login: (server.ops.NO_STAGE_BYTES, server.ops.NO_COMMIT))
 
 
-def test_build_user_session_calls_make_session(monkeypatch):
-    captured = {}
-    sessmod = types.ModuleType("sidecar.app.sessions")
-
-    def make_session(login, config, cfg):
-        captured["args"] = (login, config, cfg)
-        return "SESSION"
-
-    sessmod.make_session = make_session
-    monkeypatch.setitem(sys.modules, "sidecar.app.sessions", sessmod)
-    login = NsLogin(api_user="u", api_pass="p")
-    cfg = object()
-    assert server._build_user_session(login, cfg) == "SESSION"
-    assert captured["args"] == (login, cfg, server._CFG)
+@pytest.mark.asyncio
+async def test_auth_failed_maps_to_AUTH_FAILED(monkeypatch, allow_unix_socket_only):
+    _stub_build_helpers(monkeypatch)
+    monkeypatch.setattr(server.ops, "run_op",
+                        lambda *a, **k: (_ for _ in ()).throw(server.ops.AuthFailedError("bad creds")))
+    frame = {"request_id": "11111111-1111-4111-8111-111111111111", "op": "entity",
+             "args": {"query": "q"}, "ns_login": {"api_user": "u", "api_pass": "p"}}
+    resp = json.loads(await server.handle_message(json.dumps(frame)))
+    assert resp["error"]["code"] == "AUTH_FAILED"
 
 
-def test_build_write_gate_calls_build_gate(monkeypatch):
+@pytest.mark.asyncio
+async def test_transport_error_maps_to_TRANSPORT_ERROR(monkeypatch, allow_unix_socket_only):
+    _stub_build_helpers(monkeypatch)
+    monkeypatch.setattr(server.ops, "run_op",
+                        lambda *a, **k: (_ for _ in ()).throw(server.ops.TransportError("timeout")))
+    frame = {"request_id": "22222222-2222-4222-8222-222222222222", "op": "entity",
+             "args": {"query": "q"}, "ns_login": {"api_user": "u", "api_pass": "p"}}
+    resp = json.loads(await server.handle_message(json.dumps(frame)))
+    assert resp["error"]["code"] == "TRANSPORT_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_no_env_mutation_for_user_creds(monkeypatch, allow_unix_socket_only):
+    monkeypatch.delenv("API_USER", raising=False)
+    monkeypatch.setattr(server, "_CFG",
+                        types.SimpleNamespace(nextseek_base_url="http://ns"))
+    _stub_build_helpers(monkeypatch, config=False)  # do NOT stub _build_user_config
+    monkeypatch.setattr(server.ops, "run_op", lambda *a, **k: {"ok": True})
+    frame = {"request_id": "22222222-2222-4222-8222-222222222222", "op": "entity",
+             "args": {"query": "q"}, "ns_login": {"api_user": "leak", "api_pass": "x"}}
+    await server.handle_message(json.dumps(frame))
+    assert os.environ.get("API_USER") != "leak"  # real builder passes creds as args, never to env
+
+
+@pytest.mark.asyncio
+async def test_server_threads_stage_bytes_into_run_op(monkeypatch, allow_unix_socket_only):
+    _stub_build_helpers(monkeypatch)
+    seen = {}
+
+    def fake_run_op(op, args, *, config, session, write_gate, stage, stage_bytes, commit_bytes, **k):
+        seen["stage_bytes"] = stage_bytes
+        seen["commit_bytes"] = commit_bytes
+        return {"summary": {}, "saved_files": {}, "rows": {}}
+
+    monkeypatch.setattr(server.ops, "run_op", fake_run_op)
+    frame = {"request_id": "33333333-3333-4333-8333-333333333333", "op": "report",
+             "args": {"mode": "published", "project": "Published Data"},
+             "ns_login": {"api_user": "u", "api_pass": "p"}}
+    await server.handle_message(json.dumps(frame))
+    assert callable(seen["stage_bytes"])
+    assert callable(seen["commit_bytes"])
+
+
+# ---- the T4-seam builder wiring (real bodies, with modules faked) -----------
+
+def test_build_user_config_returns_ns_http_config(monkeypatch):
+    """_build_user_config returns NsHttpConfig(base_url, auth) — no env mutation (T16)."""
+    monkeypatch.setattr(server, "_CFG",
+                        types.SimpleNamespace(nextseek_base_url="http://ns"))
+    login = NsLogin(api_user="alice", api_pass="pw")
+    cfg = server._build_user_config(login)
+    assert cfg.base_url == "http://ns"
+    assert cfg.auth == ("alice", "pw")
+    # Critically: API_USER must NOT have been mutated into os.environ
+    assert os.environ.get("API_USER") != "alice"
+
+
+def test_build_write_gate_calls_build_gate_no_arg(monkeypatch):
+    """_build_write_gate() calls no-arg build_gate() and returns the gate."""
     captured = {}
     wgmod = types.ModuleType("sidecar.app.write_gate")
 
-    def build_gate(cfg):
-        captured["cfg"] = cfg
+    def build_gate():  # no args
+        captured["called"] = True
         return "GATE"
 
     wgmod.build_gate = build_gate
-    monkeypatch.setitem(sys.modules, "sidecar.app.write_gate", wgmod)
+    monkeypatch.setitem(import_modules := __import__("sys").modules, "sidecar.app.write_gate", wgmod)
     assert server._build_write_gate() == "GATE"
-    assert captured["cfg"] is server._CFG
+    assert captured.get("called") is True
 
 
 def test_build_stage_calls_make_stage(monkeypatch):
@@ -255,7 +275,24 @@ def test_build_stage_calls_make_stage(monkeypatch):
         return "STAGE"
 
     stmod.make_stage = make_stage
-    monkeypatch.setitem(sys.modules, "sidecar.app.staging", stmod)
+    monkeypatch.setitem(__import__("sys").modules, "sidecar.app.staging", stmod)
     login = NsLogin(api_user="u", api_pass="p")
     assert server._build_stage("rid-1", login) == "STAGE"
+    assert captured["args"] == (server._CFG, login, "rid-1")
+
+
+def test_build_stage_bytes_returns_pair(monkeypatch):
+    """_build_stage_bytes returns a (stage_bytes, commit) pair."""
+    captured = {}
+    stmod = types.ModuleType("sidecar.app.staging")
+
+    def make_stage_bytes(cfg, login, request_id):
+        captured["args"] = (cfg, login, request_id)
+        return ("WRITER", "COMMITTER")
+
+    stmod.make_stage_bytes = make_stage_bytes
+    monkeypatch.setitem(__import__("sys").modules, "sidecar.app.staging", stmod)
+    login = NsLogin(api_user="u", api_pass="p")
+    result = server._build_stage_bytes("rid-1", login)
+    assert result == ("WRITER", "COMMITTER")
     assert captured["args"] == (server._CFG, login, "rid-1")

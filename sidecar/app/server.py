@@ -1,9 +1,12 @@
-"""Sidecar WS server: accept → validate (T2) → build per-user config/session →
-dispatch (T4 ops) → typed response. Per-call NS login => runs as that user (U-2)."""
+"""Sidecar WS server: accept → validate (T2) → build per-user HTTP config →
+dispatch (T16 ops via NExtSEEK HTTP) → typed response.
+Per-call NS login => Basic auth on each HTTP request (U-2, no env mutation, T16).
+"""
 from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 from typing import Any
 
 import websockets
@@ -17,43 +20,44 @@ from sidecar.app.staging import StagingError  # top-level safe: staging.py impor
 _CFG: SidecarConfig | None = None
 
 
+@dataclass(frozen=True)
+class NsHttpConfig:
+    """Lightweight per-request HTTP config: base_url + Basic auth credentials.
+    Replaces the chat_nextseek ChatConfig (T16, DD-A5-6). No env mutation."""
+    base_url: str
+    auth: tuple[str, str]
+
+
 def _err_response(request_id: str, code: str, message: str, retryable: bool = False) -> str:
     return SidecarResponse(request_id=request_id, status="error", result=None,
                            error=SidecarError(code=code, message=message, retryable=retryable)
                            ).model_dump_json()
 
 
-def _build_user_config(login: NsLogin) -> Any:
-    """Build a chat_nextseek ChatConfig bound to the per-call user login (U-2).
+def _build_user_config(login: NsLogin) -> NsHttpConfig:
+    """Build a per-request NsHttpConfig from the caller's NS login (U-2, T16).
 
-    Shared backend creds (GCP/Neo4j/MySQL) come from the sidecar process env;
-    the user's NS REST login is injected per call so portable ops act as that user.
+    No os.environ mutation — credentials are passed as per-request Basic auth
+    on each HTTP call via ns_client (DD-A5-6), eliminating the cross-user-bleed
+    race class that the previous ChatConfig approach carried.
     """
-    import os
-    # CREDENTIAL-SAFETY INVARIANT (vet-verified): this function MUST stay synchronous on
-    # the event-loop thread. The env mutation + eager ChatConfig({}) capture below, with
-    # NO await between them, is what prevents cross-user credential bleed. Do NOT wrap
-    # this function or the setup block in asyncio.to_thread / an executor to "fix" the
-    # loop-blocking cost — that reintroduces the race.
-    os.environ["API_USER"] = login.api_user   # process-local; chat_nextseek reads these
-    os.environ["API_PASS"] = login.api_pass    # (recon:chatNs §4)
-    from chat_nextseek.config import ChatConfig
-    return ChatConfig({})
-
-
-def _build_user_session(login: NsLogin, config: Any) -> Any:
-    from sidecar.app.sessions import make_session  # T6
-    return make_session(login, config, _CFG)
+    return NsHttpConfig(base_url=_CFG.nextseek_base_url, auth=(login.api_user, login.api_pass))
 
 
 def _build_write_gate():
-    from sidecar.app.write_gate import build_gate  # T5
-    return build_gate(_CFG)
+    from sidecar.app.write_gate import build_gate  # T5/T16: no-arg, confirmed_write only
+    return build_gate()
 
 
 def _build_stage(request_id: str, login: NsLogin):
     from sidecar.app.staging import make_stage  # T7
     return make_stage(_CFG, login, request_id)
+
+
+def _build_stage_bytes(request_id: str, login: NsLogin):
+    """Return the (stage_bytes, commit) pair for downloading artifacts over HTTP (T16, DD-A5-5)."""
+    from sidecar.app.staging import make_stage_bytes  # T16
+    return make_stage_bytes(_CFG, login, request_id)
 
 
 async def handle_message(raw: str) -> str:
@@ -83,21 +87,31 @@ async def handle_message(raw: str) -> str:
 
     try:
         config = _build_user_config(req.ns_login)
-        session = _build_user_session(req.ns_login, config)
+        # NOTE: _build_user_session has been REMOVED (T16) — granular HTTP ops are stateless POSTs.
         gate = _build_write_gate()
         stage = _build_stage(req.request_id, req.ns_login)
+        stage_bytes, commit_bytes = _build_stage_bytes(req.request_id, req.ns_login)
     except Exception as exc:  # noqa: BLE001
         return _err_response(req.request_id, "CONFIG_ERROR", f"setup failed: {type(exc).__name__}")
 
     try:
         result = await asyncio.to_thread(
-            ops.run_op, req.op, req.args, config=config, session=session,
-            write_gate=gate, stage=stage,
+            ops.run_op, req.op, req.args,
+            config=config,
+            session=None,  # T16: no chat_nextseek session; HTTP ops are stateless
+            write_gate=gate,
+            stage=stage,
+            stage_bytes=stage_bytes,
+            commit_bytes=commit_bytes,
         )
     except ops.OpValidationError as exc:
         return _err_response(req.request_id, "VALIDATION", str(exc))
     except ops.WriteBlockedError as exc:
         return _err_response(req.request_id, "WRITE_BLOCKED", str(exc))
+    except ops.AuthFailedError as exc:
+        return _err_response(req.request_id, "AUTH_FAILED", str(exc))
+    except ops.TransportError as exc:
+        return _err_response(req.request_id, "TRANSPORT_ERROR", str(exc), retryable=True)
     except StagingError as exc:
         return _err_response(req.request_id, "STAGING_ERROR", str(exc))
     except Exception as exc:  # noqa: BLE001 — downstream LLM/API/Neo4j failure

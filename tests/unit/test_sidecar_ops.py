@@ -1,288 +1,221 @@
-"""Each of the 7 ops maps to the right portable.py call with the right args.
-
-chat_nextseek is mocked via sys.modules so this runs on the 3.12 host (chat_nextseek
-is image-only — feedback_chat_nextseek_host_image_split). We assert the dispatch
-SHAPE (which portable fn, arg order), mirroring recon:runner §1j.
+"""Each of the 7 ops dispatches to ns_client.call_op (HTTP) with the right body + auth.
+For report/generate-submission: follows the download block, stages bytes, and commits
+the .complete marker exactly once after the loop (F-T16-2-B).
 """
-import sys
-import types
-
 import pytest
-
 from sidecar.app import ops
 
 
 @pytest.fixture
-def fake_portable(monkeypatch):
-    calls = {}
-    mod = types.ModuleType("chat_nextseek.portable")
-
-    def mk(name):
-        def fn(*a, **k):
-            calls[name] = {"args": a, "kwargs": k}
-
-            class _R:
-                def model_dump(self):
-                    return {"_op": name}
-
-            return _R()
-
-        return fn
-
-    for n in ("entity_agent", "parser_agent", "multi_parser_agent", "planner_agent",
-              "graph_agent", "report_writer_agent", "api_agent_build_request"):
-        setattr(mod, n, mk(n))
-    # helpers + reporter summary
-    helpers = types.ModuleType("chat_nextseek.helpers")
-    helpers.tool_nextseek_api_request = lambda *a, **k: {"ok": True}
-    helpers.run_reporter_summary = lambda *a, **k: ({"rows": []}, {"f": "/p"}, {"summary": "s"})
-    monkeypatch.setitem(sys.modules, "chat_nextseek.portable", mod)
-    monkeypatch.setitem(sys.modules, "chat_nextseek.helpers", helpers)
-    return calls
-
-
-# A richer fake that also installs the `chat_nextseek` parent package and the
-# `chat_nextseek.schemas.chat` module, needed by the api/report/submission ops
-# (those handlers do `from chat_nextseek import helpers` and import ReporterPlan /
-# ReportWriterPlan). `calls` records every portable invocation by name.
-class _Plan:
-    def __init__(self):
-        self.endpoint = "/samples/"
-        self.method = "get"
-        self.requestBody = {"b": 1}
-        self.queryParameters = {"q": 2}
-
-    def model_dump(self):
-        return {"endpoint": self.endpoint, "method": self.method}
-
-
-@pytest.fixture
-def fake_full(monkeypatch):
+def fake_client(monkeypatch):
     calls = {}
 
-    pkg = types.ModuleType("chat_nextseek")
-    portable = types.ModuleType("chat_nextseek.portable")
-    helpers = types.ModuleType("chat_nextseek.helpers")
-    schemas = types.ModuleType("chat_nextseek.schemas")
-    schemas_chat = types.ModuleType("chat_nextseek.schemas.chat")
+    def call_op(op, body, *, base_url, auth):
+        calls[op] = {"body": body, "base_url": base_url, "auth": auth}
+        if op == "report":
+            return {"op": op, "result": {"summary": {}, "saved_files": {"published_report": "/srv/p.json"}, "rows": {}},
+                    "download": {"session_id": "11111111-1111-4111-8111-111111111111", "bundle_id": 1,
+                                 "artifacts": [{"key": "published_report", "url": "/dl/published_report/"}]}}
+        if op == "generate-submission":
+            return {"op": op, "result": {"report_writer_output": {"report_type": "GEO"}},
+                    "download": {"session_id": "22222222-2222-4222-8222-222222222222", "bundle_id": 2,
+                                 "artifacts": [{"key": "all_tables", "url": "/dl/all_tables/"}]}}
+        return {"op": op, "result": {"_op": op}}
 
-    def mk(name, retval=None):
-        def fn(*a, **k):
-            calls[name] = {"args": a, "kwargs": k}
-            return retval if retval is not None else _record_model(name)
-        return fn
+    fetched = {}
 
-    def _record_model(name):
-        class _R:
-            def model_dump(self):
-                return {"_op": name}
-        return _R()
+    def fetch_artifact(url, *, base_url, auth):
+        fetched[url] = True
+        return b"BYTES"
 
-    portable.entity_agent = mk("entity_agent")
-    portable.graph_agent = mk("graph_agent")
-    portable.api_agent_build_request = mk("api_agent_build_request", retval=_Plan())
-    portable.report_writer_agent = mk("report_writer_agent")
-
-    def _api_req(*a, **k):
-        calls["tool_nextseek_api_request"] = {"args": a, "kwargs": k}
-        return {"ok": True}
-    helpers.tool_nextseek_api_request = _api_req
-
-    def _reporter(*a, **k):
-        calls["run_reporter_summary"] = {"args": a, "kwargs": k}
-        return ({"rows": []}, {"out.csv": "/p/out.csv"}, {"summary": "done"})
-    helpers.run_reporter_summary = _reporter
-
-    class _ReporterPlan:
-        def __init__(self, **kw):
-            calls["ReporterPlan"] = kw
-
-    class _ReportWriterPlan:
-        def __init__(self, **kw):
-            calls["ReportWriterPlan"] = kw
-
-    schemas_chat.ReporterPlan = _ReporterPlan
-    schemas_chat.ReportWriterPlan = _ReportWriterPlan
-
-    helpers_parent_attr = helpers
-    pkg.helpers = helpers_parent_attr
-    pkg.portable = portable
-    pkg.schemas = schemas
-    schemas.chat = schemas_chat
-
-    monkeypatch.setitem(sys.modules, "chat_nextseek", pkg)
-    monkeypatch.setitem(sys.modules, "chat_nextseek.portable", portable)
-    monkeypatch.setitem(sys.modules, "chat_nextseek.helpers", helpers)
-    monkeypatch.setitem(sys.modules, "chat_nextseek.schemas", schemas)
-    monkeypatch.setitem(sys.modules, "chat_nextseek.schemas.chat", schemas_chat)
-    return calls
+    monkeypatch.setattr(ops.ns_client, "call_op", call_op)
+    monkeypatch.setattr(ops.ns_client, "fetch_artifact", fetch_artifact)
+    return calls, fetched
 
 
-# ---- spec example tests (verbatim) -----------------------------------------
-def test_entity_op(fake_portable):
-    cfg = object()
-    out = ops.run_op("entity", {"query": "q"}, config=cfg, session=None,
+class _Cfg:
+    base_url = "http://ns"
+    auth = ("u", "p")
+
+
+def test_entity_calls_http(fake_client):
+    calls, _ = fake_client
+    out = ops.run_op("entity", {"query": "q"}, config=_Cfg(), session=None,
                      write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
-    assert out["_op"] == "entity_agent"
-    assert fake_portable["entity_agent"]["args"][1] == "q"  # entity_agent(config, query)
+    assert out["_op"] == "entity"
+    assert calls["entity"]["body"] == {"query": "q"} and calls["entity"]["auth"] == ("u", "p")
 
 
-def test_parse_op_takes_session_first(fake_portable):
-    sess = object()
-    ops.run_op("parse", {"query": "q"}, config=object(), session=sess,
-               write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
-    assert fake_portable["parser_agent"]["args"][0] is sess  # parser_agent(session, config, ...)
-
-
-def test_unknown_op_raises_validation(fake_portable):
-    with pytest.raises(ops.OpValidationError):
-        ops.run_op("query", {"query": "q"}, config=object(), session=None,
-                   write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)  # query is not a sidecar op
-
-
-# ---- additional coverage of the remaining handlers --------------------------
-def test_entity_op_call_shape(fake_portable):
-    cfg = object()
-    ops.run_op("entity", {"query": "q"}, config=cfg, session=None,
-               write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
-    # entity_agent(config, query) — recon:runner §1j
-    assert fake_portable["entity_agent"]["args"] == (cfg, "q")
-
-
-def test_parse_op_full_call_shape(fake_portable):
-    cfg = object()
-    sess = object()
-    ops.run_op("parse", {"query": "q"}, config=cfg, session=sess,
-               write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
-    # entity_agent(config, query) then parser_agent(session, config, query, entity_out)
-    assert fake_portable["entity_agent"]["args"] == (cfg, "q")
-    parse_args = fake_portable["parser_agent"]["args"]
-    assert parse_args[0] is sess and parse_args[1] is cfg and parse_args[2] == "q"
-
-
-def test_graph_op_call_shape(fake_portable):
-    cfg = object()
-    out = ops.run_op("graph", {"query": "q"}, config=cfg, session=None,
+def test_parse_calls_http(fake_client):
+    calls, _ = fake_client
+    out = ops.run_op("parse", {"query": "q"}, config=_Cfg(), session=None,
                      write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
-    assert out["_op"] == "graph_agent"
-    # entity_agent(config, query) then graph_agent(config, query, entity_out)
-    assert fake_portable["entity_agent"]["args"] == (cfg, "q")
-    g_args = fake_portable["graph_agent"]["args"]
-    assert g_args[0] is cfg and g_args[1] == "q"
+    assert out["_op"] == "parse"
+    assert calls["parse"]["body"] == {"query": "q"}
 
 
-def test_api_read_op(fake_full):
-    gate_calls = []
-
-    def gate(*a):
-        gate_calls.append(a)
-
-    cfg = object()
-    out = ops.run_op("api-read", {"parser_plan": '{"mode": "x"}'}, config=cfg, session=None,
-                     write_gate=gate, stage=ops.NO_STAGE)
-    # write_gate called BEFORE the request, with the resolved endpoint/method, confirmed=False
-    assert gate_calls == [("api-read", "/samples/", "GET", False)]
-    assert out["endpoint"] == "/samples/" and out["method"] == "GET"
-    assert out["response"] == {"ok": True}
-    assert out["api_plan"] == {"endpoint": "/samples/", "method": "get"}
-    # api_agent_build_request(config, json.loads(parser_plan))
-    assert fake_full["api_agent_build_request"]["args"][0] is cfg
-    assert fake_full["api_agent_build_request"]["args"][1] == {"mode": "x"}
+def test_graph_calls_http(fake_client):
+    calls, _ = fake_client
+    out = ops.run_op("graph", {"query": "q"}, config=_Cfg(), session=None,
+                     write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
+    assert out["_op"] == "graph"
+    assert calls["graph"]["body"] == {"query": "q"}
 
 
-def test_api_write_op_passes_confirmed(fake_full):
-    gate_calls = []
+def test_api_read_calls_http(fake_client):
+    calls, _ = fake_client
+    out = ops.run_op("api-read", {"parser_plan": '{"mode": "x"}'}, config=_Cfg(), session=None,
+                     write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
+    assert out["_op"] == "api-read"
+    assert calls["api-read"]["body"] == {"parser_plan": '{"mode": "x"}'}
 
-    def gate(*a):
-        gate_calls.append(a)
 
+def test_api_write_unconfirmed_blocks_before_http(fake_client):
+    calls, _ = fake_client
+    from sidecar.app.write_gate import build_gate
+    gate = build_gate()  # real confirmed_write pre-check gate
+    with pytest.raises(ops.WriteBlockedError):
+        ops.run_op("api-write", {"parser_plan": "{}", "confirmed_write": False},
+                   config=_Cfg(), session=None, write_gate=gate, stage=ops.NO_STAGE)
+    assert "api-write" not in calls  # never reached the HTTP client
+
+
+def test_api_write_confirmed_calls_http(fake_client):
+    calls, _ = fake_client
     out = ops.run_op("api-write", {"parser_plan": '{"mode": "x"}', "confirmed_write": True},
-                     config=object(), session=None, write_gate=gate, stage=ops.NO_STAGE)
-    # write_gate("api-write", None, None, confirmed) BEFORE building/sending
-    assert gate_calls == [("api-write", None, None, True)]
-    assert out["endpoint"] == "/samples/" and out["method"] == "GET"
-    assert out["response"] == {"ok": True}
+                     config=_Cfg(), session=None, write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
+    assert out["_op"] == "api-write"
+    assert calls["api-write"]["body"]["confirmed_write"] is True
 
 
-def test_api_write_confirmed_defaults_false(fake_full):
-    gate_calls = []
+def test_report_downloads_and_stages(fake_client):
+    calls, fetched = fake_client
+    staged, commits = {}, []
 
-    def gate(*a):
-        gate_calls.append(a)
+    def stage_bytes(op, key, data):
+        staged[key] = f"/staging/{op}/{key}"
+        return staged[key]
 
-    ops.run_op("api-write", {"parser_plan": '{"mode": "x"}'},
-               config=object(), session=None, write_gate=gate, stage=ops.NO_STAGE)
-    assert gate_calls == [("api-write", None, None, False)]
+    def commit_bytes():
+        commits.append(1)  # marker committer (F-T16-2-B)
+
+    out = ops.run_op("report", {"mode": "published", "project": "Published Data"},
+                     config=_Cfg(), session=None, write_gate=ops.ALLOW_ALL,
+                     stage=ops.NO_STAGE, stage_bytes=stage_bytes, commit_bytes=commit_bytes)
+    assert "/dl/published_report/" in fetched
+    assert out["saved_files"]["published_report"] == "/staging/report/published_report"
+    assert commits == [1]  # marker committed exactly once after the loop
 
 
-def test_api_read_invalid_parser_plan_raises_op_validation(fake_full):
-    # T4 review fix 2: malformed parser_plan JSON must surface as OpValidationError
-    # (→ VALIDATION / exit 3, matching the pre-sidecar runner), NOT a bare
-    # JSONDecodeError that the server's generic handler maps to AGENT_FAILED.
+def test_generate_submission_downloads_and_stages(fake_client):
+    calls, fetched = fake_client
+    staged, commits = {}, []
+
+    def stage_bytes(op, key, data):
+        staged[key] = f"/staging/{op}/{key}"
+        return staged[key]
+
+    def commit_bytes():
+        commits.append(1)
+
+    out = ops.run_op("generate-submission", {"type": "GEO", "uids": "UID1"},
+                     config=_Cfg(), session=None, write_gate=ops.ALLOW_ALL,
+                     stage=ops.NO_STAGE, stage_bytes=stage_bytes, commit_bytes=commit_bytes)
+    assert "/dl/all_tables/" in fetched
+    assert out["staged_files"]["all_tables"] == "/staging/generate-submission/all_tables"
+    assert commits == [1]
+
+
+def test_report_multi_artifact_marker_written_once(monkeypatch):
+    def call_op(op, body, *, base_url, auth):
+        return {"op": op, "result": {"summary": {}, "saved_files": {}, "rows": {}},
+                "download": {"session_id": "44444444-4444-4444-8444-444444444444", "bundle_id": 4,
+                             "artifacts": [{"key": "merged_report", "url": "/dl/merged_report/"},
+                                           {"key": "geo_seq_workbooks", "url": "/dl/geo_seq_workbooks/"}]}}
+
+    def fetch_artifact(url, *, base_url, auth):
+        return b"BYTES"
+
+    monkeypatch.setattr(ops.ns_client, "call_op", call_op)
+    monkeypatch.setattr(ops.ns_client, "fetch_artifact", fetch_artifact)
+    order = []
+
+    def stage_bytes(op, key, data):
+        order.append(("stage", key))
+        return f"/staging/{op}/{key}"
+
+    def commit_bytes():
+        order.append(("commit", None))
+
+    out = ops.run_op("report", {"mode": "published", "project": "Published Data"},
+                     config=_Cfg(), session=None, write_gate=ops.ALLOW_ALL,
+                     stage=ops.NO_STAGE, stage_bytes=stage_bytes, commit_bytes=commit_bytes)
+    assert out["saved_files"]["merged_report"] == "/staging/report/merged_report"
+    assert out["saved_files"]["geo_seq_workbooks"] == "/staging/report/geo_seq_workbooks"
+    assert order.count(("commit", None)) == 1
+    assert order[-1] == ("commit", None)
+    assert order[:2] == [("stage", "merged_report"), ("stage", "geo_seq_workbooks")]
+
+
+def test_unknown_op_raises_validation(fake_client):
     with pytest.raises(ops.OpValidationError):
-        ops.run_op("api-read", {"parser_plan": "{not json"}, config=object(), session=None,
+        ops.run_op("query", {"query": "q"}, config=_Cfg(), session=None,
                    write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
-
-
-def test_api_write_invalid_parser_plan_raises_op_validation(fake_full):
-    with pytest.raises(ops.OpValidationError):
-        ops.run_op("api-write", {"parser_plan": "{not json", "confirmed_write": True},
-                   config=object(), session=None, write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
-
-
-def test_report_op_samples_mode(fake_full):
-    cfg = object()
-    out = ops.run_op("report", {"mode": "samples", "project": "P1"},
-                     config=cfg, session=None, write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
-    assert out["summary"] == {"summary": "done"}
-    assert out["saved_files"] == {"out.csv": "/p/out.csv"}
-    assert out["rows"] == {"rows": []}
-    # ReporterPlan(project=..., reporter_mode="summary", summary_mode="samples")
-    assert fake_full["ReporterPlan"] == {
-        "project": "P1", "reporter_mode": "summary", "summary_mode": "samples",
-    }
-    assert fake_full["run_reporter_summary"]["args"][0] is cfg
-
-
-def test_report_op_rppr_maps_summary_mode(fake_full):
-    ops.run_op("report", {"mode": "rppr", "project": "P1"},
-               config=object(), session=None, write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
-    assert fake_full["ReporterPlan"]["summary_mode"] == "RPPR"
-
-
-def test_generate_submission_op(fake_full):
-    cfg = object()
-    out = ops.run_op("generate-submission",
-                     {"type": "GEO", "uids": "u1, u2 ,, u3", "query": "make it"},
-                     config=cfg, session=None, write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
-    assert out["_op"] == "report_writer_agent"
-    # report_writer_agent(config, query or "", plan)
-    assert fake_full["report_writer_agent"]["args"][0] is cfg
-    assert fake_full["report_writer_agent"]["args"][1] == "make it"
-    # ReportWriterPlan(report_type=type, reporter_context={"uids": [...]}); blanks dropped
-    assert fake_full["ReportWriterPlan"] == {
-        "report_type": "GEO", "reporter_context": {"uids": ["u1", "u2", "u3"]},
-    }
-
-
-def test_generate_submission_op_default_query(fake_full):
-    ops.run_op("generate-submission", {"type": "SRA", "uids": "u1"},
-               config=object(), session=None, write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
-    # query absent -> "" passed to report_writer_agent
-    assert fake_full["report_writer_agent"]["args"][1] == ""
-
-
-def test_dump_passthrough_for_plain_dict(monkeypatch):
-    # _dump returns the object unchanged when it has no model_dump (else branch).
-    mod = types.ModuleType("chat_nextseek.portable")
-    mod.entity_agent = lambda *a, **k: {"plain": "dict"}
-    monkeypatch.setitem(sys.modules, "chat_nextseek.portable", mod)
-    out = ops.run_op("entity", {"query": "q"}, config=object(), session=None,
-                     write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
-    assert out == {"plain": "dict"}
 
 
 def test_allow_all_and_no_stage_defaults():
     assert ops.ALLOW_ALL("api-read", "/x", "GET", False) is None
     sentinel = {"k": "v"}
     assert ops.NO_STAGE("report", sentinel) is sentinel
+
+
+def test_no_stage_bytes_default_writes_temp_no_marker(monkeypatch):
+    """NO_STAGE_BYTES sentinel writes bytes to a temp path and returns a path string."""
+    # NO_STAGE_BYTES should write bytes and return a path, not raise
+    result = ops.NO_STAGE_BYTES("report", "my_key", b"test data")
+    assert isinstance(result, str)
+    # The path should be a valid string (temp path)
+    assert len(result) > 0
+
+
+def test_no_commit_is_noop():
+    """NO_COMMIT sentinel is a no-op callable."""
+    result = ops.NO_COMMIT()
+    assert result is None
+
+
+def test_api_write_invalid_parser_plan_raises_op_validation(fake_client):
+    with pytest.raises(ops.OpValidationError):
+        ops.run_op("api-write", {"parser_plan": "{not json", "confirmed_write": True},
+                   config=_Cfg(), session=None, write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
+
+
+def test_report_no_download_block_uses_stage_path(monkeypatch):
+    """When no download block is present, the path-copy stage is called (not stage_bytes)."""
+    def call_op(op, body, *, base_url, auth):
+        return {"op": op, "result": {"summary": {}, "saved_files": {}, "rows": {}}}
+
+    monkeypatch.setattr(ops.ns_client, "call_op", call_op)
+    stage_called = []
+
+    def my_stage(op, result):
+        stage_called.append(op)
+        return result
+
+    out = ops.run_op("report", {"mode": "published", "project": "Published Data"},
+                     config=_Cfg(), session=None, write_gate=ops.ALLOW_ALL,
+                     stage=my_stage)
+    assert "report" in stage_called
+
+
+def test_http_base_url_and_auth_forwarded(fake_client):
+    calls, _ = fake_client
+
+    class MyCfg:
+        base_url = "http://myns:8000"
+        auth = ("myuser", "mypass")
+
+    ops.run_op("entity", {"query": "q"}, config=MyCfg(), session=None,
+               write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
+    assert calls["entity"]["base_url"] == "http://myns:8000"
+    assert calls["entity"]["auth"] == ("myuser", "mypass")

@@ -1,3 +1,7 @@
+"""Staging tests (T16 extended): make_stage (path-copy) + make_stage_bytes (bytes writer).
+make_stage_bytes returns a (stage_bytes, commit) pair; the .complete marker is written
+by commit() once after all artifacts are staged — never inside the per-artifact loop.
+"""
 import hashlib
 from pathlib import Path
 import pytest
@@ -9,6 +13,8 @@ class _Cfg:
     def __init__(self, root):
         self.staging_dir = str(root)
 
+
+# ---- make_stage (path-copy entry point, unchanged from T7) -------------------
 
 def test_stage_copies_saved_files_into_per_user_request_dir(tmp_path):
     src = tmp_path / "out"
@@ -111,3 +117,90 @@ def test_cleanup_is_idempotent_when_dir_absent(tmp_path):
     """cleanup_request on an already-removed dir must not raise."""
     cfg = _Cfg(tmp_path / "staging")
     staging.cleanup_request(cfg, "grace", "nonexistent")  # must not raise
+
+
+# ---- make_stage_bytes (T16 addition) ----------------------------------------
+
+def test_make_stage_bytes_returns_callable_pair(tmp_path):
+    """make_stage_bytes returns a (stage_bytes, commit) pair of callables."""
+    cfg = _Cfg(tmp_path / "staging")
+    login = NsLogin(api_user="alice", api_pass="p")
+    writer, committer = staging.make_stage_bytes(cfg, login, request_id="req-sb-1")
+    assert callable(writer)
+    assert callable(committer)
+
+
+def test_stage_bytes_writes_bytes_to_staging_dir(tmp_path):
+    """stage_bytes writes the given bytes to the per-user hashed staging dir."""
+    cfg = _Cfg(tmp_path / "staging")
+    login = NsLogin(api_user="alice", api_pass="p")
+    writer, _ = staging.make_stage_bytes(cfg, login, request_id="req-sb-2")
+    staged_path = writer("report", "published_report", b"\x89PNG artifact")
+    assert Path(staged_path).read_bytes() == b"\x89PNG artifact"
+    user_hash = hashlib.sha256(b"alice").hexdigest()
+    assert user_hash in staged_path
+    assert "req-sb-2" in staged_path
+
+
+def test_stage_bytes_does_not_write_complete_marker(tmp_path):
+    """stage_bytes must NOT write the .complete marker (that's commit()'s job — F-T16-2-B)."""
+    cfg = _Cfg(tmp_path / "staging")
+    login = NsLogin(api_user="alice", api_pass="p")
+    writer, _ = staging.make_stage_bytes(cfg, login, request_id="req-sb-3")
+    writer("report", "key1", b"data")
+    user_hash = hashlib.sha256(b"alice").hexdigest()
+    marker = Path(cfg.staging_dir) / user_hash / "req-sb-3.complete"
+    assert not marker.exists()
+
+
+def test_commit_writes_complete_marker(tmp_path):
+    """commit() writes the .complete marker exactly once."""
+    cfg = _Cfg(tmp_path / "staging")
+    login = NsLogin(api_user="alice", api_pass="p")
+    writer, committer = staging.make_stage_bytes(cfg, login, request_id="req-sb-4")
+    writer("report", "key1", b"data1")  # stage an artifact first
+    user_hash = hashlib.sha256(b"alice").hexdigest()
+    marker = Path(cfg.staging_dir) / user_hash / "req-sb-4.complete"
+    assert not marker.exists()
+    committer()
+    assert marker.exists()
+
+
+def test_commit_after_multi_artifact_loop(tmp_path):
+    """commit() called once after staging multiple artifacts (F-T16-2-B pattern)."""
+    cfg = _Cfg(tmp_path / "staging")
+    login = NsLogin(api_user="alice", api_pass="p")
+    writer, committer = staging.make_stage_bytes(cfg, login, request_id="req-sb-5")
+    artifacts = [("key1", b"bytes1"), ("key2", b"bytes2"), ("key3", b"bytes3")]
+    paths = []
+    for key, data in artifacts:
+        paths.append(writer("report", key, data))
+    committer()  # exactly once after the loop
+    user_hash = hashlib.sha256(b"alice").hexdigest()
+    marker = Path(cfg.staging_dir) / user_hash / "req-sb-5.complete"
+    assert marker.exists()
+    for path in paths:
+        assert Path(path).exists()
+
+
+def test_stage_bytes_api_user_never_in_path(tmp_path):
+    """Raw api_user must never appear in the staged path (security invariant)."""
+    cfg = _Cfg(tmp_path / "staging")
+    login = NsLogin(api_user="frank", api_pass="p")
+    writer, _ = staging.make_stage_bytes(cfg, login, request_id="req-sb-6")
+    staged_path = writer("report", "artifact", b"data")
+    assert "frank" not in staged_path
+
+
+def test_stage_bytes_distinct_users_distinct_dirs(tmp_path):
+    """Different users get different staging dirs (hashed by api_user)."""
+    cfg = _Cfg(tmp_path / "staging")
+    login_a = NsLogin(api_user="alice", api_pass="p")
+    login_b = NsLogin(api_user="bob", api_pass="p")
+    writer_a, _ = staging.make_stage_bytes(cfg, login_a, request_id="req-sb-7")
+    writer_b, _ = staging.make_stage_bytes(cfg, login_b, request_id="req-sb-7")
+    path_a = writer_a("report", "key", b"alice data")
+    path_b = writer_b("report", "key", b"bob data")
+    assert path_a != path_b
+    assert Path(path_a).read_bytes() == b"alice data"
+    assert Path(path_b).read_bytes() == b"bob data"

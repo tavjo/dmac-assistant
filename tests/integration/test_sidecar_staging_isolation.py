@@ -26,12 +26,12 @@ from tests.integration import _sidecar_e2e_helpers as H
 # ----------------------------------------------------- gate 2: per-user isolation
 
 def test_per_user_isolation(tmp_path) -> None:
-    """Gate 2: two users -> distinct hashed session keys + staging dirs; neither
-    can read the other's staged artifacts. Exercises the REAL hashing + sweep
-    functions (sha256(api_user)), not a mock."""
+    """Gate 2: two users -> distinct hashed staging dirs; neither can read the
+    other's staged artifacts. Exercises the REAL hashing + sweep functions
+    (sha256(api_user)), not a mock. T16: sessions.py removed (stateless HTTP ops);
+    per-user isolation is entirely via _user_hash in staging.py."""
     from sidecar.app.contract import NsLogin
-    from sidecar.app.sessions import _session_key
-    from sidecar.app.staging import make_stage
+    from sidecar.app.staging import _user_hash, make_stage
     from dmac_assistant.staging_sweep import sweep_sidecar_staging
 
     staging_root = tmp_path / "staging"
@@ -40,8 +40,8 @@ def test_per_user_isolation(tmp_path) -> None:
     scratch_root.mkdir()
 
     user_a, user_b = "alice", "bob"
-    # Distinct session keys (U-5 keying = ns:{sha256(api_user)}).
-    assert _session_key(user_a) != _session_key(user_b)
+    # Distinct user hashes → distinct staging dirs (isolation invariant).
+    assert _user_hash(user_a) != _user_hash(user_b)
 
     cfg = types.SimpleNamespace(staging_dir=str(staging_root))
     src = tmp_path / "artifact_a.csv"
