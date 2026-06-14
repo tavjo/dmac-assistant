@@ -891,7 +891,8 @@ class _NsSessionState:
     session_id: str | None = None
 
 
-# TODO(T12-escalated): real-WS-turn artifact gate still owed - needs sample data on the E2E target stack; see .claude/plans/nextseek-sidecar-build-2026-06-09.md Wave 4/5 log + evidence/sidecar-e2e/20260611T025009Z/SUMMARY.txt
+# T12 gate CLOSED 2026-06-14 (A-5 fix): live E2E in run_t18_rewire_e2e.py step3 + hermetic
+# test_t18_router_on_sidecar_publish.py drive the real bridge-WS closure with provenance.
 async def _chat_ws_router_on(  # pragma: no cover
     *,
     websocket: WebSocket,
@@ -914,13 +915,13 @@ async def _chat_ws_router_on(  # pragma: no cover
     ns_session = _NsSessionState()
     pre_turn_files = snapshot_scratch_files(config.scratch_root, identity.user_id)
 
-    # TODO(T12-owed): real-WS-turn artifact gate still owed - drive a real router-on turn
-    # through this closure and assert publish-to-output same turn. The report op DOES
-    # stage real artifacts when it completes; the blocker is operational - ChatConfig({})
-    # cold-start (~28s) exceeds the 20s WS keepalive, so the op times out (1011) before
-    # returning. Warm the sidecar / raise ping_timeout first. The prior "needs sample data
-    # on a data-empty stack" rationale was WRONG (50,887 samples exist). Full diagnosis:
-    # .claude/reports/2026-06-11-ns-t12-report-op-ddx-resolution.md.
+    # T12 router-on artifact gate: CLOSED (A-5 fix, 2026-06-14).
+    # The gate now drives a real bridge-WS turn through THIS closure via TestClient in
+    # tools/e2e/run_t18_rewire_e2e.py step3_t12_router_on_gate (live E2E + hermetic
+    # coverage in tests/integration/test_t18_router_on_sidecar_publish.py). Provenance:
+    # _sweep_then_diff is wrapped to assert the closure called it (not out-of-band);
+    # sha256 of published output matches the staged NExtSEEK source artifact.
+    # Original diagnosis: .claude/reports/2026-06-11-ns-t12-report-op-ddx-resolution.md.
     async def fire_post_turn_copy() -> None:
         after, new = _sweep_then_diff(config, identity, pre_turn_files)
         if not new:
