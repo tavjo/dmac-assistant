@@ -82,7 +82,7 @@ sync-vendor-deps:
 # --- NS shared-cred sidecar (plan nextseek-sidecar-build-2026-06-09, R-6) ---
 SIDECAR_STAGING_ROOT ?= $(HOME)/dmac-dev/nextseek-sidecar-staging
 
-sidecar-build: image-check-docker sync-vendor-deps
+sidecar-build: image-check-docker
 	@DMAC_SIDECAR_STAGING_ROOT="$(SIDECAR_STAGING_ROOT)" docker compose -f sidecar/docker-compose.yml build
 
 sidecar-up: image-check-docker

@@ -29,18 +29,12 @@ services:
       - path: ./local-nextseek-dmac.env
         required: false
     environment:
-      SESSION_DB_TYPE: mysql
+      # T17 (A-5): SESSION_DB_*, READ_SAFE_ENDPOINTS_PATH, CATALOG_FILE,
+      # CHAT_NEXTSEEK_DB_ENV, NEXTSEEK_MODE, CHAT_NEXTSEEK_CONFIG_VERBOSE
+      # removed — the sidecar no longer runs the NS runtime in-process (T16);
+      # all granular ops are now HTTP forwarders to NExtSEEK's native endpoints.
       SIDECAR_WS_PORT: "8765"
       SIDECAR_STAGING_DIR: /staging
-      READ_SAFE_ENDPOINTS_PATH: /app/context/read_safe_endpoints.json
-      # T12: override the agent-image CATALOG_FILE from .env with the sidecar's
-      # own staged copy (Dockerfile COPYs it to /app/context/). ChatConfig reads
-      # this for every granular op; the .env value points at a nonexistent
-      # /app/chat_nextseek/ path inside this venv-installed image.
-      CATALOG_FILE: /app/context/agent_model_catalog.json
-      CHAT_NEXTSEEK_DB_ENV: dev
-      NEXTSEEK_MODE: gcp
-      CHAT_NEXTSEEK_CONFIG_VERBOSE: "false"
     volumes:
       - ${DMAC_SIDECAR_STAGING_ROOT:?set DMAC_SIDECAR_STAGING_ROOT to an absolute path (make sidecar-up exports it)}:/staging
     networks:

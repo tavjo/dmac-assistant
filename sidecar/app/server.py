@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from sidecar.app import ops
 from sidecar.app.config import SidecarConfig
 from sidecar.app.contract import NsLogin, SidecarError, SidecarRequest, SidecarResponse
-from sidecar.app.staging import StagingError  # top-level safe: staging.py imports no chat_nextseek
+from sidecar.app.staging import StagingError  # top-level safe: staging.py has no heavy NS runtime imports
 
 _CFG: SidecarConfig | None = None
 
@@ -23,7 +23,7 @@ _CFG: SidecarConfig | None = None
 @dataclass(frozen=True, repr=False)
 class NsHttpConfig:
     """Lightweight per-request HTTP config: base_url + Basic auth credentials.
-    Replaces the chat_nextseek ChatConfig (T16, DD-A5-6). No env mutation."""
+    Replaces the old in-process NS runtime config (T16, DD-A5-6). No env mutation."""
     base_url: str
     auth: tuple[str, str]
 
@@ -101,7 +101,7 @@ async def handle_message(raw: str) -> str:
         result = await asyncio.to_thread(
             ops.run_op, req.op, req.args,
             config=config,
-            session=None,  # T16: no chat_nextseek session; HTTP ops are stateless
+            session=None,  # T16: ops are stateless HTTP forwarders; no in-process session
             write_gate=gate,
             stage=stage,
             stage_bytes=stage_bytes,

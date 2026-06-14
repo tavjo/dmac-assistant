@@ -449,15 +449,19 @@ def test_agent_image_ships_thin_client_modules():
         )
 
 
-def test_sidecar_dockerfile_keeps_vendored_chat_nextseek():
-    """T11: the vendored chat_nextseek install MOVED to the sidecar image.
-    This is the relocated vendor-presence guard from the old agent-image
-    `built_image` fixture: the SIDECAR Dockerfile must keep the vendored
-    COPY (sidecar builds require `make sync-vendor-deps` first)."""
+def test_sidecar_dockerfile_does_not_ship_chat_nextseek():
+    """T17 (A-5): chat_nextseek and torch were REMOVED from the sidecar image.
+    The sidecar ops are now HTTP forwarders to NExtSEEK (T16); the vendor dir
+    stays on disk for the bridge but is no longer COPYd or installed in the
+    sidecar image. Inverts the old T11 presence guard."""
     text = (REPO_ROOT / "sidecar" / "Dockerfile").read_text(encoding="utf-8")
-    assert "COPY vendor/chat_nextseek" in text, (
-        "sidecar/Dockerfile must keep `COPY vendor/chat_nextseek` — the "
-        "sidecar is the ONLY image that ships chat_nextseek (U-11)."
+    assert "COPY vendor/chat_nextseek" not in text, (
+        "sidecar/Dockerfile must NOT COPY vendor/chat_nextseek — the sidecar "
+        "no longer ships chat_nextseek (T17, A-5). The vendor dir stays on "
+        "disk for the bridge only."
+    )
+    assert "torch" not in text, (
+        "sidecar/Dockerfile must NOT install torch — dead weight after T17."
     )
 
 
