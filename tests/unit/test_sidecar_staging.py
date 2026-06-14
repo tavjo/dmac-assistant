@@ -204,3 +204,66 @@ def test_stage_bytes_distinct_users_distinct_dirs(tmp_path):
     assert path_a != path_b
     assert Path(path_a).read_bytes() == b"alice data"
     assert Path(path_b).read_bytes() == b"bob data"
+
+
+def test_stage_bytes_oserror_raises_staging_error(tmp_path, monkeypatch):
+    """OSError inside stage_bytes (dst.write_bytes) → StagingError (I-2, line 89-90)."""
+    cfg = _Cfg(tmp_path / "staging")
+    login = NsLogin(api_user="alice", api_pass="p")
+    writer, _ = staging.make_stage_bytes(cfg, login, request_id="req-sb-err1")
+
+    # Monkeypatch Path.write_bytes to raise OSError after the dir is created
+    original_write_bytes = Path.write_bytes
+
+    def bad_write_bytes(self, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_bytes", bad_write_bytes)
+    with pytest.raises(staging.StagingError, match="staging bytes failed"):
+        writer("report", "published_report", b"data")
+
+
+def test_commit_oserror_raises_staging_error(tmp_path, monkeypatch):
+    """OSError inside commit() (marker.write_text) → StagingError (I-2, lines 97-98).
+    Proves that if the marker write fails after artifacts are staged, STAGING_ERROR is
+    returned (artifacts orphaned, marker absent, bridge correctly skips)."""
+    cfg = _Cfg(tmp_path / "staging")
+    login = NsLogin(api_user="alice", api_pass="p")
+    writer, committer = staging.make_stage_bytes(cfg, login, request_id="req-sb-err2")
+    writer("report", "published_report", b"artifact data")  # stage first; must succeed
+
+    original_write_text = Path.write_text
+
+    def bad_write_text(self, data, *args, **kwargs):
+        raise OSError("no space left")
+
+    monkeypatch.setattr(Path, "write_text", bad_write_text)
+    with pytest.raises(staging.StagingError, match="commit marker failed"):
+        committer()
+
+
+# ---- make_stage_bytes key sanitization (FIX 4 / M-2) -----------------------
+
+def test_stage_bytes_dotdot_key_stays_inside_req_dir(tmp_path):
+    """A '..' artifact key must not escape the per-user/request directory."""
+    cfg = _Cfg(tmp_path / "staging")
+    login = NsLogin(api_user="alice", api_pass="p")
+    writer, _ = staging.make_stage_bytes(cfg, login, request_id="req-sb-8")
+    staged_path = writer("report", "..", b"attempt")
+    # The resolved parent of the staged file must still be inside the request dir
+    import hashlib
+    user_hash = hashlib.sha256(b"alice").hexdigest()
+    req_dir = Path(cfg.staging_dir) / user_hash / "req-sb-8"
+    assert Path(staged_path).resolve().parent == req_dir.resolve()
+
+
+def test_stage_bytes_dotdot_traversal_key_stays_inside_req_dir(tmp_path):
+    """A '../escape' artifact key must not escape the per-user/request directory."""
+    cfg = _Cfg(tmp_path / "staging")
+    login = NsLogin(api_user="alice", api_pass="p")
+    writer, _ = staging.make_stage_bytes(cfg, login, request_id="req-sb-9")
+    staged_path = writer("report", "../escape", b"attempt")
+    import hashlib
+    user_hash = hashlib.sha256(b"alice").hexdigest()
+    req_dir = Path(cfg.staging_dir) / user_hash / "req-sb-9"
+    assert Path(staged_path).resolve().parent == req_dir.resolve()

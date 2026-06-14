@@ -20,12 +20,15 @@ from sidecar.app.staging import StagingError  # top-level safe: staging.py impor
 _CFG: SidecarConfig | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class NsHttpConfig:
     """Lightweight per-request HTTP config: base_url + Basic auth credentials.
     Replaces the chat_nextseek ChatConfig (T16, DD-A5-6). No env mutation."""
     base_url: str
     auth: tuple[str, str]
+
+    def __repr__(self) -> str:
+        return f"NsHttpConfig(base_url={self.base_url!r}, auth=('<redacted>', '<redacted>'))"
 
 
 def _err_response(request_id: str, code: str, message: str, retryable: bool = False) -> str:

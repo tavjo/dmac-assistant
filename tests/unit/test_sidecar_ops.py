@@ -219,3 +219,50 @@ def test_http_base_url_and_auth_forwarded(fake_client):
                write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE)
     assert calls["entity"]["base_url"] == "http://myns:8000"
     assert calls["entity"]["auth"] == ("myuser", "mypass")
+
+
+# ---- FIX 3 (M-1): untested branch coverage ----------------------------------
+
+def test_api_write_with_query_includes_query_in_body(fake_client):
+    """_api_write optional-query forwarding (ops.py line ~112): truthy query is included."""
+    calls, _ = fake_client
+    ops.run_op(
+        "api-write",
+        {"parser_plan": '{"mode": "x"}', "confirmed_write": True, "query": "find sample ABC"},
+        config=_Cfg(), session=None, write_gate=ops.ALLOW_ALL, stage=ops.NO_STAGE,
+    )
+    assert calls["api-write"]["body"]["query"] == "find sample ABC"
+
+
+def test_generate_submission_with_query_includes_query_in_body(fake_client):
+    """_generate_submission optional-query forwarding (ops.py line ~139): truthy query included."""
+    calls, fetched = fake_client
+    ops.run_op(
+        "generate-submission",
+        {"type": "GEO", "uids": "UID1", "query": "find organism mouse"},
+        config=_Cfg(), session=None, write_gate=ops.ALLOW_ALL,
+        stage=ops.NO_STAGE, stage_bytes=ops.NO_STAGE_BYTES, commit_bytes=ops.NO_COMMIT,
+    )
+    assert calls["generate-submission"]["body"]["query"] == "find organism mouse"
+
+
+def test_generate_submission_no_download_block_uses_stage_path(monkeypatch):
+    """When no download block is present for generate-submission, path-copy stage is called
+    (ops.py line ~155 — mirrors test_report_no_download_block_uses_stage_path)."""
+    def call_op(op, body, *, base_url, auth):
+        return {"op": op, "result": {"report_writer_output": {"report_type": "GEO"}}}
+
+    monkeypatch.setattr(ops.ns_client, "call_op", call_op)
+    stage_called = []
+
+    def my_stage(op, result):
+        stage_called.append(op)
+        return result
+
+    out = ops.run_op(
+        "generate-submission",
+        {"type": "GEO", "uids": "UID1"},
+        config=_Cfg(), session=None, write_gate=ops.ALLOW_ALL,
+        stage=my_stage,
+    )
+    assert "generate-submission" in stage_called

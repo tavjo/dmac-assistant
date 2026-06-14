@@ -296,3 +296,12 @@ def test_build_stage_bytes_returns_pair(monkeypatch):
     result = server._build_stage_bytes("rid-1", login)
     assert result == ("WRITER", "COMMITTER")
     assert captured["args"] == (server._CFG, login, "rid-1")
+
+
+def test_nshttpconfig_repr_redacts_password():
+    """NsHttpConfig repr must not reveal username or password (I-1 credential-safety guard)."""
+    cfg = server.NsHttpConfig(base_url="http://ns", auth=("alice", "hunter2"))
+    r = repr(cfg)
+    assert "hunter2" not in r
+    assert "alice" not in r
+    assert "http://ns" in r  # base_url is safe to show

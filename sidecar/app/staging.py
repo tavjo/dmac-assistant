@@ -82,8 +82,8 @@ def make_stage_bytes(
         """Write artifact bytes to staging; return the staged file path."""
         try:
             req_dir.mkdir(parents=True, exist_ok=True)
-            # Sanitize key to a safe filename (strip path separators)
-            safe_name = key.replace("/", "_").replace("\\", "_")
+            # Sanitize key to a safe filename (strip path separators + neutralize ..)
+            safe_name = key.replace("/", "_").replace("\\", "_").replace("..", "__")
             dst = req_dir / safe_name
             dst.write_bytes(data)
         except OSError as exc:
