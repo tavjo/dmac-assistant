@@ -54,7 +54,9 @@ def test_shared_creds_not_in_agent_env():
     bridge_env = {k: "SENTINEL" for k in SHARED}
     bridge_env["NEXTSEEK_URL"] = "https://ns.example"
     bridge_env["DMAC_PATH_MAPPINGS"] = '{"scratch": {}}'
-    env = _build_environment(_identity(), bridge_env)
+    env = _build_environment(
+        _identity(), bridge_env, bedrock_proxy_url="http://bedrock-proxy:8080"
+    )
     for k in SHARED:
         assert k not in env, f"{k} must not reach the agent container (U-1)"
     # the user's own login + NS url DO remain
@@ -69,7 +71,8 @@ def test_exec_env_ns_route_drops_chat_nextseek_block():
     the viewset, so the NS-route exec env carries no chat_nextseek wiring."""
     bridge_env = {"NEXTSEEK_BASE_URL": "http://ns.example"}
     env = _build_exec_environment(
-        _identity(), bridge_env, route="ns", ns_session_id="sess-1"
+        _identity(), bridge_env, route="ns",
+        bedrock_proxy_url="http://bedrock-proxy:8080", ns_session_id="sess-1"
     )
     for k in ("OUTPUTS_DIR", "CHAT_NEXTSEEK_SESSION_DB", "NEXTSEEK_MODE"):
         assert k not in env, f"{k} must not be set on the NS route after T10"

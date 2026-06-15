@@ -364,10 +364,19 @@ def _build_environment(
     identity: AuthenticatedIdentity,
     bridge_env: Mapping[str, str],
     *,
+    bedrock_proxy_url: str,
     runtime_mode: str | None = None,
 ) -> dict[str, str]:
     env: dict[str, str] = {
         "CLAUDE_CODE_USE_BEDROCK": "1",
+        # OI-3 (T4): point Claude Code at the Bedrock auth-proxy sidecar and tell
+        # it to emit UNSIGNED requests. The proxy holds the institutional
+        # AWS_BEARER_TOKEN_BEDROCK and adds the Authorization header server-side,
+        # so the bearer token NEVER enters the per-user agent container — closing
+        # the bedrock-token-exposure.md exfil vector. `bedrock_proxy_url` is a
+        # REQUIRED param (no default): a missed thread must fail loudly.
+        "ANTHROPIC_BEDROCK_BASE_URL": bedrock_proxy_url,
+        "CLAUDE_CODE_SKIP_BEDROCK_AUTH": "1",
         # OI-5: enable Claude Code auto mode on Bedrock (requires CC >= 2.1.158).
         # Read from the process env by the in-container `claude` (same mechanism
         # a settings.json `env` block uses). Harmless on the NS route, which
@@ -378,8 +387,10 @@ def _build_environment(
     }
     if "AWS_REGION" in bridge_env:
         env["AWS_REGION"] = bridge_env["AWS_REGION"]
-    if "AWS_BEARER_TOKEN_BEDROCK" in bridge_env:
-        env["AWS_BEARER_TOKEN_BEDROCK"] = bridge_env["AWS_BEARER_TOKEN_BEDROCK"]
+    # OI-3 (T4): AWS_BEARER_TOKEN_BEDROCK is NO LONGER forwarded into the agent
+    # container — it lives only in the proxy sidecar's compose env_file. The key
+    # stays in _REDACTED_ENV_KEYS so any incidental log of a bridge_env input is
+    # still scrubbed; only the FORWARDING is removed.
     if "NEXTSEEK_URL" in bridge_env:
         env["NEXTSEEK_URL"] = bridge_env["NEXTSEEK_URL"]
     # T10 (U-1): the 16 shared-credential keys (GCP_API_KEY, NEO4J_*, MYSQL_*,
@@ -428,7 +439,10 @@ def build_container_spec(
         image=image,
         command=_build_command(session_id),
         environment=_build_environment(
-            identity, bridge_env, runtime_mode=runtime_mode
+            identity,
+            bridge_env,
+            bedrock_proxy_url=config.bedrock_proxy_url,
+            runtime_mode=runtime_mode,
         ),
         volumes=_build_volumes(identity, config),
         working_dir=_CONTAINER_WORKING_DIR,
@@ -581,10 +595,13 @@ def _build_exec_environment(
     bridge_env: Mapping[str, str],
     *,
     route: str,
+    bedrock_proxy_url: str,
     ns_session_id: str | None = None,
 ) -> dict[str, str]:
     """Assemble the per-exec environment per locked spec L124-126."""
-    env = _build_environment(identity, bridge_env)
+    env = _build_environment(
+        identity, bridge_env, bedrock_proxy_url=bedrock_proxy_url
+    )
     env["API_USER"] = identity.user_id
     env["API_PASS"] = identity.password.get_secret_value()
     env["NEXTSEEK_BASE_URL"] = bridge_env.get("NEXTSEEK_BASE_URL", "")
@@ -676,7 +693,10 @@ def exec_cc_turn(
     cmd.extend(_automode_settings_args(bridge_env))
     if session_id:
         cmd.extend(["--resume", session_id])
-    environment = _build_exec_environment(identity, bridge_env, route="cc")
+    environment = _build_exec_environment(
+        identity, bridge_env, route="cc",
+        bedrock_proxy_url=config.bedrock_proxy_url,
+    )
     del config
     exec_info = api_client.api.exec_create(
         container.id,
@@ -725,6 +745,7 @@ def exec_ns_turn(
         identity,
         bridge_env,
         route="ns",
+        bedrock_proxy_url=config.bedrock_proxy_url,
         ns_session_id=session_id,
     )
     del config

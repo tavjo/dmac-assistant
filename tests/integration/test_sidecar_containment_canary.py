@@ -95,9 +95,17 @@ def test_build_env_strips_all_shared_canaries() -> None:
     identity = H.make_identity("demo", "pw-not-a-canary")
     bridge_env = _seeded_bridge_env()
 
-    base = _build_environment(identity, bridge_env)
-    exec_ns = _build_exec_environment(identity, bridge_env, route="ns")
-    exec_cc = _build_exec_environment(identity, bridge_env, route="cc")
+    base = _build_environment(
+        identity, bridge_env, bedrock_proxy_url="http://bedrock-proxy:8080"
+    )
+    exec_ns = _build_exec_environment(
+        identity, bridge_env, route="ns",
+        bedrock_proxy_url="http://bedrock-proxy:8080",
+    )
+    exec_cc = _build_exec_environment(
+        identity, bridge_env, route="cc",
+        bedrock_proxy_url="http://bedrock-proxy:8080",
+    )
 
     for label, env in (("base", base), ("exec_ns", exec_ns), ("exec_cc", exec_cc)):
         # No shared-cred KEY survives ...

@@ -104,7 +104,11 @@ def test_run_claude_print_builds_expected_cmd_and_returns_result() -> None:
         captured["timeout"] = timeout
         return _ok_completed(stdout=b'{"type":"result"}\n', stderr=b"")
 
-    env = {"AWS_REGION": "us-east-1", "AWS_BEARER_TOKEN_BEDROCK": "ABSKxxx"}
+    # OI-3 (T4): the de-credentialed agent launch no longer carries the bearer
+    # token — it reaches Bedrock through the proxy sidecar. This harness only
+    # forwards whatever env pairs it is given as `-e KEY=VALUE`; exercise that
+    # pass-through with the two env vars the agent DOES still receive.
+    env = {"AWS_REGION": "us-east-1", "ANTHROPIC_BEDROCK_BASE_URL": "http://bedrock-proxy:8080"}
     mounts = {
         "/tmp/fake-claude": {"bind": "/home/user/.claude", "mode": "rw"},
         "/tmp/fake-scratch": {"bind": "/data/scratch", "mode": "rw"},
@@ -120,7 +124,9 @@ def test_run_claude_print_builds_expected_cmd_and_returns_result() -> None:
     cmd = captured["cmd"]
     assert cmd[:4] == ["docker", "run", "--rm", "-i"]
     assert "-e" in cmd and f"AWS_REGION=us-east-1" in cmd
-    assert "-e" in cmd and f"AWS_BEARER_TOKEN_BEDROCK=ABSKxxx" in cmd
+    assert "-e" in cmd and "ANTHROPIC_BEDROCK_BASE_URL=http://bedrock-proxy:8080" in cmd
+    # OI-3 (T4): no bearer token in the de-credentialed launch cmd.
+    assert not any("AWS_BEARER_TOKEN_BEDROCK" in part for part in cmd)
     assert "-v" in cmd and "/tmp/fake-claude:/home/user/.claude:rw" in cmd
     assert "-v" in cmd and "/tmp/fake-scratch:/data/scratch:rw" in cmd
     assert DEFAULT_IMAGE in cmd

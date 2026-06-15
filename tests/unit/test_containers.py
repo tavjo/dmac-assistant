@@ -203,7 +203,15 @@ def test_build_container_spec_injects_bridge_and_user_env(identity, config):
     assert spec.environment["NEXTSEEK_USERNAME"] == "alice"
     assert spec.environment["NEXTSEEK_PASSWORD"] == "s3cret"
     assert spec.environment["AWS_REGION"] == "us-east-1"
-    assert spec.environment["AWS_BEARER_TOKEN_BEDROCK"] == "bearer-abc"
+    # OI-3 (T4): the bearer token is NO LONGER forwarded into the agent
+    # container — it lives only in the proxy sidecar. Instead the agent is
+    # pointed at the proxy and told to emit unsigned Bedrock requests.
+    assert "AWS_BEARER_TOKEN_BEDROCK" not in spec.environment
+    assert (
+        spec.environment["ANTHROPIC_BEDROCK_BASE_URL"]
+        == config.bedrock_proxy_url
+    )
+    assert spec.environment["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] == "1"
     assert (
         spec.environment["NEXTSEEK_URL"]
         == "https://nextseek-dev.example.mit.edu"
@@ -230,15 +238,20 @@ def test_container_spec_repr_redacts_sensitive_values(tmp_path, config):
     )
     text = repr(spec)
     assert canary_pw not in text
+    # OI-3 (T4): the bearer token never enters the agent spec at all now —
+    # so the canary cannot appear regardless of redaction.
     assert canary_bearer not in text
+    assert "AWS_BEARER_TOKEN_BEDROCK" not in spec.environment
     assert "REDACTED" in text
     # non-sensitive values still visible
     assert "alice" in text
 
-    # H-4: model_dump and model_dump_json must also redact
+    # H-4: model_dump and model_dump_json must also redact (still-forwarded
+    # NEXTSEEK_PASSWORD exercises the redaction machinery; the bearer token is
+    # absent, not redacted).
     dumped = spec.model_dump()
     assert dumped["environment"]["NEXTSEEK_PASSWORD"] == "<REDACTED>"
-    assert dumped["environment"]["AWS_BEARER_TOKEN_BEDROCK"] == "<REDACTED>"
+    assert "AWS_BEARER_TOKEN_BEDROCK" not in dumped["environment"]
     assert canary_pw not in json.dumps(dumped)
     assert canary_bearer not in json.dumps(dumped)
 
@@ -772,18 +785,41 @@ def test_shared_cred_password_never_reaches_spec_or_dumps(
         assert canary not in blob
 
 
-def test_redaction_still_fires_for_forwarded_secret(identity, config):
+def test_redaction_still_fires_for_forwarded_secret(config):
     """Regression: the redaction machinery itself must keep working for
-    secrets that ARE still forwarded (AWS_BEARER_TOKEN_BEDROCK)."""
+    secrets that ARE still forwarded. OI-3 (T4) stopped forwarding the AWS
+    bearer token, so this now pins redaction of NEXTSEEK_PASSWORD (sourced
+    from the identity and still injected into the agent env)."""
+    canary_pw = "CANARY-NS-PW-REDACT-7Q"
+    ident = AuthenticatedIdentity(
+        user_id="alice",
+        password=SecretStr(canary_pw),
+        projects=["proj-a", "proj-b"],
+    )
     spec = build_container_spec(
-        identity, config, image=IMAGE, session_id=None,
+        ident, config, image=IMAGE, session_id=None,
         bridge_env=dict(_MINIMUM_BRIDGE_ENV),
     )
     text = repr(spec)
-    assert "bearer-abc" not in text
+    assert canary_pw not in text
     assert "<REDACTED>" in text
     dumped = spec.model_dump()
-    assert dumped["environment"]["AWS_BEARER_TOKEN_BEDROCK"] == "<REDACTED>"
+    assert dumped["environment"]["NEXTSEEK_PASSWORD"] == "<REDACTED>"
     spec_json = spec.model_dump_json()
-    assert "bearer-abc" not in spec_json
+    assert canary_pw not in spec_json
     assert '"<REDACTED>"' in spec_json
+
+
+def test_bearer_token_absent_from_spec_even_when_in_bridge_env(identity, config):
+    """OI-3 (T4) non-vacuous de-cred proof: the institutional bearer token is
+    supplied as a bridge_env INPUT but must be ABSENT from the agent spec
+    environment OUTPUT (it lives only in the proxy sidecar)."""
+    bridge_env = dict(_MINIMUM_BRIDGE_ENV, AWS_BEARER_TOKEN_BEDROCK="bearer-abc")
+    assert "AWS_BEARER_TOKEN_BEDROCK" in bridge_env  # confirm the input carries it
+    spec = build_container_spec(
+        identity, config, image=IMAGE, session_id=None, bridge_env=bridge_env
+    )
+    assert "AWS_BEARER_TOKEN_BEDROCK" not in spec.environment
+    # and the canary value never appears in any serialization
+    for blob in (repr(spec), json.dumps(spec.model_dump()), spec.model_dump_json()):
+        assert "bearer-abc" not in blob

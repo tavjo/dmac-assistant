@@ -330,11 +330,17 @@ def _build_bridge_env(
     """Assemble the env passed to the in-container Claude Code from the
     bridge's process environment.
 
-    Legacy keys (``AWS_REGION``, ``AWS_BEARER_TOKEN_BEDROCK``,
-    ``NEXTSEEK_URL``) are always emitted, even as empty strings, to
-    preserve the pre-T9 passthrough contract. New skip-if-empty keys are
-    ``GCP_API_KEY``, ``NEO4J_URI``, ``NEO4J_USER``, ``NEO4J_PASSWORD``,
-    ``NEO4J_DATABASE``.
+    Legacy keys (``AWS_REGION``, ``NEXTSEEK_URL``) are always emitted, even
+    as empty strings, to preserve the pre-T9 passthrough contract. New
+    skip-if-empty keys are ``GCP_API_KEY``, ``NEO4J_URI``, ``NEO4J_USER``,
+    ``NEO4J_PASSWORD``, ``NEO4J_DATABASE``.
+
+    OI-3 (T4): ``AWS_BEARER_TOKEN_BEDROCK`` is NO LONGER read or forwarded.
+    The institutional bearer token lives only in the Bedrock proxy sidecar's
+    compose env_file; the bridge points the agent at the proxy via
+    ``ANTHROPIC_BEDROCK_BASE_URL`` (set in ``containers._build_environment``)
+    instead of handing it the token. This closes the
+    ``bedrock-token-exposure.md`` exfiltration vector.
 
     ``NEXTSEEK_BASE_URL`` is DERIVED from ``NEXTSEEK_URL`` when the host
     env lacks an explicit override (LLM router plan T0.3 / F-T0.3-2 hardener,
@@ -353,7 +359,7 @@ def _build_bridge_env(
     # DO NOT change to skip-if-empty — `tests/unit/test_ws_bridge_env.py::
     # test_unset_keys_omitted` asserts these keys are present in bridge_env
     # even when unset.
-    for key in ("AWS_REGION", "AWS_BEARER_TOKEN_BEDROCK", "NEXTSEEK_URL"):
+    for key in ("AWS_REGION", "NEXTSEEK_URL"):
         env[key] = os.environ.get(key, "")
     # NEXTSEEK_BASE_URL: derived from NEXTSEEK_URL when unset (T0.3 F-T0.3-2
     # hardener, LLM router plan 2026-05-14). Mirrors `container/entrypoint.sh:14`

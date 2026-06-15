@@ -354,9 +354,12 @@ def test_both_routes_env_has_shared_keys(which: str, tmp_path: Path) -> None:
         "DMAC_PATH_MAPPINGS",
         "CLAUDE_CODE_USE_BEDROCK",
         "AWS_REGION",
-        "AWS_BEARER_TOKEN_BEDROCK",
     ):
         assert key in env, f"{which} route missing required env key: {key}"
+    # OI-3 (T4): the bearer token is NO LONGER forwarded into the agent exec
+    # env on EITHER route — it lives only in the proxy sidecar. (The key stays
+    # in _REDACTED_ENV_KEYS; see test_redacted_env_keys_preserves_existing_entries.)
+    assert "AWS_BEARER_TOKEN_BEDROCK" not in env
     assert env["API_USER"] == USER_ID
     assert env["API_PASS"] == SECRET
     assert env["NEXTSEEK_USERNAME"] == USER_ID

@@ -9,7 +9,9 @@ def test_existing_keys_preserved(monkeypatch):
     from dmac_assistant.ws import _build_bridge_env
     env = _build_bridge_env()
     assert env["AWS_REGION"] == "us-east-1"
-    assert env["AWS_BEARER_TOKEN_BEDROCK"] == "tok"
+    # OI-3 (T4): the bridge no longer reads/forwards the bearer token even when
+    # the host env carries it — it lives only in the proxy sidecar.
+    assert "AWS_BEARER_TOKEN_BEDROCK" not in env
     assert env["NEXTSEEK_URL"] == "https://nx.mit.edu"
 
 
@@ -31,11 +33,15 @@ def test_neo4j_creds(monkeypatch):
 
 
 def test_unset_keys_omitted(monkeypatch):
-    """W3-C2: legacy keys (AWS_REGION/AWS_BEARER_TOKEN_BEDROCK/NEXTSEEK_URL)
-    are PRESERVED as empty strings to keep blast radius zero. NEXTSEEK_BASE_URL
-    is DERIVED from NEXTSEEK_URL (T0.3 F-T0.3-2 hardener; mirrors entrypoint.sh:14)
-    and emits empty string only when BOTH are unset. New keys (GCP_API_KEY /
-    NEO4J_*) are skip-if-empty.
+    """W3-C2: legacy keys (AWS_REGION/NEXTSEEK_URL) are PRESERVED as empty
+    strings to keep blast radius zero. NEXTSEEK_BASE_URL is DERIVED from
+    NEXTSEEK_URL (T0.3 F-T0.3-2 hardener; mirrors entrypoint.sh:14) and emits
+    empty string only when BOTH are unset. New keys (GCP_API_KEY / NEO4J_*) are
+    skip-if-empty.
+
+    OI-3 (T4): AWS_BEARER_TOKEN_BEDROCK is NO LONGER part of the always-emitted
+    legacy contract — the bridge does not read or forward it; it must be ABSENT
+    from the returned env regardless of the host env.
     """
     for k in ("GCP_API_KEY", "NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD",
               "NEO4J_DATABASE",
@@ -54,8 +60,9 @@ def test_unset_keys_omitted(monkeypatch):
     # when unset. This matches the OLD inline literal's behavior at
     # ws.py:274-280 and is the W3-C2 R2 fix.
     assert env["AWS_REGION"] == ""
-    assert env["AWS_BEARER_TOKEN_BEDROCK"] == ""
     assert env["NEXTSEEK_URL"] == ""
+    # OI-3 (T4): the bearer token key is no longer emitted at all.
+    assert "AWS_BEARER_TOKEN_BEDROCK" not in env
     # NEXTSEEK_BASE_URL: ALWAYS present (derivation contract), empty string
     # when BOTH NEXTSEEK_BASE_URL and NEXTSEEK_URL are unset on the host.
     # See test_nextseek_base_url_derived_from_nextseek_url_when_unset for
