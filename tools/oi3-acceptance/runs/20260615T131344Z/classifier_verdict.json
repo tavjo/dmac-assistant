@@ -1,0 +1,4 @@
+{
+  "classifier_blocked_proxy": false,
+  "derivation": "true iff a stream-json frame named a permission-deny on the Bedrock/proxy transport during the turn; default false"
+}

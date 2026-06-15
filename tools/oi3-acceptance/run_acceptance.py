@@ -177,6 +177,16 @@ def _run_authorized(run_dir: Path, model_id: str) -> int:
     )
     from tools.e2e.ledger import LedgerCeilingError, SpendLedger
 
+    # Load .env so the institutional token + creds are present in os.environ
+    # exactly as the bridge sees them (config.load_config() does the same with
+    # override=False, which keeps any explicitly-exported value). This makes the
+    # committed invocation self-contained and reproducible (owner Q-007): the
+    # operator runs `OI3_ACCEPTANCE_CONFIRM=1 uv run python ...run_acceptance.py`
+    # with no manual token export.
+    from dotenv import load_dotenv
+
+    load_dotenv(REPO_ROOT / ".env", override=False)
+
     # ── 1. read the real token ONCE (grep needle only; never written) ──
     real_token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "")
     if not real_token:
