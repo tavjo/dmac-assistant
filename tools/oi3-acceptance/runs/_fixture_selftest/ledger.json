@@ -1,0 +1,7 @@
+{
+  "cap_usd": 5.0,
+  "total_usd": 0.25,
+  "model": "us.anthropic.claude-opus-4-8",
+  "calls": 1,
+  "note": "SELF-TEST FIXTURE — hand-built; one Opus acceptance turn at projected upper-bound"
+}

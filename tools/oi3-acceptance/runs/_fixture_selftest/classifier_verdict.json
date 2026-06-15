@@ -1,0 +1,4 @@
+{
+  "classifier_blocked_proxy": false,
+  "derivation": "SELF-TEST FIXTURE — hand-built; true iff a deny frame named the Bedrock/proxy transport; default false"
+}
