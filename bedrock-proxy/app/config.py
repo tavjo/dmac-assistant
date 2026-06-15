@@ -67,7 +67,7 @@ class ProxyConfig:
             pool=self.pool_timeout,
         )
 
-    def __repr__(self) -> str:  # pragma: no cover - defensive redaction only
+    def __repr__(self) -> str:
         # NEVER render the token, even in a repr that might land in a log.
         return (
             f"ProxyConfig(region={self.region!r}, token=<redacted>, "

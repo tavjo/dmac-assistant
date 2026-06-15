@@ -270,6 +270,177 @@ def test_authorization_header_attached_to_upstream(client, configured):
     assert seen["host"] == configured.config.upstream_host
 
 
+def test_client_authorization_header_is_dropped_not_forwarded(client, configured):
+    """A hostile agent must not be able to smuggle its own Authorization header
+    upstream. The proxy strips any client-supplied Authorization (case-
+    insensitively) and attaches EXACTLY its own ``Bearer <proxy-token>``. The
+    upstream request must carry exactly one Authorization header with the real
+    token, and the attacker value must not appear in ANY upstream header."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Inspect the raw header list so we can count duplicates and check casing.
+        raw = list(request.headers.raw)  # list[(bytes-name-lower, bytes-value)]
+        auth_values = [v.decode("latin-1") for (k, v) in raw if k.lower() == b"authorization"]
+        seen["auth_values"] = auth_values
+        # Did the attacker token leak into ANY upstream header (name or value)?
+        all_header_blob = " ".join(
+            f"{k.decode('latin-1')}: {v.decode('latin-1')}" for (k, v) in raw
+        )
+        seen["attacker_present"] = "ATTACKER" in all_header_blob
+        return _streamed(200, b"ok")
+
+    configured.state["handler"] = handler
+    client.post(
+        f"/model/{ALLOWED_MODEL}/invoke",
+        content=b"{}",
+        headers={"Authorization": "Bearer ATTACKER"},
+    )
+
+    # Exactly one Authorization header, and it is the proxy's real token.
+    assert seen["auth_values"] == [f"Bearer {configured.token}"]
+    assert len(seen["auth_values"]) == 1
+    # The attacker-controlled value did not survive anywhere upstream.
+    assert seen["attacker_present"] is False
+
+
+def test_lowercase_client_authorization_also_dropped(client, configured):
+    """Belt-and-suspenders: a lowercase ``authorization`` key (the casing
+    Starlette actually exposes on the incoming request) is also stripped, so the
+    drop-list comprehension's ``k.lower()`` truly catches it."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raw = list(request.headers.raw)
+        auth_values = [v.decode("latin-1") for (k, v) in raw if k.lower() == b"authorization"]
+        seen["auth_values"] = auth_values
+        return _streamed(200, b"ok")
+
+    configured.state["handler"] = handler
+    client.post(
+        f"/model/{ALLOWED_MODEL}/invoke",
+        content=b"{}",
+        headers={"authorization": "Bearer attacker-lower"},
+    )
+    assert seen["auth_values"] == [f"Bearer {configured.token}"]
+    assert "attacker-lower" not in " ".join(seen["auth_values"])
+
+
+def test_authorization_is_in_drop_headers():
+    """Unit-level guard: ``authorization`` must remain in the drop-list so a
+    future refactor can't silently re-enable client-Authorization passthrough."""
+    assert "authorization" in proxy_mod._DROP_HEADERS
+
+
+# ===========================================================================
+# Raw-path percent-encoding canonicalization fires at the RELAY level
+# ===========================================================================
+def test_relay_rejects_percent_encoded_separator_on_raw_path(client, configured):
+    """Production-behavior proof for the percent-encoding defense.
+
+    Starlette percent-DECODES ``request.url.path`` before the relay sees it, so
+    a request to ``/model/<id>%2finvoke`` would otherwise decode to the allowed
+    ``/model/<id>/invoke`` and slip through. The relay must validate the RAW,
+    undecoded path (``scope['raw_path']``) and return 403, never reach upstream.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("upstream must NOT be reached on a smuggled %2f path")
+
+    configured.state["handler"] = handler
+    r = client.post(
+        f"/model/{ALLOWED_MODEL}%2finvoke",
+        content=b"{}",
+    )
+    assert r.status_code == 403
+    assert r.json()["error"]
+    assert configured.state["requests"] == []  # upstream never called
+
+
+def test_relay_rejects_percent_encoded_separator_uppercase(client, configured):
+    """``%2F`` (upper-case) is equally a smuggled separator → 403 at the relay."""
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("upstream must NOT be reached on a smuggled %2F path")
+
+    configured.state["handler"] = handler
+    r = client.post(
+        f"/model/{ALLOWED_MODEL}%2Finvoke",
+        content=b"{}",
+    )
+    assert r.status_code == 403
+    assert configured.state["requests"] == []
+
+
+def test_relay_rejects_percent_encoded_dot_traversal(client, configured):
+    """A percent-encoded dot-dot (``%2e%2e``) traversal attempt is rejected at
+    the relay on the raw path."""
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("upstream must NOT be reached on a %2e%2e path")
+
+    configured.state["handler"] = handler
+    r = client.post("/model/%2e%2e/invoke", content=b"{}")
+    assert r.status_code == 403
+    assert configured.state["requests"] == []
+
+
+def test_raw_path_falls_back_to_decoded_when_scope_missing_raw_path():
+    """Defensive fallback: if ``scope['raw_path']`` is absent (or not bytes),
+    ``_raw_path`` returns the decoded ``request.url.path``. (Under
+    uvicorn/Starlette raw_path is always present; this guards a non-ASGI caller.)
+    """
+    class _U:
+        path = "/inference-profiles"
+
+    class _Req:
+        scope: dict = {}  # no raw_path key
+
+        @property
+        def url(self):
+            return _U()
+
+    assert proxy_mod._raw_path(_Req()) == "/inference-profiles"
+
+
+def test_raw_path_carries_percent_encoding_under_testclient(configured, allow_unix_socket_only, monkeypatch):
+    """Sanity guard for the test setup itself: prove ``scope['raw_path']``
+    actually preserves the ``%2f`` under the FastAPI TestClient (if the client
+    ever decoded raw_path too, the relay 403 tests above would be meaningless).
+
+    We capture exactly what the relay's ``_raw_path`` sees by spying on it for a
+    real smuggled-path request, then assert (a) the raw path still contains the
+    literal ``%2f`` and (b) the decoded ``request.url.path`` has already lost it
+    (decoded to the allowed route) — which is precisely why the raw-path check is
+    load-bearing."""
+    from fastapi.testclient import TestClient
+
+    captured = {}
+    real_raw_path = proxy_mod._raw_path
+
+    def _spy(request):
+        raw = real_raw_path(request)
+        captured["raw"] = raw
+        captured["decoded"] = request.url.path
+        return raw
+
+    monkeypatch.setattr(proxy_mod, "_raw_path", _spy, raising=True)
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("upstream must NOT be reached on a smuggled %2f path")
+
+    configured.state["handler"] = handler
+
+    with TestClient(proxy_mod.app) as c:
+        r = c.post(f"/model/{ALLOWED_MODEL}%2finvoke", content=b"{}")
+
+    # The smuggled separator survived in the RAW path the relay validated.
+    assert "%2f" in captured["raw"]
+    # But Starlette had already DECODED it out of request.url.path — hence the
+    # raw-path check is the only thing that catches it.
+    assert "%2f" not in captured["decoded"]
+    assert captured["decoded"] == f"/model/{ALLOWED_MODEL}/invoke"
+    # And the relay correctly rejected the smuggled path.
+    assert r.status_code == 403
+
+
 def test_hop_by_hop_headers_dropped_from_incoming(client, configured):
     """The incoming client's hop-by-hop headers must not be forwarded verbatim.
 
@@ -335,6 +506,104 @@ def test_malformed_content_length_rejected_with_413(client, configured):
     )
     assert r.status_code == 413
     assert configured.state["requests"] == []
+
+
+def test_negative_content_length_rejected_with_413(client, configured):
+    # A negative Content-Length is malformed/suspicious → reject with 413, never
+    # read. ``int("-9999")`` parses fine, so the cap compare alone would miss it.
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("upstream must NOT be reached on a negative length")
+
+    configured.state["handler"] = handler
+    r = client.post(
+        f"/model/{ALLOWED_MODEL}/invoke",
+        content=b"{}",
+        headers={"Content-Length": "-9999"},
+    )
+    assert r.status_code == 413
+    assert configured.state["requests"] == []
+
+
+def test_content_length_over_cap_helper_rejects_negative(monkeypatch, configured):
+    """Unit-level: the fast-path helper treats a negative declared length as
+    oversize (True) directly, independent of the relay."""
+    monkeypatch.setattr(proxy_mod, "config", configured.config, raising=True)
+
+    class _Req:
+        def __init__(self, cl: str):
+            self.headers = {"content-length": cl}
+
+    assert proxy_mod._content_length_over_cap(_Req("-1")) is True
+    assert proxy_mod._content_length_over_cap(_Req("-9999")) is True
+    # A valid small length is under cap.
+    assert proxy_mod._content_length_over_cap(_Req("16")) is False
+
+
+def test_chunked_oversize_body_rejected_with_413(monkeypatch, configured, allow_unix_socket_only):
+    """A chunked POST with NO Content-Length whose actual bytes exceed the cap
+    must be aborted with 413 and the upstream must NOT be reached.
+
+    This is the memory-DoS guard: ``_content_length_over_cap`` can't see a
+    declared length on a chunked body, so the streaming read enforces the cap on
+    the bytes actually read. We shrink the cap so the test body is tiny.
+    """
+    from fastapi.testclient import TestClient
+
+    # Tiny cap so a small chunked body trips it. Rebuild config with the small
+    # cap and re-point the relay's module config at it.
+    small_cfg = proxy_config.ProxyConfig(
+        region="us-east-1",
+        token=configured.token,
+        allowed_models=(ALLOWED_MODEL,),
+        max_body_bytes=64,
+    )
+    monkeypatch.setattr(proxy_mod, "config", small_cfg, raising=True)
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("upstream must NOT be reached for an oversize chunked body")
+
+    configured.state["handler"] = handler
+
+    # A generator request body produces a chunked transfer (no Content-Length).
+    def _gen():
+        # 4 KiB total, far over the 64-byte cap, streamed in chunks.
+        for _ in range(64):
+            yield b"x" * 64
+
+    with TestClient(proxy_mod.app) as c:
+        r = c.post(f"/model/{ALLOWED_MODEL}/invoke", content=_gen())
+
+    assert r.status_code == 413
+    assert r.json()["error"]
+    # Upstream was never reached: no request was dispatched to the mock transport.
+    assert configured.state["requests"] == []
+
+
+def test_chunked_body_under_cap_passes(monkeypatch, configured, allow_unix_socket_only):
+    """A chunked POST (no Content-Length) whose bytes are UNDER the cap streams
+    through to the upstream unchanged — the streaming reader must not corrupt or
+    drop an in-cap body."""
+    from fastapi.testclient import TestClient
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.content
+        return _streamed(200, b"ok")
+
+    configured.state["handler"] = handler
+
+    payload = b'{"messages":[]}'
+
+    def _gen():
+        yield payload
+
+    with TestClient(proxy_mod.app) as c:
+        r = c.post(f"/model/{ALLOWED_MODEL}/invoke", content=_gen())
+
+    assert r.status_code == 200
+    # The full in-cap body reached the upstream byte-for-byte.
+    assert seen["body"] == payload
 
 
 def test_body_at_cap_is_allowed(client, configured):
@@ -473,6 +742,21 @@ def test_config_from_env_defaults_region(monkeypatch):
 def test_config_default_body_cap_is_10_mib():
     cfg = _make_config("t")
     assert cfg.max_body_bytes == 10 * 1024 * 1024
+
+
+def test_config_repr_redacts_token():
+    """``repr(ProxyConfig)`` must never render the token — even if it lands in a
+    log line — and must show the ``<redacted>`` sentinel instead."""
+    cfg = proxy_config.ProxyConfig(
+        region="us-east-1",
+        token="SENTINEL-XYZ",
+        allowed_models=(ALLOWED_MODEL,),
+    )
+    r = repr(cfg)
+    assert "<redacted>" in r
+    assert "SENTINEL-XYZ" not in r
+    # Region + the non-secret fields are still visible for debuggability.
+    assert "us-east-1" in r
 
 
 def test_config_timeout_is_granular_not_blanket():
