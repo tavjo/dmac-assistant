@@ -1,0 +1,49 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.10, pytest-9.0.3, pluggy-1.6.0
+rootdir: /Users/taishajoseph/Documents/Projects/dmac_assistant
+configfile: pyproject.toml
+plugins: cov-7.1.0, socket-0.7.0, xdist-3.8.0, timeout-2.4.0, asyncio-1.3.0, anyio-4.13.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 24 items / 23 deselected / 1 selected
+
+tests/test_secret_canary.py 
+agent-env scan: 0 hits
+negative control: flagged (4 hit(s))
+.
+ERROR: Coverage failure: total of 12 is less than fail-under=95
+
+
+================================ tests coverage ================================
+______________ coverage: platform darwin, python 3.12.10-final-0 _______________
+
+Name                                        Stmts   Miss  Cover   Missing
+-------------------------------------------------------------------------
+src/dmac_assistant/__init__.py                  2      0   100%
+src/dmac_assistant/app.py                      16     16     0%   6-33
+src/dmac_assistant/auth.py                     79     40    49%   68-81, 89-98, 101, 110-113, 121, 125-128, 138-145, 156-174
+src/dmac_assistant/config.py                  121     56    54%   53, 78, 86-87, 96, 102-105, 110-112, 116, 130-133, 137-142, 153-165, 169-189, 195-234
+src/dmac_assistant/containers.py              274    177    35%   106-113, 117, 135-165, 173-185, 189, 194, 197-199, 203-209, 212-221, 224-226, 239-247, 258, 279-321, 329, 395, 403, 407, 420, 492, 497-510, 516-525, 539-552, 569, 583, 587, 602-613, 627-629, 641-659, 674-720, 740-767, 777-798
+src/dmac_assistant/copier.py                   35     35     0%   10-76
+src/dmac_assistant/ns_adapter.py               73     73     0%   7-165
+src/dmac_assistant/router/__init__.py           0      0   100%
+src/dmac_assistant/router/agent.py             33     33     0%   2-93
+src/dmac_assistant/router/capabilities.py      42     42     0%   13-86
+src/dmac_assistant/router/models.py            51     51     0%   16-112
+src/dmac_assistant/run_tracker.py              26     26     0%   12-55
+src/dmac_assistant/sessions.py                 35     35     0%   2-65
+src/dmac_assistant/staging_sweep.py            48     48     0%   6-79
+src/dmac_assistant/streamjson.py               59     59     0%   2-107
+src/dmac_assistant/ws.py                      452    452     0%   22-1357
+tests/harness/__init__.py                       0      0   100%
+tests/harness/canaries.py                      49     25    49%   60-67, 87, 93-99, 111-119
+tests/harness/containers.py                    55     55     0%   2-122
+tests/harness/live_runner.py                   44     25    43%   50-51, 58-60, 86-128
+tests/harness/plugin_schema.py                 68     68     0%   17-149
+tests/harness/stream_json.py                   57     57     0%   2-94
+tests/harness/test_live_runner.py             155    155     0%   2-273
+tests/harness/test_plugin_schema.py           143    143     0%   2-298
+tests/harness/test_stream_json.py              99     99     0%   2-223
+-------------------------------------------------------------------------
+TOTAL                                        2016   1770    12%
+FAIL Required test coverage of 95% not reached. Total coverage: 12.20%
+======================= 1 passed, 23 deselected in 3.63s =======================

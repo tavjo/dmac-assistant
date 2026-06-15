@@ -26,14 +26,18 @@ def _good_env() -> dict[str, str]:
 
 
 def test_required_vars_constant_exact() -> None:
+    # OI-3 (T4): AWS_BEARER_TOKEN_BEDROCK is no longer a bridge-side required
+    # var — the bridge stopped reading/forwarding it; it lives only in the
+    # Bedrock proxy sidecar's compose env_file. The bridge's pre-flight must
+    # not demand a token it never touches.
     assert REQUIRED_VARS == [
-        "AWS_BEARER_TOKEN_BEDROCK",
         "AWS_REGION",
         "NEXTSEEK_USERNAME",
         "NEXTSEEK_PASSWORD",
         "NEXTSEEK_URL",
         "GCP_API_KEY",
     ]
+    assert "AWS_BEARER_TOKEN_BEDROCK" not in REQUIRED_VARS
 
 
 def test_happy_path_returns_no_errors() -> None:
@@ -236,4 +240,8 @@ def test_cli_via_subprocess_missing_vars(tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode == 1
-    assert "AWS_BEARER_TOKEN_BEDROCK" in result.stderr
+    # OI-3 (T4): the bearer token is no longer required, so a missing-vars run
+    # must report a still-required var (here NEXTSEEK_USERNAME, absent from the
+    # AWS_REGION-only env-file) — NOT the now-dropped AWS_BEARER_TOKEN_BEDROCK.
+    assert "NEXTSEEK_USERNAME" in result.stderr
+    assert "AWS_BEARER_TOKEN_BEDROCK" not in result.stderr

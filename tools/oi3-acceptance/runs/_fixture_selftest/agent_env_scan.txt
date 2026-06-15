@@ -1,0 +1,26 @@
+# OI-3 T6 agent env scan — SELF-TEST FIXTURE (hand-built; NOT a real run)
+# All sentinel/token values here are OBVIOUS FAKES. No real secret is present.
+container-id: fixturecontainerid000000000000000000000000000000000000000000000000
+container-name: dmac-acceptance-fixture
+run-sentinel: 00000000-fake-fake-fake-000000000000
+
+----BEGIN RAW Config.Env----
+[
+  "CLAUDE_CODE_USE_BEDROCK=1",
+  "ANTHROPIC_BEDROCK_BASE_URL=http://bedrock-proxy:8080",
+  "CLAUDE_CODE_SKIP_BEDROCK_AUTH=1",
+  "CLAUDE_CODE_ENABLE_AUTO_MODE=1",
+  "AWS_REGION=us-east-1",
+  "NEXTSEEK_USERNAME=acceptance",
+  "CATALOG_FILE=/etc/dmac/agent_model_catalog.json"
+]
+----END RAW Config.Env----
+
+# docker exec <container> env:
+CLAUDE_CODE_USE_BEDROCK=1
+ANTHROPIC_BEDROCK_BASE_URL=http://bedrock-proxy:8080
+CLAUDE_CODE_SKIP_BEDROCK_AUTH=1
+AWS_REGION=us-east-1
+
+aws-token-hits: 0
+bearer-key-name-present: false

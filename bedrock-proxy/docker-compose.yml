@@ -1,0 +1,37 @@
+# OI-3 hardened Bedrock auth-proxy (T2). Compose owns ONLY this singleton
+# service. It JOINS the existing `dmac-nextseek-net` network (declared external)
+# — the NS sidecar stack creates/owns that network; the proxy only attaches, so
+# `make proxy-up` fails fast if the network is absent (R-6 fail-fast).
+#
+# R-8/gate G5: NO `ports:` — the proxy's :8080 is reachable only on the Docker
+# network, never bound to a host port. The agent container talks to it by name
+# (http://bedrock-proxy:8080).
+#
+# R-9 parity: the literals `bedrock-proxy`, `8080`, `dmac-nextseek-net`, and the
+# allowed model id live in EXACTLY two places — this file (as ${VAR:-default}
+# where applicable) and src/dmac_assistant/config.py defaults. The bridge wires
+# DMAC_BEDROCK_PROXY_URL -> _DEFAULT_BEDROCK_PROXY_URL = "http://bedrock-proxy:8080".
+name: dmac-bedrock-proxy
+
+services:
+  bedrock-proxy:
+    build:
+      context: ..
+      dockerfile: bedrock-proxy/Dockerfile
+    image: dmac-bedrock-proxy:poc
+    container_name: dmac-bedrock-proxy
+    # The institutional AWS_BEARER_TOKEN_BEDROCK is injected ONLY at runtime via
+    # this gitignored env_file — never baked into the image (gate G6). The
+    # committed template proxy-secret.env.example carries key NAMES only.
+    env_file:
+      - path: ./proxy-secret.env
+    networks:
+      - dmac-net
+    restart: unless-stopped
+
+networks:
+  # Declared external: the NS sidecar stack creates this network. The proxy only
+  # joins it, so `make proxy-up` fails fast (R-6) if it does not exist.
+  dmac-net:
+    external: true
+    name: ${DMAC_BEDROCK_PROXY_NETWORK:-dmac-nextseek-net}

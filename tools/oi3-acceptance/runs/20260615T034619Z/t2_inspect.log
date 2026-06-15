@@ -1,0 +1,22 @@
+=== G5: HostConfig.PortBindings (must be {} or null) ===
+{}
+
+=== full inspect PortBindings line ===
+"PortBindings":{}
+
+=== NetworkSettings.Ports (no host-published port) ===
+{}
+
+=== runtime uid (must be 1001) ===
+uid=1001(proxyapp) gid=1001(proxyapp) groups=1001(proxyapp)
+
+=== networks attached ===
+['dmac-nextseek-net']
+
+=== GATE CHECK (appended) ===
+G5 PASS: no host ports ("PortBindings":{})
+
+=== healthz from inside the container (no token needed) ===
+{"status":"ok"}
+=== health status after wait ===
+healthy

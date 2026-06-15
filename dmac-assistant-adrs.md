@@ -299,3 +299,36 @@ The CC-visible 9-tool surface, the `SKILL.md` contract, and the bridge's UI fram
 - **Positive:** Resolves OI-2: `chat_nextseek` no longer runs inside the agent container, so the agent-vs-NExtSEEK duplication is gone at the runtime level.
 - **Positive:** Write-safety enforcement (L2) moved server-side (see the write-safety section of `SKILL.md`): the sidecar refuses `api-write` unless `confirmed_write` is exactly `True`, and NExtSEEK enforces its own server-side gate — the in-container agent cannot bypass either because neither runs in a process it controls.
 - **Negative:** The runner now has a network dependency (sidecar WS + NExtSEEK HTTP) where it previously had a self-contained library; failures surface as typed transport/auth errors rather than in-process exceptions.
+
+---
+
+## ADR-015: Bedrock Auth-Proxy Sidecar (Option B) — Token Containment As Built
+
+**Status:** Accepted (2026-06-15, `oi3-bedrock-proxy-build`)
+
+**Context:**
+`known-issues/bedrock-token-exposure.md` documented that `AWS_BEARER_TOKEN_BEDROCK` was injected as a process environment variable into every per-user agent container, making it trivially exfiltrable. Option A (revive the `awsCredentialExport` setuid-helper plan) was aborted at spike 0.2 (2026-04-24) because the institutional credential is a bearer API key (`ABSK…`), not STS-shaped — `awsCredentialExport` only accepts STS credentials. Option B (an auth-proxy sidecar) was the surviving containment path. Four phase-0 spikes (2026-06-08) confirmed Option B was empirically viable: CC with `CLAUDE_CODE_SKIP_BEDROCK_AUTH=1` emits unsigned requests that a proxy can authenticate, Bedrock's `application/vnd.amazon.eventstream` survives an httpx passthrough, and the sidecar can reach Bedrock while the agent container holds zero AWS credentials. This ADR records the production of Option B.
+
+**Decision:**
+Introduce a singleton **Bedrock auth-proxy sidecar** (`bedrock-proxy/`) that:
+
+1. **Holds the institutional `AWS_BEARER_TOKEN_BEDROCK`** — exclusively. The token is present only in the proxy sidecar's environment; it is no longer forwarded to per-user agent containers (`src/dmac_assistant/containers.py` `_build_environment` stops including it, T4).
+2. **Authenticates outbound Bedrock requests.** The proxy listens on `http://bedrock-proxy:8080` and re-attaches the bearer token as `Authorization: Bearer …` to every upstream request to the real Bedrock endpoint.
+3. **De-credentials the agent container.** The agent container is launched with `CLAUDE_CODE_SKIP_BEDROCK_AUTH=1` and `ANTHROPIC_BEDROCK_BASE_URL=http://bedrock-proxy:8080`. Claude Code emits unsigned HTTP to the proxy; the proxy adds the auth header before forwarding. The agent holds **zero AWS credentials**.
+
+**Demo scope (DD-1):** ONLY the Bedrock bearer token is contained by this ADR. The agent container retains direct egress to NS API, Neo4j, and GCP (those shared credentials were already removed by ADR-013); the OI-5 auto-mode classifier is the egress backstop. Full proxy-only egress lockdown (blocking all agent-container Bedrock/internet traffic except through the proxy) is **out of scope** and deferred post-POC — macOS Docker's `internal=true` network breaks the NS route, so full lockdown would require a separate per-route proxy. Bearer-token refresh automation is also deferred post-POC per DD-6.
+
+**Network topology:** The proxy sidecar runs on the existing `dmac-nextseek-net` Docker network (the normal bridge network, NOT `internal`). The NS sidecar stack must be running first (it creates `dmac-nextseek-net`); the proxy compose declares the network external.
+
+**Proven by T6 paid acceptance turn (2026-06-15):** A live Opus 4.8 turn (`us.anthropic.claude-opus-4-8`) succeeded end-to-end with the agent container holding zero AWS creds. The request traversed the real proxy (proxy log grew, model echoed a per-run sentinel), the proxy never logged the token, and the auto-mode classifier did NOT block the proxy (`classifier_blocked_proxy=false`). Cost: **$0.25** (1 Opus call). All 7 acceptance conditions PASS. Evidence: `tools/oi3-acceptance/runs/20260615T131344Z/`.
+
+**Relationship to existing ADRs:**
+- **ADR-004 (Runtime Credential Injection)** and **ADR-005 (Secrets as Runtime Environment Variables Only)** are amended: `AWS_BEARER_TOKEN_BEDROCK` is no longer injected into the agent container's runtime env. ADR-005's invariant (secrets live only in ephemeral runtime env, never on disk or in images) still holds for the proxy sidecar, which receives the token via its own `docker run` env at startup.
+- **ADR-013 (NExtSEEK Shared-Credential Sidecar)** established the sidecar networking pattern this ADR reuses. ADR-013 noted this work as a "separate effort" — this ADR completes that effort.
+
+**Consequences:**
+- **Positive:** `AWS_BEARER_TOKEN_BEDROCK` is no longer present in any per-user agent container. The exfiltration surface documented in `known-issues/bedrock-token-exposure.md` is closed for the Bedrock token. The known-issue's Option-C operating mode is retired.
+- **Positive:** The cutover triggers in `bedrock-token-exposure.md` ("a second user is added", "deployed on shared infrastructure") are no longer blockers — the token is contained. The issue status is flipped to CONTAINED.
+- **Positive:** Reuses the `dmac-nextseek-net` networking that ADR-013 established; no new network plumbing.
+- **Negative / scope limit:** Full egress lockdown (blocking agent-container internet access except through controlled proxies) is deferred post-POC. The auto-mode classifier (OI-5) is the only egress backstop for non-Bedrock traffic.
+- **Negative:** The proxy sidecar must be running before any agent container is started; `F2` (documented in `tools/oi3-acceptance/RUNBOOK.md`) requires the NS sidecar to be up first (it creates `dmac-nextseek-net`). Standing IAM user credential (bearer key, no expiry enforcement) is a post-POC hardening item.

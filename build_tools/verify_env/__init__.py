@@ -12,7 +12,13 @@ from urllib.parse import urlparse
 
 
 REQUIRED_VARS: list[str] = [
-    "AWS_BEARER_TOKEN_BEDROCK",
+    # OI-3 (T4): AWS_BEARER_TOKEN_BEDROCK is NO LONGER a bridge-side required
+    # var. After de-credentialing, the bridge process neither reads nor
+    # forwards the bearer token (ws.py::_build_bridge_env dropped it); the
+    # institutional token lives only in the Bedrock proxy sidecar's gitignored
+    # compose env_file. Requiring it here would falsely fail the bridge's
+    # pre-flight on a correctly de-credentialed host. The agent reaches Bedrock
+    # via the proxy (ANTHROPIC_BEDROCK_BASE_URL + CLAUDE_CODE_SKIP_BEDROCK_AUTH).
     "AWS_REGION",
     "NEXTSEEK_USERNAME",
     "NEXTSEEK_PASSWORD",

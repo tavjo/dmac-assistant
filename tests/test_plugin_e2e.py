@@ -725,7 +725,10 @@ def test_live_env_for_plugin_sets_catalog_file() -> None:
     assert env["NEXTSEEK_PASSWORD"] == "pw"
     assert env["NEXTSEEK_USERNAME"] == "alice"
     assert env["NEXTSEEK_URL"] == "https://dev.example.com"
-    assert env["AWS_BEARER_TOKEN_BEDROCK"] == "tok"
+    # OI-3 (T4): the bearer token is supplied in the source env (non-vacuous
+    # input) but must be WITHHELD from the container env — the de-credentialed
+    # agent reaches Bedrock via the proxy sidecar, not by carrying the token.
+    assert "AWS_BEARER_TOKEN_BEDROCK" not in env
     assert env["AWS_REGION"] == "us-east-1"
 
 

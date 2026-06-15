@@ -1,0 +1,11 @@
+# OI-3 T6 proxy log capture — SELF-TEST FIXTURE (hand-built; NOT a real run)
+run-sentinel: 00000000-fake-fake-fake-000000000000
+proxylog-bytes-before: 1024
+proxylog-bytes-after: 2048
+token-hits: 0
+
+# --- captured proxy container logs (illustrative) ---
+INFO:bedrock_proxy.access:GET /inference-profiles -> 200
+INFO:bedrock_proxy.access:POST /model/us.anthropic.claude-opus-4-8/invoke-with-response-stream -> 200
+
+# sentinel marker (proves THIS run reached the proxy logs): 00000000-fake-fake-fake-000000000000

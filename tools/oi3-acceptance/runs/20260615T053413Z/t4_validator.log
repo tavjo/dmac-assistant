@@ -1,0 +1,11 @@
+# T4 non-vacuous de-cred validator
+# The bearer token is supplied as a bridge_env INPUT and asserted ABSENT from the OUTPUT env,
+# plus ANTHROPIC_BEDROCK_BASE_URL == proxy url, CLAUDE_CODE_SKIP_BEDROCK_AUTH == "1",
+# CLAUDE_CODE_USE_BEDROCK == "1". (PYTHONPATH=src is required only for the bare `python -c`;
+# pytest adds `src` to sys.path via pyproject [tool.pytest.ini_options] pythonpath=["src","."].)
+#
+# Command:
+# PYTHONPATH=src uv run python -c "from dmac_assistant.containers import _build_environment; from dmac_assistant.auth import AuthenticatedIdentity; from pydantic import SecretStr; e=_build_environment(AuthenticatedIdentity(user_id='u', password=SecretStr('p'), projects=['a']), {'AWS_REGION':'us-east-1','AWS_BEARER_TOKEN_BEDROCK':'bearer-abc'}, bedrock_proxy_url='http://bedrock-proxy:8080'); import sys; sys.exit(0 if ('AWS_BEARER_TOKEN_BEDROCK' not in e and e['CLAUDE_CODE_SKIP_BEDROCK_AUTH']=='1' and e['ANTHROPIC_BEDROCK_BASE_URL']=='http://bedrock-proxy:8080' and e['CLAUDE_CODE_USE_BEDROCK']=='1') else 1)"
+#
+# Result:
+validator exit: 0

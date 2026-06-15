@@ -1,0 +1,11 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.10, pytest-9.0.3, pluggy-1.6.0
+rootdir: /Users/taishajoseph/Documents/Projects/dmac_assistant
+configfile: pyproject.toml
+plugins: cov-7.1.0, socket-0.7.0, xdist-3.8.0, timeout-2.4.0, asyncio-1.3.0, anyio-4.13.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 12 items / 1 deselected / 11 selected
+
+tests/unit/test_bedrock_proxy_compose.py ...........                     [100%]
+
+======================= 11 passed, 1 deselected in 2.94s =======================
