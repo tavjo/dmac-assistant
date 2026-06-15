@@ -92,6 +92,22 @@ sidecar-up: image-check-docker
 sidecar-down:
 	@DMAC_SIDECAR_STAGING_ROOT="$(SIDECAR_STAGING_ROOT)" docker compose -f sidecar/docker-compose.yml down
 
+# --- OI-3 Bedrock auth-proxy (singleton; joins external dmac-nextseek-net) ---
+# The proxy compose declares the network external, so `proxy-up` fails fast
+# (R-6) if the NS sidecar stack (which creates the network) is not up. No host
+# ports (gate G5); the bearer token is injected at runtime via the gitignored
+# bedrock-proxy/proxy-secret.env (gate G6 — never baked into the image).
+.PHONY: proxy-build proxy-up proxy-down
+
+proxy-build: image-check-docker
+	@docker compose -f bedrock-proxy/docker-compose.yml build
+
+proxy-up: image-check-docker
+	@docker compose -f bedrock-proxy/docker-compose.yml up -d
+
+proxy-down:
+	@docker compose -f bedrock-proxy/docker-compose.yml down
+
 image-build: image-check-docker image-preflight sync-vendor-deps
 	@if docker image inspect dmac-assistant:poc >/dev/null 2>&1; then \
 	  echo "Retagging prior dmac-assistant:poc -> dmac-assistant:poc-prev"; \

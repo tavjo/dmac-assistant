@@ -17,6 +17,11 @@ build_context/docs/
 # Local env file for live runs
 .env
 
+# OI-3 Bedrock auth-proxy secret env (T2): holds the institutional Bedrock
+# bearer token, injected into the proxy container at runtime via compose
+# env_file. Never committed. The committed template is proxy-secret.env.example.
+bedrock-proxy/proxy-secret.env
+
 # Sidecar local-NExtSEEK overlays (Amendment A-2): copies of the local stack's
 # db.env + nextseek.env, layered over .env for the sidecar service only while
 # the E2E target is tavjo's local instance (nextseek.env interpolates

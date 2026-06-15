@@ -19,6 +19,11 @@ _DEV_DEFAULT_DROPBOX_ROOT = Path("~/Library/CloudStorage/Dropbox/DMAC_Data").exp
 _DEV_DEFAULT_OUTPUT_ROOT = Path("~/dmac-dev/output").expanduser()
 _DEFAULT_SIDECAR_NETWORK = "dmac-nextseek-net"
 _DEV_DEFAULT_SIDECAR_STAGING_ROOT = Path("~/dmac-dev/nextseek-sidecar-staging").expanduser()
+# OI-3 (T2): default URL the bridge hands the agent container for the Bedrock
+# auth-proxy. R-9 parity: this MUST match bedrock-proxy/docker-compose.yml
+# (service name `bedrock-proxy` + container port 8080, no host port). Override
+# via DMAC_BEDROCK_PROXY_URL.
+_DEFAULT_BEDROCK_PROXY_URL = "http://bedrock-proxy:8080"
 
 # Repo root (…/dmac_assistant): .env is loaded from here regardless of process cwd.
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -61,6 +66,7 @@ class BridgeConfig(BaseModel):
     output_root: Path
     catalog_file: Path
     sidecar_network: str | None = None
+    bedrock_proxy_url: str = _DEFAULT_BEDROCK_PROXY_URL
     sidecar_staging_root: Path | None = None
     bridge_host: str = "127.0.0.1"
     bridge_port: int = 8000
@@ -212,6 +218,9 @@ def load_config() -> BridgeConfig:
             ),
             catalog_file=_resolve_catalog_file(),
             sidecar_network=os.environ.get("DMAC_SIDECAR_NETWORK", _DEFAULT_SIDECAR_NETWORK),
+            bedrock_proxy_url=os.environ.get(
+                "DMAC_BEDROCK_PROXY_URL", _DEFAULT_BEDROCK_PROXY_URL
+            ),
             sidecar_staging_root=_required_path(
                 "DMAC_SIDECAR_STAGING_ROOT",
                 default=_DEV_DEFAULT_SIDECAR_STAGING_ROOT,

@@ -1,0 +1,13 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.10, pytest-9.0.3, pluggy-1.6.0
+rootdir: /Users/taishajoseph/Documents/Projects/dmac_assistant
+configfile: pyproject.toml
+plugins: cov-7.1.0, socket-0.7.0, xdist-3.8.0, timeout-2.4.0, asyncio-1.3.0, anyio-4.13.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 12 items / 11 deselected / 1 selected
+
+tests/unit/test_bedrock_proxy_compose.py G6 negative control FIRED: sentinel image flagged (2 hits)
+G6: real image dmac-bedrock-proxy:poc has 0 token hits
+.
+
+======================= 1 passed, 11 deselected in 5.52s =======================
