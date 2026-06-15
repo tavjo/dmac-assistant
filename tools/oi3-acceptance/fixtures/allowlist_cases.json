@@ -1,0 +1,101 @@
+{
+  "_comment": "OI-3 T1 golden allowlist table. Each case drives the REAL proxy `_allowed(method, path)` (imported, not reimplemented) and asserts its bool verdict equals `expect`. The DENY rows encode the canonicalization-bypass attempts (startswith bypass, double-slash, dot segment, percent-encoded separator, disallowed model, disallowed verb, wrong HTTP method). validate_allowlist.py FAILS if any required row is absent, so this table cannot be gamed by omitting deny rows. Paths are literal strings; the validator never lets an HTTP client normalize them.",
+  "cases": [
+    {
+      "method": "GET",
+      "path": "/inference-profiles",
+      "expect": "accept",
+      "why": "canonical GET listing endpoint"
+    },
+    {
+      "method": "POST",
+      "path": "/model/us.anthropic.claude-opus-4-8/invoke",
+      "expect": "accept",
+      "why": "canonical invoke on the single allowed model"
+    },
+    {
+      "method": "POST",
+      "path": "/model/us.anthropic.claude-opus-4-8/invoke-with-response-stream",
+      "expect": "accept",
+      "why": "canonical streaming invoke on the single allowed model"
+    },
+    {
+      "method": "GET",
+      "path": "/inference-profiles-evil",
+      "expect": "deny",
+      "why": "startswith-bypass: must NOT match /inference-profiles via prefix"
+    },
+    {
+      "method": "POST",
+      "path": "//model/us.anthropic.claude-opus-4-8/invoke",
+      "expect": "deny",
+      "why": "double-slash path confusion (empty/collapsed segment)"
+    },
+    {
+      "method": "POST",
+      "path": "/model/./us.anthropic.claude-opus-4-8/invoke",
+      "expect": "deny",
+      "why": "dot segment (current-dir) — non-canonical"
+    },
+    {
+      "method": "POST",
+      "path": "/model/us.anthropic.claude-opus-4-8%2finvoke",
+      "expect": "deny",
+      "why": "percent-encoded path separator (%2f) smuggling"
+    },
+    {
+      "method": "POST",
+      "path": "/model/us.anthropic.claude-opus-4-8%2Finvoke",
+      "expect": "deny",
+      "why": "percent-encoded path separator (%2F, upper-case) smuggling"
+    },
+    {
+      "method": "POST",
+      "path": "/model/%2e%2e/invoke",
+      "expect": "deny",
+      "why": "percent-encoded dot-dot traversal attempt"
+    },
+    {
+      "method": "POST",
+      "path": "/model/us.anthropic.claude-other/invoke-with-response-stream",
+      "expect": "deny",
+      "why": "disallowed model id — not in allowed_models"
+    },
+    {
+      "method": "POST",
+      "path": "/model/us.anthropic.claude-opus-4-8/converse",
+      "expect": "deny",
+      "why": "disallowed action verb on an allowed model"
+    },
+    {
+      "method": "PUT",
+      "path": "/model/us.anthropic.claude-opus-4-8/invoke",
+      "expect": "deny",
+      "why": "wrong HTTP method (PUT) on an otherwise-allowed path"
+    },
+    {
+      "method": "DELETE",
+      "path": "/inference-profiles",
+      "expect": "deny",
+      "why": "wrong HTTP method (DELETE) on the listing endpoint"
+    },
+    {
+      "method": "GET",
+      "path": "/model/us.anthropic.claude-opus-4-8/invoke",
+      "expect": "deny",
+      "why": "method/path mismatch: GET on a POST-only invoke path"
+    },
+    {
+      "method": "POST",
+      "path": "/inference-profiles",
+      "expect": "deny",
+      "why": "method/path mismatch: POST on a GET-only listing path"
+    },
+    {
+      "method": "GET",
+      "path": "inference-profiles",
+      "expect": "deny",
+      "why": "missing leading slash — non-canonical"
+    }
+  ]
+}
