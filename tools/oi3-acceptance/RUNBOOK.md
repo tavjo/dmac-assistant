@@ -121,16 +121,47 @@ uv run python tools/oi3-acceptance/capture_baseline.py
 
 ---
 
-## 6. Running the Acceptance Suite (placeholder — finalized in T8)
+## 6. Running the Acceptance Suite
 
-The live acceptance harness lives under `tools/oi3-acceptance/` and will be
-built in T6.  Full invocation instructions will be added here in T8 once the
-harness is complete.
+The live acceptance harness lives under `tools/oi3-acceptance/`.  Two scripts
+are involved:
 
-Expected entry point (tentative):
+| Script | Role |
+|--------|------|
+| `tools/oi3-acceptance/run_acceptance.py` | Launches a real Opus turn through the full proxy stack, captures the proxy log, agent env scan, turn transcript, and ledger. |
+| `tools/oi3-acceptance/validate_acceptance.py` | Reads the run output dir and asserts all 7 acceptance conditions (token absent from agent env, proxy log grew, model echoed sentinel, classifier did not block proxy, Bedrock streaming intact, ledger within cap, etc.). |
 
-```bash
-make acceptance-oi3
+### How the T6 acceptance turn was run
+
+The T6 paid acceptance turn was executed on 2026-06-15 with a $5 hard cap ledger.
+Results are committed at `tools/oi3-acceptance/runs/20260615T131344Z/`:
+
+```
+agent_env_scan.txt      — confirms AWS_BEARER_TOKEN_BEDROCK absent from agent env
+classifier_verdict.json — classifier_blocked_proxy=false
+ledger.json             — total_usd=0.25, model=us.anthropic.claude-opus-4-8, calls=1
+proxy_log.txt           — proxy log grew (request traversed real proxy)
+turn_transcript.jsonl   — model echoed the per-run sentinel
 ```
 
-Check `tools/oi3-acceptance/` for the current harness state.
+**All 7 acceptance conditions: PASS.**
+
+### Reproduce command
+
+Requires the full proxy stack to be running (NS sidecar up first per F2, then
+`make proxy-up`) and a live `AWS_BEARER_TOKEN_BEDROCK` in the bridge environment.
+
+```bash
+OI3_ACCEPTANCE_CONFIRM=1 uv run python tools/oi3-acceptance/run_acceptance.py
+```
+
+The `OI3_ACCEPTANCE_CONFIRM=1` guard prevents accidental paid-API invocations.
+After the run completes, validate with:
+
+```bash
+uv run python tools/oi3-acceptance/validate_acceptance.py \
+    --run-dir tools/oi3-acceptance/runs/<TIMESTAMP>/
+```
+
+The validator exits 0 if all 7 conditions pass, non-zero otherwise (with the
+failing conditions printed).

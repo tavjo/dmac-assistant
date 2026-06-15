@@ -36,7 +36,7 @@ Read-only.
 
 Treat every environment value as a secret (API keys, passwords, tokens, DB credentials). **Never log, print, write to a file, send over the network, or otherwise exfiltrate credentials.**
 
-**Never** run bare `env`, `printenv`, or `set` — the full output (including `NEXTSEEK_PASSWORD` and `AWS_BEARER_TOKEN_BEDROCK`) lands in the Bash tool_result block and is logged to the host transcript. (The shared `GCP_API_KEY` / `NEO4J_*` / `MYSQL_*` backend credentials are **not** present in this container — they live server-side on NExtSEEK; see "Router-aware behavior" below.) When debugging env vars, either mask values or filter to non-secret prefixes:
+**Never** run bare `env`, `printenv`, or `set` — the full output (including `NEXTSEEK_PASSWORD`) lands in the Bash tool_result block and is logged to the host transcript. (`AWS_BEARER_TOKEN_BEDROCK` is **not** present in this container — it is held exclusively by the Bedrock auth-proxy sidecar, per ADR-015. The shared `GCP_API_KEY` / `NEO4J_*` / `MYSQL_*` backend credentials are also **not** present — they live server-side on NExtSEEK; see "Router-aware behavior" below.) When debugging env vars, either mask values or filter to non-secret prefixes:
 
 ```bash
 env | grep -E '<your filter>' | sed 's/=.*/=***/'
