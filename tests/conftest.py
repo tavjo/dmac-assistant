@@ -92,6 +92,22 @@ def _block_production_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _router_off_by_default_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the LLM router OFF for the test suite.
+
+    As of 2026-06-15 the *production* default flipped to ON (``ws._router_enabled``
+    returns True when ``DMAC_ROUTER_ENABLED`` is unset — opt-out). The bulk of
+    the WS/bridge suite predates that and asserts the legacy single-socket
+    attach behavior, so it must run with the router off — exactly the
+    environment it was written against. This fixture restores that default;
+    router tests opt back in with ``monkeypatch.setenv("DMAC_ROUTER_ENABLED",
+    "1")`` (which runs after this autouse fixture and therefore wins).
+    Tests that assert the production default itself ``delenv`` the key first.
+    """
+    monkeypatch.setenv("DMAC_ROUTER_ENABLED", "0")
+
+
 @pytest.fixture(scope="session")
 def live_env() -> dict[str, str]:
     """Load project-root .env once for live tests; skip when absent or invalid."""

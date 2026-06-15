@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is loosely b
 
 ## [Unreleased]
 
+### Changed — 2026-06-15 — LLM router enabled by default (opt-out)
+
+The per-turn LLM router now defaults to **ON**. `ws._router_enabled()` returns true when `DMAC_ROUTER_ENABLED` is unset (opt-out); set `DMAC_ROUTER_ENABLED` to a falsy value (`0`/`false`/`no`/`off`/empty) to restore the legacy single-path bridge. This supersedes the original default-off behavior documented in the 2026-05-16 router entry below.
+
+Rationale: with the router off, the bridge dispatched every turn through the legacy long-lived Claude attach socket, which runs Claude Code's **unpinned default model** (`us.anthropic.claude-sonnet-4-5-20250929-v1:0`). After OI-3, that model is rejected by the Bedrock proxy allowlist (which permits only `us.anthropic.claude-opus-4-8`) with `403 path not permitted`, so no turn could complete; and the OI-4 `unrelated` route plus OI-5 `opus`-class pinning only take effect on the router path. Verified end-to-end through the chat UI: all three routes (`nextseek_query`, `container_cc`, `unrelated`) work with the router on (Container-CC runs the `opus`-class model `us.anthropic.claude-opus-4-8` through the proxy, all calls HTTP 200).
+
+`GCP_API_KEY` is therefore **required by default** now (the router's BAML route-decision call via the Google `gemini-3.1-pro-preview` model). The `route_decided` frame is emitted by default.
+
+- `src/dmac_assistant/ws.py` — `_router_enabled()` default flipped off → on (`os.environ.get("DMAC_ROUTER_ENABLED", "1")`).
+- `tests/conftest.py` — autouse fixture pins `DMAC_ROUTER_ENABLED=0` for the legacy-path suite; router tests opt back in with `=1`.
+
 ### Changed — 2026-06-14 — NExtSEEK shared-credential sidecar + thin-client rewire
 
 Removed shared institutional credentials from per-user agent containers. The agent container previously held `GCP_API_KEY`, `NEO4J_*`, `MYSQL_*`, and `SESSION_DB_*` in its process environment (exfiltrable by the in-container agent); they now live only on the bridge host (the router) and **server-side on NExtSEEK**, never in the agent container. This closes the NExtSEEK shared-credential exposure vector. (The separate `AWS_BEARER_TOKEN_BEDROCK` exposure remains open — see [Project status](README.md#project-status) production-blockers.)

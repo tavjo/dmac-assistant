@@ -820,8 +820,19 @@ _NS_SESSION_ID_RE = _re.compile(r"^ns-[0-9a-f]{12}$")
 
 
 def _router_enabled() -> bool:
-    """True when DMAC_ROUTER_ENABLED is truthy for this WS connection."""
-    raw = os.environ.get("DMAC_ROUTER_ENABLED", "")
+    """True when the per-turn LLM router is enabled for this WS connection.
+
+    The router is ON by default (opt-out): when ``DMAC_ROUTER_ENABLED`` is
+    UNSET, the router runs. Set ``DMAC_ROUTER_ENABLED`` to a falsy value
+    (``0``/``false``/``no``/``off``/empty) to fall back to the legacy
+    single-path bridge (every turn to the long-lived Claude attach socket).
+
+    Default flipped from off to on on 2026-06-15 per owner direction: the
+    router is the intended dispatch path (OI-4 unrelated route + OI-5 Opus
+    pinning depend on it), and a default-off bridge silently routes every
+    query to Container-CC with an unpinned model.
+    """
+    raw = os.environ.get("DMAC_ROUTER_ENABLED", "1")
     return raw.strip().lower() in _ROUTER_TRUTHY
 
 
