@@ -459,3 +459,168 @@ def test_negative_control_scanner_catches_planted_canary(
     assert len(hits) == 1
     assert hits[0][0] == CANARY_AWS
     assert str(planted) in hits[0][1]
+
+
+# ============================================================
+# T5 — G1: hermetic zero-creds containment gate
+# Proves that the REAL bridge path (start_container → _build_environment)
+# strips AWS_BEARER_TOKEN_BEDROCK from the launched agent container, while
+# a bare containers.create() path (bypassing _build_environment) DOES
+# propagate it — making the negative control meaningful.
+# ============================================================
+
+def _make_bridge_config(tmp_path: Path) -> "BridgeConfig":
+    """Build a minimal BridgeConfig with all required host paths present."""
+    from pydantic import SecretStr
+
+    from dmac_assistant.config import BridgeConfig, UserRecord
+
+    # _build_volumes needs these dirs to exist for Docker bind mounts.
+    claude_users_root = tmp_path / "claude-users"
+    scratch_root = tmp_path / "scratch"
+    dropbox_root = tmp_path / "dropbox"
+    output_root = tmp_path / "output"
+    user_id = "t5testuser"
+    (claude_users_root / user_id / ".claude").mkdir(parents=True)
+    (scratch_root / user_id).mkdir(parents=True)
+    (dropbox_root / "fake-project").mkdir(parents=True)
+    (output_root / user_id).mkdir(parents=True)
+
+    # catalog_file must exist and contain valid JSON.
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text('{"default": {}}', encoding="utf-8")
+
+    return BridgeConfig(
+        users={"t5testuser": UserRecord(password=SecretStr("pw"), projects=["fake-project"])},
+        claude_users_root=claude_users_root,
+        scratch_root=scratch_root,
+        dropbox_root=dropbox_root,
+        output_root=output_root,
+        catalog_file=catalog,
+        # sidecar_network=None: skip the network fail-fast check (no sidecar
+        # stack is required for this gate).
+        sidecar_network=None,
+        bedrock_proxy_url="http://bedrock-proxy:8080",
+    )
+
+
+def _make_identity() -> "AuthenticatedIdentity":
+    from pydantic import SecretStr
+
+    from dmac_assistant.auth import AuthenticatedIdentity
+
+    return AuthenticatedIdentity(
+        user_id="t5testuser",
+        password=SecretStr("pw"),
+        projects=["fake-project"],
+    )
+
+
+def _container_env_streams(
+    client: "docker.DockerClient", container_id: str
+) -> tuple[bytes, bytes]:
+    """Return (inspect_env_bytes, exec_env_bytes) for a running container."""
+    inspect = client.api.inspect_container(container_id)
+    env_list = inspect.get("Config", {}).get("Env") or []
+    inspect_env = ("\n".join(env_list)).encode("utf-8")
+
+    exec_info = client.api.exec_create(
+        container_id, cmd=["env"], stdin=False, stdout=True, stderr=False, tty=False
+    )
+    exec_id = exec_info["Id"] if isinstance(exec_info, dict) else exec_info
+    exec_out = client.api.exec_start(exec_id, detach=False, stream=False)
+    exec_env = exec_out if isinstance(exec_out, bytes) else b""
+    return inspect_env, exec_env
+
+
+@pytest.mark.live_docker
+def test_bedrock_proxy_containment(
+    docker_client: "docker.DockerClient",
+    tmp_path: Path,
+) -> None:
+    """G1: after T4's de-cred edit, the real bridge path (start_container →
+    _build_environment) must produce an agent container that holds ZERO
+    AWS_BEARER_TOKEN_BEDROCK / CANARY_AWS bytes.
+
+    The negative control uses bare containers.create() — which bypasses
+    _build_environment and passes env verbatim — to prove the DETECTOR is live.
+    Without the negative control, a passing real-path scan could be a silent
+    scanner failure rather than a genuine containment proof.
+    """
+    from dmac_assistant.containers import start_container
+
+    identity = _make_identity()
+    config = _make_bridge_config(tmp_path)
+
+    bridge_env = {
+        "AWS_BEARER_TOKEN_BEDROCK": CANARY_AWS,
+        "AWS_REGION": "us-east-1",
+    }
+
+    real_container = None
+    neg_container = None
+    try:
+        # ---- Real bridge path -----------------------------------------------
+        # start_container → build_container_spec → _build_environment filters
+        # AWS_BEARER_TOKEN_BEDROCK.  command_override=["sleep","30"] keeps the
+        # container alive long enough for inspect/exec; it exits immediately
+        # otherwise (claude needs stdin).
+        real_container = start_container(
+            identity,
+            image=IMAGE,
+            session_id=None,
+            bridge_env=bridge_env,
+            config=config,
+            client=docker_client,
+            command_override=["sleep", "30"],
+        )
+        real_container.reload()
+        real_inspect_env, real_exec_env = _container_env_streams(
+            docker_client, real_container.id
+        )
+
+        agent_env_scan_hits = scan_for_canaries(
+            [real_inspect_env, real_exec_env],
+            [],
+            [CANARY_AWS, "AWS_BEARER_TOKEN_BEDROCK"],
+        )
+        print(f"\nagent-env scan: {len(agent_env_scan_hits)} hits")
+        assert agent_env_scan_hits == [], (
+            f"CONTAINMENT FAILURE: AWS bearer token found in agent container env "
+            f"via the real bridge path: {agent_env_scan_hits!r}"
+        )
+
+        # ---- Negative control -----------------------------------------------
+        # bare containers.create() passes env verbatim, bypassing
+        # _build_environment.  The scanner MUST flag the sentinel here —
+        # proving the detector is live so a "0 hits on real path" is meaningful.
+        neg_container = docker_client.containers.create(
+            IMAGE,
+            command=["sleep", "30"],
+            environment={"AWS_BEARER_TOKEN_BEDROCK": CANARY_AWS},
+            detach=True,
+        )
+        neg_container.start()
+        neg_inspect_env, neg_exec_env = _container_env_streams(
+            docker_client, neg_container.id
+        )
+
+        neg_hits = scan_for_canaries(
+            [neg_inspect_env, neg_exec_env],
+            [],
+            [CANARY_AWS, "AWS_BEARER_TOKEN_BEDROCK"],
+        )
+        print(f"negative control: flagged ({len(neg_hits)} hit(s))")
+        assert neg_hits, (
+            "NEGATIVE CONTROL FAILED: scanner did not detect the sentinel "
+            "in the verbatim-env container — the detector is broken; "
+            "'0 hits on real path' would be meaningless"
+        )
+
+    finally:
+        for c in (real_container, neg_container):
+            if c is not None:
+                try:
+                    c.remove(force=True)
+                except Exception:
+                    pass
