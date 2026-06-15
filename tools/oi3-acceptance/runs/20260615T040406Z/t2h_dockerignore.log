@@ -1,0 +1,70 @@
+### .dockerignore build-context exclusion probe
+### Build context = repo root (matches compose 'context: ..')
+### Probe COPYs the ENTIRE context into the image, then lists matches.
+### EXPECT: NO /ctx/.../proxy-secret.env  (the real gitignored secret excluded)
+### EXPECT: proxy-secret.env.example PRESENT (committed template, not excluded)
+
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile.dockerignore-probe.8307
+#1 transferring dockerfile: 407B 0.0s done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/busybox:latest
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 755B done
+#3 DONE 0.0s
+
+#4 [1/3] FROM docker.io/library/busybox:latest
+#4 CACHED
+
+#5 [internal] load build context
+#5 transferring context: 53.18MB 5.0s
+#5 transferring context: 127.89MB 10.0s
+#5 transferring context: 276.88MB 15.1s
+#5 transferring context: 350.81MB 20.3s
+#5 transferring context: 439.64MB 25.4s
+#5 transferring context: 522.20MB 30.5s
+#5 transferring context: 642.77MB 35.6s
+#5 transferring context: 732.92MB 40.7s
+#5 transferring context: 823.34MB 45.8s
+#5 transferring context: 880.19MB 50.9s
+#5 transferring context: 991.02MB 56.0s
+#5 transferring context: 1.06GB 61.0s
+#5 transferring context: 1.10GB 66.0s
+#5 transferring context: 1.24GB 71.2s
+#5 transferring context: 1.31GB 76.2s
+#5 transferring context: 1.32GB 77.0s done
+#5 DONE 77.1s
+
+#6 [2/3] COPY . /ctx/
+#6 DONE 6.9s
+
+#7 [3/3] RUN echo "=== files matching proxy-secret.env in build context ==="  && (find /ctx -name 'proxy-secret.env' -print | sort)  && echo "=== (above empty == secret excluded) ==="  && echo "=== .example (should be present, it is committed) ==="  && (find /ctx -name 'proxy-secret.env.example' -print | sort)
+#7 0.196 === files matching proxy-secret.env in build context ===
+#7 0.538 === (above empty == secret excluded) ===
+#7 0.538 === .example (should be present, it is committed) ===
+#7 0.781 /ctx/bedrock-proxy/proxy-secret.env.example
+#7 DONE 0.8s
+
+#8 exporting to image
+#8 exporting layers
+#8 exporting layers 8.3s done
+#8 writing image sha256:b8a1d9ef33073d9de8ff4c098c9cdff469738c05f5671cb864630d73857d01a8
+#8 writing image sha256:b8a1d9ef33073d9de8ff4c098c9cdff469738c05f5671cb864630d73857d01a8 done
+#8 naming to docker.io/library/dmac-dockerignore-probe:throwaway done
+#8 DONE 8.3s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/krwnba0zrxufecrx1w1ppx8x5
+
+### build rc=0
+
+### NEGATIVE CONTROL (proves the .dockerignore lines are load-bearing)
+### With `**/proxy-secret.env` + `bedrock-proxy/proxy-secret.env` REMOVED from
+### .dockerignore, the same probe build's COPY . pulled the secret in:
+###   /ctx/bedrock-proxy/proxy-secret.env   <-- present without the exclusion
+### With the lines RESTORED (committed state) the secret is absent (above).
+### Real secret file on disk: bedrock-proxy/proxy-secret.env (367 bytes) — so
+### the exclusion is doing real work, not passing vacuously.

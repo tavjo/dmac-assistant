@@ -1,0 +1,14 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.10, pytest-9.0.3, pluggy-1.6.0 -- /Users/taishajoseph/Documents/Projects/dmac_assistant/.venv/bin/python
+rootdir: /Users/taishajoseph/Documents/Projects/dmac_assistant
+configfile: pyproject.toml
+plugins: cov-7.1.0, socket-0.7.0, xdist-3.8.0, timeout-2.4.0, asyncio-1.3.0, anyio-4.13.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 1 item
+
+tests/unit/test_bedrock_proxy_compose.py::test_g6_token_not_baked_with_negative_controls G6 ENV-bake negative control FIRED: flagged (5 hits)
+G6 FILESYSTEM-bake negative control FIRED: flagged on the filesystem surface (1 hits), invisible to metadata (0)
+G6: real image dmac-bedrock-proxy:poc has 0 token hits across Config.Env + history + filesystem (and no ABSK-shaped token)
+PASSED
+
+============================== 1 passed in 22.33s ==============================

@@ -10,6 +10,14 @@
 **/.env.example
 **/.env.prod
 **/.env.dev
+# OI-3 (T2): the gitignored real proxy secret lives at the repo root (build
+# context = repo root via compose `context: ..`). `**/.env*` does NOT match
+# `proxy-secret.env`, so exclude it explicitly so the bearer token never enters
+# the daemon build context. The COPY in bedrock-proxy/Dockerfile is scoped to
+# `bedrock-proxy/app/` (which never contains the secret), but this is the
+# defense-in-depth backstop against a future broader COPY.
+**/proxy-secret.env
+bedrock-proxy/proxy-secret.env
 .git
 .venv
 
