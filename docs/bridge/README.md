@@ -112,7 +112,7 @@ When the LLM router is enabled (see below), `GCP_API_KEY` must also be set on th
 
 ## Routing and model selection
 
-The bridge supports an optional LLM router (flag-gated by `DMAC_ROUTER_ENABLED`). When the flag is unset or falsy, the bridge dispatches every turn through the legacy long-lived Claude attach socket exactly as before; when set, the bridge classifies each user turn into one of three routes:
+The bridge runs a per-turn LLM router, controlled by `DMAC_ROUTER_ENABLED` and **ON by default** (opt-out) as of 2026-06-15. When `DMAC_ROUTER_ENABLED` is set to a falsy value (`0`/`false`/`no`/`off`/empty), the bridge dispatches every turn through the legacy long-lived Claude attach socket exactly as before; otherwise (the default) the bridge classifies each user turn into one of three routes:
 
 - `nextseek_query` - runs the deterministic NExtSEEK assistant pipeline (the `chat_nextseek` orchestrator, executed **server-side on NExtSEEK**) via a thin in-container runner (per-turn `docker exec`). Used for NExtSEEK-shaped queries (catalog lookups, sample lineage, study metadata).
 - `container_cc` - runs Claude Code inside the container on the fixed `opus`-class model under `--permission-mode auto` (OI-5). Used for in-scope agent tasks on the lab's data. The router no longer selects a model class for this route.
@@ -124,7 +124,7 @@ Bridge-side env vars added by the router:
 
 | Variable | Purpose |
 |---|---|
-| `DMAC_ROUTER_ENABLED` | When truthy, enables the per-turn router. Default: unset (router off, byte-identical legacy behavior). |
+| `DMAC_ROUTER_ENABLED` | Controls the per-turn router. **Default: ON** (unset ⇒ router enabled; opt-out). Set to a falsy value (`0`/`false`/`no`/`off`/empty) for the byte-identical legacy single-path bridge. |
 | `GCP_API_KEY` | Required when `DMAC_ROUTER_ENABLED=1`. Consumed by the BAML `GCPReasoner` client that drives the route-decision call. **Not forwarded to the agent container.** Held on the bridge host (the router) and server-side on NExtSEEK (for the `chat_nextseek` agents); the sidecar does not hold or use it. Redacted in `ContainerSpec.__repr__` / `model_dump`. |
 
 Per-exec env vars the bridge passes on `docker exec` when the router is enabled. `docker exec` does **not** run the entrypoint shim, so the bridge re-derives the env that the entrypoint would have set; the list below highlights what is new or different on a per-turn exec relative to a long-lived `docker run` of the same image. Any bridge-host env var that `_build_environment` forwards (e.g. `NEXTSEEK_URL`, `DMAC_PATH_MAPPINGS`) is included automatically when set on the bridge, because the per-exec env builder calls `_build_environment` first. The shared credentials (`GCP_API_KEY`, `NEO4J_*`, `MYSQL_*`, `SESSION_DB_*`) are NOT in this set — they live server-side on NExtSEEK (the sidecar is a thin forwarder) and never appear in the per-exec env.

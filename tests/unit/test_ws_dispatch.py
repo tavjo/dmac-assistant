@@ -168,11 +168,15 @@ def test_router_enabled_truthiness(value: str, expected: bool, monkeypatch) -> N
     assert _router_enabled() is expected
 
 
-def test_router_enabled_unset_is_false(monkeypatch) -> None:
+def test_router_enabled_unset_is_true(monkeypatch) -> None:
+    """Router is ON by default (opt-out): an unset DMAC_ROUTER_ENABLED enables
+    the router. Set DMAC_ROUTER_ENABLED=0 (or false/empty) to get the legacy
+    single-path bridge. Flipped from default-off on 2026-06-15 per owner
+    direction ("turn the router on")."""
     from dmac_assistant.ws import _router_enabled
 
     monkeypatch.delenv("DMAC_ROUTER_ENABLED", raising=False)
-    assert _router_enabled() is False
+    assert _router_enabled() is True
 
 
 @pytest.mark.asyncio

@@ -64,7 +64,7 @@ Frame meanings:
 
 ## Routing
 
-The bridge supports an optional LLM router (flag-gated by `DMAC_ROUTER_ENABLED`). When enabled, each user turn is first classified into one of three routes:
+The bridge runs a per-turn LLM router, controlled by `DMAC_ROUTER_ENABLED` and **ON by default** (opt-out) as of 2026-06-15. When enabled (the default), each user turn is first classified into one of three routes:
 
 - `"nextseek_query"` - runs the deterministic `chat_nextseek` orchestrator pipeline. Per-step events appear on the WebSocket as `tool_use` frames with `tool` values prefixed `"ns:"`.
 - `"container_cc"` - runs Claude Code inside the container on the fixed `opus`-class model (OI-5; `--permission-mode auto`). Per-step events appear as `tool_use` frames with the existing Claude tool names (`"Bash"`, `"Read"`, etc.).
@@ -80,6 +80,6 @@ When a route is decided, the bridge emits one optional `route_decided` frame as 
 - `model_class` is one of `"opus"`, `"sonnet"`, `"haiku"`, or `null`. It is advisory only: `container_cc` always runs the fixed `opus`-class model (OI-5) regardless of this field, and it is `null` for `"nextseek_query"` and `"unrelated"`.
 - The frame does NOT carry a `session_id`. The routing decision is independent of any Claude session.
 
-When `DMAC_ROUTER_ENABLED` is unset or falsy, the bridge behaves exactly as it did before the router landed: no `route_decided` frame, no per-turn classification, all turns go to the long-lived Claude attach socket. The flag is the on/off switch for the entire subsystem.
+When `DMAC_ROUTER_ENABLED` is set to a falsy value (`0`/`false`/`no`/`off`/empty), the bridge behaves exactly as it did before the router landed: no `route_decided` frame, no per-turn classification, all turns go to the long-lived Claude attach socket. The router is ON by default (unset ⇒ enabled); the flag is the on/off switch for the entire subsystem.
 
 For the higher-level bridge flow, local setup, and resumption rules, see [Bridge README](./README.md).
