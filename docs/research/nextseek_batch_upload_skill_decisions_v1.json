@@ -1,0 +1,95 @@
+{
+  "report_metadata": {
+    "title": "NExtSEEK Batch-Upload Payload-Builder Skill — Findings & Decision Report",
+    "project": "dmac_assistant",
+    "report_path": "docs/research/nextseek_batch_upload_skill_findings_and_decisions.html",
+    "research_timestamp": "2026-06-25",
+    "question_set_version": "1.0",
+    "export_basename": "nextseek_batch_upload_skill_decisions",
+    "round": 1,
+    "supersedes": "",
+    "corpus": {
+      "surfaces_inspected": [
+        "dmac_assistant",
+        "NExtSEEK/nextseek_api",
+        "work/BMC"
+      ],
+      "validate_endpoint": "POST /nextseek_api/batch-upload/validate/ (origin/dev)"
+    }
+  },
+  "research_timestamp": "2026-06-25",
+  "export_timestamp_utc": "2026-06-25T19:13:27.568Z",
+  "question_set_version": "1.0",
+  "selected_answers": {
+    "Q-001": "OTHER",
+    "Q-002": "C",
+    "Q-003": "A",
+    "Q-004": "A",
+    "Q-005": "A",
+    "Q-006": "A",
+    "Q-007": "A",
+    "Q-008": "OTHER"
+  },
+  "comments": {
+    "Q-002": "The bridge copier to Dropbox is built. What are you talking about?"
+  },
+  "write_in_answers": {
+    "Q-001": "A + B + C. A alone is not suitable if the user wants to add/update samples of different types since the 4-sheet workbook works only for a single type. So you'd have to return a separate workbook for each type.",
+    "Q-008": "The reason I am making this available via CC path is because I don't want to hardcode everything. While I don't want full curation, if a user provides a protocol and says, update the metadata for samples A, B, and C based on the info provided in the attached protocol file, then CC should be able to read it and extract the info that's currently missing or incorrect in the existing samples. The skill can provide a tool to extract text from different file formats using something like markitdown so that the model can easily ingest the info."
+  },
+  "unanswered_questions": [],
+  "recommended_defaults": {
+    "Q-001": "A",
+    "Q-002": "D",
+    "Q-003": "A",
+    "Q-004": "A",
+    "Q-005": "A",
+    "Q-006": "A",
+    "Q-007": "A",
+    "Q-008": "A"
+  },
+  "evidence_references": {
+    "Q-001": [
+      "NExtSEEK/nextseek_api/batch_upload/views.py:160,405",
+      "batch_upload/models.py:115 (InputRowModel)",
+      "batch_upload/convert.py:40 (4-sheet detection)",
+      "dmac-curation-tools/docs/curation-reference.md:716-720",
+      "DMAC_docs/gitbook/03-uploading.md:9-23"
+    ],
+    "Q-002": [
+      "dmac_assistant/.claude/CLAUDE.md (Canonical Mount Contract)",
+      "memory project_dropbox_output_is_the_delivery_channel",
+      "src/dmac_assistant/ws.py (chat relay)"
+    ],
+    "Q-003": [
+      "build_context/plugins/nextseek/bin/nextseek-api-read",
+      "nextseek_api/assistant/read_safe_endpoints.json",
+      "build_context/plugins/nextseek/bin/_assistant_client.py:83-113",
+      "build_context/plugins/nextseek-api/ (host-only SchemaRAG plugin)"
+    ],
+    "Q-004": [
+      "DMAC_docs/gitbook/03-uploading.md:41",
+      "NExtSEEK/.../batch_upload/tests/fixtures/wave3_update_mode.xlsx",
+      "batch_upload/insert.py:172-180",
+      "batch_upload/update.py (bulk_update_samples)"
+    ],
+    "Q-005": [
+      "NExtSEEK/nextseek_api/batch_upload/views.py (validate checks param, _VALIDATE_ALLOWED_CHECKS)",
+      "batch_upload/models.py:843-866 (checks_run/checks_skipped)"
+    ],
+    "Q-006": [
+      "work/BMC/dmac-curation-tools/src/dmac_curation/{workbook,attributes,uid_propagation,schemas}.py",
+      "dmac-curation-tools/.claude/skills/{validate-workbooks,propagate-uids}/SKILL.md"
+    ],
+    "Q-007": [
+      "tools/e2e/run_router_e2e.py:222-229,280-331",
+      "dmac_assistant/.env.dev:15",
+      "standing rule: paid-API spend needs per-session authorization"
+    ],
+    "Q-008": [
+      "dmac_assistant/.claude/CLAUDE.md (mount /data/projects/{name} ro)",
+      "NExtSEEK batch_upload/convert.py (csv/xlsx ingest)",
+      "dmac-curation-tools/src/dmac_curation/workbook.py (load_attrs/enforce_schema)"
+    ]
+  }
+}
