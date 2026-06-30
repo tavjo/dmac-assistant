@@ -8,7 +8,7 @@
         "reporter_agent", "memory_agent", "system_agent"
       ],
       "best_for": "Structured biomedical sample / project / study queries that map onto chat_nextseek's pipeline.",
-      "not_for": "File I/O, code execution, free-form reasoning, multi-tool work outside chat_nextseek.",
+      "not_for": "File I/O, code execution, free-form reasoning, multi-tool work outside chat_nextseek. Also NOT for building, preparing, or validating a NExtSEEK batch-upload create/update payload — that is the container_cc upload_payload family.",
       "task_families": [
         {
           "name": "sample_search",
@@ -68,6 +68,15 @@
           "example_queries": [
             "Write a Python script that plots age distribution by sex.",
             "Refactor this function to use pathlib."
+          ]
+        },
+        {
+          "name": "upload_payload",
+          "description": "Build (NOT submit) a NExtSEEK batch-upload create/update payload from user- or Dropbox-supplied sample info, validate it read-only, and return it for inspection.",
+          "example_queries": [
+            "Prepare a NExtSEEK upload sheet for these new samples.",
+            "Build an update payload to fix the metadata on these existing samples.",
+            "Validate a batch-upload payload for my samples before I upload it."
           ]
         }
       ]
