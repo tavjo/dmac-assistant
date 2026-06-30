@@ -17,7 +17,10 @@ def test_shim_help_runs(name):
     assert r.returncode == 0, f"{name} --help failed: {r.stderr}"
 
 def test_no_shim_references_start_or_upload_endpoint():
-    for name in SHIMS:
+    # Scan the shims AND the dispatcher + client modules — the brief's
+    # success-condition grep explicitly includes _batch_upload_runner.py, and
+    # the runner/client are the modules most likely to grow an upload path.
+    for name in SHIMS + ["_batch_upload_runner.py", "_batch_upload_client.py"]:
         src = (BIN / name).read_text()
         assert "batch-upload/start" not in src
         assert "/start/" not in src
