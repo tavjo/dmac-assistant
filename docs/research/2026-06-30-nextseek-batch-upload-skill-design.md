@@ -9,6 +9,11 @@ is written from this spec until the owner explicitly authorizes it. The spec + t
 implementation plan derived from it are to be adversarially vetted for gameability before any
 build.
 
+**Revision R1 (2026-06-30, owner-approved during onboard review):** §7.5 and §9 step 2 (project_id
+resolution) changed to *always confirm the project with the curator before use, never silently
+auto-select*. The prior "one accessible project, use it" auto-select silently breaks for a
+multi-project admin. No other decision changed.
+
 ## 0. Provenance — where the requirements come from
 
 This spec is grounded only in primary sources, not paraphrase:
@@ -164,10 +169,16 @@ re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.writ
   refuses any sheet that is empty or missing a required attribute. *(Owner-confirmed.)*
 - **§7.3 Scale:** no caps, no feasibility second-guessing. *(Owner directive.)*
 - **§7.4 Ontology/controlled-vocab:** out of scope V1 (free-text). *(Owner-confirmed.)*
-- **§7.5 `project_id`:** derived from the logged-in user — `GET /projects/` (scoped to the current
-  user) + `GET /people/current/`; one accessible project → use it, several → resolve from the
-  study/sample context or ask. Not asked by name. *(Owner directive: "obtain project_id based on who
-  is currently logged in.")*
+- **§7.5 `project_id`:** resolved interactively, **never silently auto-selected.** The skill always
+  calls `GET /projects/` (projects accessible to the current user) + `GET /people/current/` first,
+  then confirms which project to use with the curator before proceeding: if the curator named a
+  project in chat, match it against the accessible list and confirm (resolve name → ID via the API,
+  never trust a typed ID); otherwise present the accessible-projects list and ask which to use.
+  **Even a single accessible project is surfaced for confirmation, not used silently** (silent
+  auto-select breaks for multi-project admins). The confirmed project scopes assay resolution
+  (§7.6). *(Owner directive, revised 2026-06-30: "ask user directly for project name... model does
+  lookup first to pull all projects user has access to, asks the user to confirm which one should be
+  used to filter assays by.")*
 - **§7.6 Assays:** the curator provides assay **titles**; the skill resolves title → real
   `assay_id`, **disambiguated by study** (the same title can exist in multiple studies). *(Owner
   directive.)*
@@ -202,9 +213,12 @@ re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.writ
 
 1. **Parse the request:** create vs. update; which sample type(s); the source data (chat and/or
    mounted Dropbox files via the calamine stack / `markitdown`).
-2. **Resolve `project_id` from identity:** `GET /projects/` + `GET /people/current/`; one → use,
-   several → resolve from context or ask; **refuse to proceed without a resolved `project_id`**
-   (validate requires it).
+2. **Resolve `project_id` from identity, then confirm:** `GET /projects/` + `GET /people/current/`
+   to pull every project the user can access; confirm the project with the curator before
+   proceeding (match a curator-named project against the list, else present the list and ask);
+   never silently auto-select, even when only one project is accessible; **refuse to proceed
+   without a confirmed `project_id`** (validate requires it). The confirmed project scopes the
+   assay-title resolution in step 4.
 3. **Fetch the exact attribute schema** per sample type: `GET /sample_types/{uid}/` → full attribute
    objects (`title`, `required`, `is_title`, `base_type`). Persist the **structured** objects (not
    titles-only).
