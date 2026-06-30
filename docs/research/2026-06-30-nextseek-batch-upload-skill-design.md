@@ -14,6 +14,14 @@ resolution) changed to *always confirm the project with the curator before use, 
 auto-select*. The prior "one accessible project, use it" auto-select silently breaks for a
 multi-project admin. No other decision changed.
 
+**Revision R2 (2026-06-30, owner-approved + verified live against the deployed dev server):**
+restore retrieve-on-update for visibility via `samples/advanced_search/` keyed by the UID list
+(read-only; partial-safe stays; §3/§8/§9/§12); `Parent` described as a normal attribute (§9 step 6);
+`checks` is a multipart form field, not a body field (§10/§12); assay study-disambiguation uses
+single fetches (§7.6/§9 step 4); parse/serialize with `orjson` (§12/§15). The §12 contract is now
+verified against `https://nextseek-dev.mit.edu` (the owner-designated source of truth), not on-disk
+source.
+
 ## 0. Provenance — where the requirements come from
 
 This spec is grounded only in primary sources, not paraphrase:
@@ -103,8 +111,12 @@ only differences are:
 (`load_existing_sample_details()` → `deep_merge_metadata()` = *"New keys overwrite, old preserved"*
 → `UPDATE samples SET json_metadata = merged`). Therefore an update sheet carries **only the
 changed attributes** (plus the UID + `update_existing=true`); omitted attributes are preserved by
-the server. **The skill performs no client-side merge, no fetch-existing, and no batch read-back of
-samples.** (This deletes the entire merge subsystem the prior build wrongly added.)
+the server. **The skill performs no client-side merge** (the server deep-merges). It does, however,
+**retrieve existing sample metadata for visibility** on an update: read-only, via
+`samples/advanced_search/` keyed by the UID list (§8/§9/§12), so the curator can see current values
+and the full resulting sample. This deletes the client-side *merge* subsystem the prior build added
+(`merge_attributes`, `--merge-existing`, `--as-merge-map`), but **not** the read capability;
+retrieval is for visibility, never for an on-the-wire merge.
 
 ## 4. The provenance model (context the skill consumes, does not derive)
 
@@ -156,13 +168,15 @@ dropped by the server** (so they don't affect the upload) and exist only for the
 does not reach `json_metadata` would be silently lost. Therefore **the curator does not hand-edit
 the sheet — to change a value, the curator tells the skill, which rebuilds `json_metadata` and
 re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.write_excel`), never
-`openpyxl`.
+`openpyxl`; `json_metadata` is serialized with `orjson.dumps(...).decode()` (a string, per §12).
 
 ## 7. Confirmed decisions (this session)
 
 - **§7.1 Update flow:** partial-safe; submit UID + changed attributes + `update_existing=true`;
-  server deep-merges. No client merge/fetch/read-back. *(Owner-confirmed: "Preserved (partial is
-  safe).")*
+  server deep-merges. No client-side merge; but the skill does retrieve existing metadata for
+  visibility (read-only, via advanced_search by UID list, §8/§12). *(Owner-confirmed: "Preserved
+  (partial is safe)"; retrieve restored R2 2026-06-30: "advanced_search literally works fine... pass
+  in the list of UIDs as the filter search text.")*
 - **§7.2 Missing values:** **ask the curator, then hard-gate.** After fetching the attribute
   schema, the model identifies attributes (esp. `required`/`is_title`) it has no value for and asks
   the curator (or for explicit-blank confirmation) before building; a deterministic gate then
@@ -191,12 +205,20 @@ re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.writ
 
 ## 8. Components (and what changes vs. the broken build)
 
-- **`_batch_upload_client.py`** — read-only HTTP client. Methods: `list_projects()`
-  (`GET /projects/`), `current_person()` (`GET /people/current/`), `sample_type_attributes(uid)`
-  (`GET /sample_types/{uid}/`, full attribute objects), **`list_assays()` (new — `GET /assays/`,
-  returns title + id + linked study for title→id study-scoped resolution)**, **`validate_file(xlsx,
-  project_id, checks)` (new — multipart **file mode**)**. **Deleted:** the per-UID
-  `read_samples()` loop and the entire merge/read-back path. No `start()`/`upload()` — structurally
+- **`_batch_upload_client.py`** — read-only HTTP client (HTTP Basic via `NEXTSEEK_USERNAME`/
+  `NEXTSEEK_PASSWORD`; **`orjson` for all parse/serialize**, not stdlib `json`). Methods:
+  `list_projects()` (`GET /projects/`, returns `{id, title}` per project) + `project_studies(id)`
+  (`GET /projects/{id}/`, `relationships.studies`); `current_person()` (`GET /people/current/`);
+  `sample_type_attributes(uid)` (`GET /sample_types/{uid}/`, full attribute objects);
+  `list_assays()` (`GET /assays/`, `{id, title}`) + `assay_study(id)` (`GET /assays/{id}/`,
+  `relationships.study`) for title-to-id study-scoped resolution;
+  **`search_samples_by_uid(uids)` (new): `POST /samples/advanced_search/` with
+  `{filter_searchText: uids, searchText_logic: "OR", filter_matchType: "EXACT"}` (no `attribute`),
+  paged at `page_size <= 1000`, client-side filtered to rows whose `json_metadata.UID` is in the
+  requested set; the read-only retrieve for update-visibility (§3)**;
+  **`validate_file(xlsx, project_id, checks)` (new): `POST /batch-upload/validate/`, multipart
+  file mode, `checks` as a multipart form field**. **Deleted:** the per-UID `read_samples()` GET
+  loop and the entire client-side merge/read-back path. No `start()`/`upload()`; structurally
   absent.
 - **`_batch_upload_payload.py`** — flat-sheet builder: `json_metadata` (authoritative, includes
   `Parent`) + per-row `assay_ids`/`assay_titles` + materialized review columns; enforces exact DB
@@ -222,19 +244,28 @@ re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.writ
 3. **Fetch the exact attribute schema** per sample type: `GET /sample_types/{uid}/` → full attribute
    objects (`title`, `required`, `is_title`, `base_type`). Persist the **structured** objects (not
    titles-only).
-4. **Resolve assay titles → study-scoped `assay_id`s:** `GET /assays/`; match the curator's titles,
-   disambiguate by the project's study.
-5. **Populate values** from the curator's info into the **exact DB attribute names**; set `Parent`
-   (UID or Name) inside `json_metadata`. **Ask the curator** for any missing required/`is_title`
-   value or any unresolved assay/parent — never invent, never guess DB-specific values.
-6. **Build rows:** UID blank for create / NExtSEEK UID + `update_existing=true` for update; per-row
+4. **Resolve assay titles → study-scoped `assay_id`s:** `GET /assays/` gives `{id, title}` per
+   assay (list = title + id only). For a title matching multiple assays, disambiguate by study:
+   fetch `GET /assays/{id}/` (`relationships.study`) per candidate and keep the one whose study
+   belongs to the confirmed project (`GET /projects/{id}/`, `relationships.studies`). Never guess an
+   `assay_id`.
+5. **For updates, retrieve existing metadata (read-only, visibility):** call
+   `search_samples_by_uid()` (advanced_search by the UID list, §8) and client-side filter to the
+   requested UIDs; show the curator current values and compute the **resulting** sample as a display
+   overlay (current values + pending changes). Visibility only: the upload still carries only the
+   changed attributes (partial-safe). A retrieve failure is non-fatal (§11).
+6. **Populate values** from the curator's info into the **exact DB attribute names** (the only keys
+   allowed in `json_metadata`). `Parent` is one of those attributes like any other; its *value* is
+   the parent's UID or Name. **Ask the curator** for any missing required/`is_title` value or any
+   unresolved assay/parent; never invent, never guess DB-specific values.
+7. **Build rows:** UID blank for create / NExtSEEK UID + `update_existing=true` for update; per-row
    `assay_ids`/`assay_titles`; the flat sheet with materialized review columns (§6). No scale cap.
-7. **Validate the produced `.xlsx`** via `validate_file` (multipart **file mode** — the way it
-   uploads), all three checks (`structure,name_check,dag`), passing `checks` as the spec-defined
-   query/form param and asserting `checks_run` contains all three.
-8. **Hard delivery gate** (§10).
-9. **Deliver** to `/data/scratch/<user>/…` (the post-turn copier publishes to Dropbox); return the
-   verdict + path + a per-type row summary. **Never upload.**
+8. **Validate the produced `.xlsx`** via `validate_file` (multipart **file mode**, the way it
+   uploads), all three checks (`structure,name_check,dag`), passing `checks` as a **multipart form
+   field** and asserting `checks_run` contains all three.
+9. **Hard delivery gate** (§10).
+10. **Deliver** to `/data/scratch/<user>/…` (the post-turn copier publishes to Dropbox); return the
+    verdict + path + a per-type row summary. **Never upload.**
 
 ## 10. Validation & hard delivery gate (the data-safety core)
 
@@ -261,24 +292,55 @@ STOP and report on failure. The guarantee lives in the skill, not only in a test
   surface and ask; never fabricate.
 - **`markitdown` install failure:** fail-fast and escalate the named pure-python fallback to the
   curator; do not silently switch extractors.
+- **Retrieve (advanced_search) failure on an update:** non-fatal (the update is partial-safe and
+  does not depend on the retrieve); surface a degraded-visibility note to the curator and proceed.
 - **Validate endpoint error / non-200:** surface verbatim; do not deliver.
 
-## 12. API contract (grounded in the live OpenAPI spec)
+## 12. API contract (verified against the deployed dev OpenAPI spec, 2026-06-30)
 
-- `POST /nextseek_api/batch-upload/validate/` — body `BatchUploadStartRequest`
-  (`rows` *or* multipart `.xlsx` file; `project_id` required; `update_existing`); `checks` is a
-  query/form param (not a body field). Returns a verdict with `valid`, `errors[]`,
-  `totals.processed`, `checks_run`. **The skill uses file mode.**
-- `GET /nextseek_api/sample_types/` (list) and `GET /nextseek_api/sample_types/{uid}/` (full
-  attribute objects).
-- `GET /nextseek_api/projects/` — projects accessible to the current user (IDs + linked studies).
-- `GET /nextseek_api/people/current/` — the logged-in person.
-- `GET /nextseek_api/assays/` — assays accessible to the current user (titles, types, IDs, linked
-  studies) for title→id study-scoped resolution.
-- `InputRowModel` required fields: `SampleType`, `json_metadata`. Present-but-optional: `UID`,
-  `assay_ids`, `assay_titles`, `project_id`, `study_*`, `sop_id`.
-- **Exact line refs and any leniency (e.g. `checks` body-vs-query) must be re-verified against the
-  live spec + `convert.py` at build time before pinning literals.**
+All calls use **HTTP Basic** (`NEXTSEEK_USERNAME`/`NEXTSEEK_PASSWORD`), the only scheme accepted
+across every endpoint in this flow. Parse/serialize with **`orjson`**.
+
+- `POST /nextseek_api/batch-upload/validate/` — synchronous, **side-effect-free** (runs TRANSFORM,
+  stops before INSERT). Two input modes: `application/json` body `BatchUploadStartRequest` (`rows[]`)
+  or `multipart/form-data` with the `.xlsx` under the `file` key (if both, rows wins). `project_id`
+  is **required** (the only required field). **`checks` is a multipart FORM field** (`type: string`,
+  default `structure`; comma-separated subset of `structure,name_check,dag`), not a JSON body field;
+  the `?checks=` query form appears only in prose, so the form field is authoritative (verify query
+  support live if ever needed). Response `ValidationResult` (200): required `[totals, valid, summary,
+  checks_run]`; `valid` true iff `errors[]` empty and `totals.error` null;
+  `totals.{processed,success,skipped,failed}`; `checks_run[]`; `job_id`/`summary_path` always null.
+  200 MB upload cap → 413 (file mode). **The skill uses file mode** and passes `checks` as a form
+  field.
+- `POST /nextseek_api/samples/advanced_search/` — the read-only retrieve for update-visibility.
+  Request `SampleAdvancedSearchRequest`: `filter_searchText` (string **or list**, required),
+  `searchText_logic` (`AND`/`OR`), `filter_matchType` (`PARTIAL`/`EXACT`), optional
+  `attribute`/`sampletype`. To fetch a known UID set: `{filter_searchText: [<UIDs>],
+  searchText_logic: "OR", filter_matchType: "EXACT"}` with **no `attribute`** (verified live: adding
+  `attribute:"UID"` to a list+OR query returns 0 rows). Query params `page` (1-based), `page_size`
+  (default 100, max 1000). Response `SampleAdvancedSearchResult` `{total, rows[]}`; each
+  `SampleAdvancedSearchRow` carries `json_metadata` (the full populated attribute object), use it,
+  **not** `attributeValue` (HTML highlight markup). Client-side filter rows to `json_metadata.UID`
+  in the requested set (an EXACT free-text UID can also hit a sample referencing it as `Parent`).
+  *Verified live on dev 2026-06-30.*
+- `GET /nextseek_api/sample_types/` (list) and `GET /nextseek_api/sample_types/{uid}/` (`{uid}` =
+  type code e.g. `TIS` **or** numeric SEEK id). The latter returns `data.attributes.
+  sample_attributes[]`; each attribute object carries **top-level `required` and `is_title`
+  booleans**, `pos`, `unit`, `sample_attribute_type.base_type` (nested: `Text`/`Float`/`Integer`/
+  `Date`), and `sample_controlled_vocab_id` (null = free-text). *(Verified live: TIS has 90
+  attributes; `Parent` is `sample_attributes[5]`, required=false, Text.)*
+- `GET /nextseek_api/projects/` and `GET /nextseek_api/assays/` — **list items carry `{id, title}`
+  only** (prose claiming studies/emails/etc. is overstated). Study linkage comes from the **single
+  fetch**: `GET /projects/{id}/` → `relationships.studies`, `GET /assays/{id}/` →
+  `relationships.study` (id/type refs only). `GET /nextseek_api/people/current/` — the logged-in
+  person (`data.id` = caller's SEEK person id).
+- `InputRowModel` required fields: `SampleType`, **`json_metadata` (a required JSON STRING**, built
+  with `orjson.dumps(...).decode()`). Present-but-optional: `UID`, `assay_ids`, `assay_titles`,
+  `project_id`. `additionalProperties: true` (materialized review columns ride alongside and are
+  dropped server-side).
+- **Build-time live re-checks still owed:** deep-merge null/removal semantics on `update_existing`;
+  the `update_existing` match key (UID vs Name); advanced_search pagination at real scale; the
+  runtime metadata key shape under load.
 
 ## 13. Exact-cost capture (bridge change)
 
@@ -309,9 +371,12 @@ token literals). Gemini/BAML cost is captured honestly or flagged, never fabrica
 - Work stays on a branch (`feat/nextseek-batch-upload-skill` or a successor); commit + push to the
   branch; **hold merge until the owner approves.**
 - Python deps via `uv add`; Excel **read** via the calamine stack (`polars` `engine="calamine"` /
-  `fastexcel`), **write** via `xlsxwriter` (`polars.write_excel`); never `openpyxl`.
-- The skill targets the **integration-worktree / live** NExtSEEK contract (which has the `validate`
-  endpoint), not a stale checkout.
+  `fastexcel`), **write** via `xlsxwriter` (`polars.write_excel`); never `openpyxl`. **JSON parse/
+  serialize via `orjson`** (host + image), never stdlib `json`: NExtSEEK responses are large (the
+  TIS schema alone is ~411 KB) and stdlib `json` is too slow.
+- The skill targets the **deployed dev-server** NExtSEEK contract (`https://nextseek-dev.mit.edu`),
+  the owner-designated source of truth, verified live 2026-06-30, not read from on-disk source
+  (which may have drifted from deploy).
 
 ## 16. Open boundary items (explicit, for the owner)
 
