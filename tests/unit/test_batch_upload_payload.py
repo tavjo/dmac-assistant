@@ -96,6 +96,24 @@ def test_check_known_attributes_flags_invented_names():
     assert bp.check_known_attributes(rows[:1], known) == []                 # all names came from the fetch
 
 
+def test_check_known_attributes_legacy_key_from_merge_not_rejected():
+    # 2B-LOW scoping: merge_attributes carries a legacy DB field (absent from the type's
+    # CURRENT definition / `known`) forward on an update (Q-004), but the never-invent check
+    # is fed ONLY the user's PRE-MERGE changes, so the legacy key is EXEMPT and does NOT
+    # false-reject a legitimate update. Exercises BOTH merge_attributes (carries the legacy
+    # key) and check_known_attributes (no violation for it). Deterministic, no network.
+    existing = {"Name": "m1", "LegacyDBField": "xyz"}  # legacy, not in `known`
+    changes  = {"Sex": "F"}                             # the user's only change
+    merged   = bp.merge_attributes(existing, changes)
+    assert "LegacyDBField" in merged                    # merge carried it forward (Q-004)
+    pre_merge_rows = bp.normalize_rows([
+        {"UID": "MUS-1", "SampleType": "MUS",
+         "attributes": {"UID": "MUS-1", **changes}}])
+    known = {"MUS": ["Name", "Sex", "Weight"]}          # LegacyDBField NOT in known
+    # Legacy key is in `merged` but NOT in the pre-merge rows -> no violation:
+    assert bp.check_known_attributes(pre_merge_rows, known) == []
+
+
 def test_build_json_format_writes_payload_rows_json(tmp_path):
     # 2B-1: cover the explicit-json build branch (never the default; only on user request).
     rows = bp.normalize_rows([{"UID": "", "SampleType": "MUS", "attributes": {"Name": "m1"}}])
