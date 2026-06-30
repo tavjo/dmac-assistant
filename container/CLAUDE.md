@@ -80,6 +80,12 @@ Two attempts is the budget for any single user question. The user wants accurate
 
 <!-- NB: the Clarification policy block above must remain outside this sentinel block; do not include it in auto-generated updates. -->
 
+## Building NExtSEEK upload payloads
+
+To create or update NExtSEEK samples, use the `nextseek-batch-upload` skill (auto-loads from
+`skills/nextseek-batch-upload/SKILL.md`). It builds and validates a payload for the user to inspect; it never
+uploads.
+
 <!-- BEGIN NEXTSEEK-DOCS (auto-generated) -->
 ## NExtSEEK Documentation
 

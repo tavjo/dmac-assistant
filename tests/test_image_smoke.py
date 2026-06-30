@@ -643,3 +643,84 @@ def test_entrypoint_dmac_runtime_mode_default_runs_command(
         f"default entrypoint path failed; result={result!r} logs={logs!r}"
     )
     assert "DEFAULT_PATH_OK" in logs
+
+
+# ============================================================================
+# Task 8 — nextseek-batch-upload skill baked into image
+# ============================================================================
+
+
+def test_batch_upload_skill_symlink_and_plugin_validates(
+    tmp_path: Path,
+    dummy_env: dict[str, str],
+) -> None:
+    """Task 8 smoke: the nextseek-batch-upload SKILL.md symlink resolves through the
+    entrypoint-created plugin symlink, and `claude plugin validate` passes.
+
+    (a) Mirror test_entrypoint_plugin_discovery_symlinks_present (line 206):
+    mount an empty .claude so the real entrypoint creates
+    ~/.claude/plugins/local/nextseek -> /app/plugins/nextseek, then resolve
+    the new skill symlink through that link.
+
+    (b) Mirror test_plugin_manifest_validates_through_entrypoint_symlink (line 261):
+    `claude plugin validate` must exit 0 and print "Validation passed".
+    """
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+
+    # (a) Skill symlink resolves through the entrypoint-created plugin link.
+    with make_container(
+        image=IMAGE_TAG,
+        mounts={str(claude_dir): ("/home/user/.claude", "rw")},
+        env=dummy_env,
+        command=[
+            "sh", "-c",
+            "set -e; printf 'SKILL_TARGET=%s\\n' "
+            "\"$(readlink -f /home/user/.claude/plugins/local/nextseek/skills/nextseek-batch-upload/SKILL.md)\"",
+        ],
+    ) as container:
+        exit_code = container.wait()["StatusCode"]
+        logs = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
+    assert exit_code == 0, f"batch-upload skill symlink did not resolve; logs={logs!r}"
+    assert "SKILL_TARGET=/app/plugins/nextseek/skills/nextseek-batch-upload/SKILL.md" in logs, logs
+
+    # (b) claude plugin validate passes through the symlinked plugin path.
+    with make_container(
+        image=IMAGE_TAG,
+        mounts={str(claude_dir): ("/home/user/.claude", "rw")},
+        env=dummy_env,
+        command=["claude", "plugin", "validate", "/home/user/.claude/plugins/local/nextseek"],
+    ) as container:
+        exit_code = container.wait()["StatusCode"]
+        logs = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
+    assert exit_code == 0, f"claude plugin validate failed; logs={logs!r}"
+    assert "Validation passed" in logs, logs
+
+
+def test_batch_upload_tools_on_path_and_deps_import(dummy_env: dict[str, str]) -> None:
+    """Task 8 smoke: all five batch-upload bin tools are on PATH and the four
+    Python deps (polars, fastexcel, xlsxwriter, markitdown) import cleanly.
+
+    Mirror test_new_plugin_bin_on_path (line 466) / test_python_resolves_to_314
+    (line 335): exec under `sh` (no entrypoint symlinks needed for PATH/import
+    checks — PATH is baked into the image via Dockerfile ENV).
+    """
+    tools = (
+        "nextseek-sampletype-attrs nextseek-sample-read nextseek-extract-text "
+        "nextseek-build-payload nextseek-validate-upload"
+    )
+    with make_container(
+        image=IMAGE_TAG,
+        mounts={},
+        env=dummy_env,
+        command=[
+            "-c",
+            f"set -e; for t in {tools}; do command -v \"$t\" >/dev/null || {{ echo MISSING:$t; exit 1; }}; done; "
+            "python -c 'import polars, fastexcel, xlsxwriter, markitdown; print(\"DEPS_OK\")'",
+        ],
+        entrypoint_override=["sh"],
+    ) as container:
+        exit_code = container.wait()["StatusCode"]
+        logs = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
+    assert exit_code == 0, f"tool-on-PATH or dep-import check failed; logs={logs!r}"
+    assert "DEPS_OK" in logs, logs
