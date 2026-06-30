@@ -34,13 +34,16 @@ You build a NExtSEEK batch-upload **create/update payload** and validate it. You
    `nextseek-extract-text --file /data/projects/<...>` and read the missing/changed values from
    the text.
 
-5. **For UPDATES, fetch the existing sample and MERGE.** `nextseek-sample-read --uid <UID>` for
-   each updated sample. Save each sample's current attribute map into a JSON object keyed by UID
-   `{"<UID>": {<title>: <value>, ...}, ...}` (e.g.
-   `/data/scratch/<user>/<run>/existing.json`) and pass it as `--merge-existing` in steps 7–8;
-   the tools deterministically carry forward ALL current attributes and overlay your changes, so
-   the payload has the FULL attribute set. NExtSEEK silently removes attributes you omit on an
-   update, so the full merge is mandatory.
+5. **For UPDATES, fetch the existing samples and MERGE.** Run:
+   ```
+   nextseek-sample-read --uid <UID1> [--uid <UID2> ...] --as-merge-map
+   ```
+   Save the printed JSON directly as `existing.json`
+   (e.g. `/data/scratch/<user>/<run>/existing.json`) and pass it as `--merge-existing`
+   in steps 7–8. The `--as-merge-map` flag extracts each sample's current attribute map
+   and keys it by UID deterministically; the tools then carry forward ALL current attributes
+   and overlay your changes, so the payload has the FULL attribute set. NExtSEEK silently
+   removes attributes you omit on an update, so the full merge is mandatory.
 
 6. **Apply the UID rule.** New sample → leave `UID` blank. Update → set `UID` to the existing
    sample's UID. The UID column must equal `json_metadata.UID`.

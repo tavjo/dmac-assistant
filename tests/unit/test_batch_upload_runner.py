@@ -196,6 +196,65 @@ def test_runner_merge_existing_skips_row_uid_not_in_map(stubbed, tmp_path):
     assert "Strain" not in set(samples.columns)     # nothing merged in (the uid was not in the map)
 
 
+def test_runner_sample_read_as_merge_map_single_uid(stubbed, capsys):
+    # --as-merge-map flag: one UID, real Step-0 shape {data: {attributes: {attribute_map: {...}}}}
+    # Output must be exactly {<UID>: {<title>: <value>}} — no raw JSON:API envelope.
+    assert runner.main(["sample-read", "--uid", "MUS-240101BMC-1", "--as-merge-map"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out == {"MUS-240101BMC-1": {"Name": "m1"}}, (
+        "--as-merge-map must emit {UID: attribute_map} not the raw JSON:API body"
+    )
+    assert ("read", ["MUS-240101BMC-1"]) in stubbed.last.calls
+
+
+def test_runner_sample_read_as_merge_map_two_uids(capsys, monkeypatch):
+    # --as-merge-map with two UIDs — stub returns two different attribute_maps.
+    class _TwoSampleClient:
+        last = None
+        def __init__(self): type(self).last = self; self.calls = []
+        @classmethod
+        def from_env(cls): return cls()
+        def read_samples(self, uids):
+            self.calls.append(("read", list(uids)))
+            return [
+                {"data": {"attributes": {"attribute_map": {"Name": "alpha", "Sex": "F"}}}},
+                {"data": {"attributes": {"attribute_map": {"Name": "beta",  "Sex": "M"}}}},
+            ]
+
+    monkeypatch.setattr(runner, "BatchUploadClient", _TwoSampleClient)
+    assert runner.main(["sample-read",
+                        "--uid", "MUS-1", "--uid", "MUS-2",
+                        "--as-merge-map"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out == {
+        "MUS-1": {"Name": "alpha", "Sex": "F"},
+        "MUS-2": {"Name": "beta",  "Sex": "M"},
+    }
+
+
+def test_runner_sample_read_as_merge_map_missing_attribute_map(capsys, monkeypatch):
+    # Graceful handling: if a sample's body lacks data.attributes.attribute_map, emit
+    # an empty map for that UID rather than crashing.
+    class _MissingMapClient:
+        @classmethod
+        def from_env(cls): return cls()
+        def read_samples(self, uids):
+            return [{"data": {"attributes": {}}}]   # no attribute_map key
+
+    monkeypatch.setattr(runner, "BatchUploadClient", _MissingMapClient)
+    assert runner.main(["sample-read", "--uid", "MUS-999", "--as-merge-map"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out == {"MUS-999": {}}, "missing attribute_map must yield empty dict, not a crash"
+
+
+def test_runner_sample_read_raw_path_unchanged_by_merge_map_flag(stubbed, capsys):
+    # WITHOUT --as-merge-map, output must still be the raw JSON:API list (back-compat).
+    assert runner.main(["sample-read", "--uid", "MUS-240101BMC-1"]) == 0
+    body = json.loads(capsys.readouterr().out)
+    # The stub returns [{data: {attributes: {attribute_map: {Name: "m1"}}}}]
+    assert isinstance(body, list) and body[0]["data"]["attributes"]["attribute_map"]["Name"] == "m1"
+
+
 def test_runner_config_missing_propagates(monkeypatch):
     # 2B-3 branch: when BatchUploadClient.from_env raises SystemExit(2) (CONFIG_MISSING — creds/URL absent),
     # a subcommand that constructs the client PROPAGATES a non-zero exit (it does not swallow it or exit 0).

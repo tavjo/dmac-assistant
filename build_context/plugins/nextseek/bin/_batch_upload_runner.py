@@ -92,10 +92,24 @@ def _cmd_sample_read(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="nextseek-sample-read")
     p.add_argument("--uid", action="append", required=True, dest="uids",
                    help="UID to fetch (repeatable)")
+    p.add_argument("--as-merge-map", action="store_true",
+                   help="Transform output to {UID: attribute_map} ready for --merge-existing")
     args = p.parse_args(argv)
     client = BatchUploadClient.from_env()
     result = client.read_samples(args.uids)
-    print(json.dumps(result))
+    if args.as_merge_map:
+        merge_map: dict[str, dict] = {}
+        for uid, body in zip(args.uids, result):
+            try:
+                attr_map = body["data"]["attributes"]["attribute_map"]
+                if not isinstance(attr_map, dict):
+                    attr_map = {}
+            except (KeyError, TypeError):
+                attr_map = {}
+            merge_map[uid] = attr_map
+        print(json.dumps(merge_map))
+    else:
+        print(json.dumps(result))
     return 0
 
 
