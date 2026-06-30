@@ -1,0 +1,33 @@
+{
+  "run_id": "20260630T191407Z",
+  "started_at": "2026-06-30T19:14:07.946867+00:00",
+  "completed_at": "2026-06-30T19:14:31.977155+00:00",
+  "all_gates_passed": false,
+  "gate_summary": {
+    "C1_route_container_cc": false,
+    "C1_non_fallback": false,
+    "C6_halt_on_write": true,
+    "C2_xlsx_found": false,
+    "C2_validation_json_found": false,
+    "C7_never_invent": false,
+    "U1_route_container_cc": false,
+    "U1_non_fallback": false,
+    "U2_halt_on_write": true,
+    "U3_merge_survival": false
+  },
+  "total_cost_usd": 1.165732,
+  "router_pregate": {
+    "route": "container_cc",
+    "non_fallback": true,
+    "cost_usd": 0.003233
+  },
+  "create_route": null,
+  "create_non_fallback": false,
+  "create_valid": null,
+  "update_path": "second_cc_turn",
+  "update_route": null,
+  "ns_url": "http://host.docker.internal:8000",
+  "bridge_port": 56840,
+  "cost_note": "CC token counts are ESTIMATED (bridge WS does not expose Bedrock token usage). Router pre-gate (Gemini) tokens are exact from BAML log capture.",
+  "reproduce": "DMAC_E2E_LOCAL=1 DMAC_E2E_NS_URL=http://localhost:8000 uv run python tools/e2e/run_batch_upload_e2e.py"
+}

@@ -1,0 +1,3 @@
+{"op": "router_pregate", "model": "gemini-3.1-pro-preview (GCPReasoner)", "projected_usd": 0.013232500000000001, "actual_usd": 0.0032325, "in_tokens": 901, "out_tokens": 98, "status": "settled", "ts": "2026-06-30T19:20:19.753851+00:00"}
+{"op": "create_cc_turn", "model": "claude-opus-4-8 (Bedrock, via proxy)", "projected_usd": 1.5, "actual_usd": 0.5249999999999999, "in_tokens": 20000, "out_tokens": 3000, "status": "settled", "ts": "2026-06-30T19:20:30.079156+00:00"}
+{"op": "update_cc_turn", "model": "claude-opus-4-8 (Bedrock, via proxy)", "projected_usd": 1.5, "actual_usd": 0.6375, "in_tokens": 25000, "out_tokens": 3500, "status": "settled", "ts": "2026-06-30T19:21:56.895884+00:00"}

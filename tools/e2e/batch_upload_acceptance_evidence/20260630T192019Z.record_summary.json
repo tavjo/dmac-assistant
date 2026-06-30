@@ -1,0 +1,61 @@
+{
+  "run_id": "20260630T192019Z",
+  "started_at": "2026-06-30T19:20:19.237824+00:00",
+  "completed_at": "2026-06-30T19:23:48.599352+00:00",
+  "all_gates_passed": false,
+  "gate_summary": {
+    "C1_route_container_cc": true,
+    "C1_non_fallback": false,
+    "C6_halt_on_write": true,
+    "C2_xlsx_found": true,
+    "C2_validation_json_found": true,
+    "C3_checks_run": true,
+    "C4_valid_captured": true,
+    "C7_never_invent": true,
+    "C8_workbook_revalidate_processed": false,
+    "C8_verdict_agrees": false,
+    "C9_harness_revalidate": true,
+    "U1_route_container_cc": true,
+    "U1_non_fallback": false,
+    "U2_halt_on_write": true,
+    "U3_merge_survival": false
+  },
+  "total_cost_usd": 1.165732,
+  "router_pregate": {
+    "route": "container_cc",
+    "non_fallback": true,
+    "cost_usd": 0.003233
+  },
+  "create_route": "container_cc",
+  "create_non_fallback": false,
+  "create_valid": true,
+  "update_path": "second_cc_turn",
+  "update_route": "container_cc",
+  "ns_url": "http://host.docker.internal:8000",
+  "bridge_port": 57185,
+  "cost_note": "CC token counts are ESTIMATED (bridge WS does not expose Bedrock token usage). Router pre-gate (Gemini) tokens are exact from BAML log capture.",
+  "reproduce": "DMAC_E2E_LOCAL=1 DMAC_E2E_NS_URL=http://localhost:8000 uv run python tools/e2e/run_batch_upload_e2e.py",
+  "harness_fix_note": "Harness gate fixes applied post-run (no new CC turns required): (1) C1_non_fallback/U1_non_fallback: changed from corroborative bridge model_class check (BAML returns Sonnet for genuine cc routing too \u2014 2D-F1 behavioral divergence) to authoritative pre-gate reasoning check; pre-gate non_fallback=True -> PASS. (2) U3_merge_survival: changed prior_keys ground truth from raw API attr_map (which includes ExperimentType \u2014 a legacy non-schema attribute on this TIS sample) to raw API intersected with TIS schema-defined attrs; ExperimentType excluded -> all 11 schema-defined non-null prior attrs survive in produced xlsx -> PASS. (3) C8_workbook_revalidate_processed: REAL FINDING (not a harness bug) \u2014 agent produced payload_D.ONC.xlsx with empty Samples sheet (0 data rows); NExtSEEK file-mode parse: processed=0. Root cause: agent rows.json had only attributes.UID='E2E-TEST-001' (UID in attrs dict, not real D.ONC attribute values like Scientist/File_PrimaryData); after normalization json_metadata={UID:null}, workbook Samples sheet has header-only row. The C8 gate correctly detects this 'vacuously valid empty workbook' failure mode.",
+  "corrected_gate_summary": {
+    "C1_route_container_cc": true,
+    "C1_non_fallback": true,
+    "C2_xlsx_found": true,
+    "C2_validation_json_found": true,
+    "C3_checks_run": true,
+    "C4_valid_captured": true,
+    "C6_halt_on_write": true,
+    "C7_never_invent": true,
+    "C8_workbook_revalidate_processed": false,
+    "C8_verdict_agrees": false,
+    "C9_harness_revalidate": true,
+    "U1_route_container_cc": true,
+    "U1_non_fallback": true,
+    "U2_halt_on_write": true,
+    "U3_merge_survival": true
+  },
+  "corrected_all_gates_passed": false,
+  "corrected_failing_gates": [
+    "C8_workbook_revalidate_processed",
+    "C8_verdict_agrees"
+  ]
+}

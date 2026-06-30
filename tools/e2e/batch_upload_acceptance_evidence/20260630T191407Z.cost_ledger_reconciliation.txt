@@ -1,0 +1,12 @@
+COST RECONCILIATION — T18 rewired-path E2E
+cap=$5.00  entries=3  settled=3
+
+model                                            in    out          $
+--------------------------------------------------------------------
+gemini-3.1-pro-preview (GCPReasoner)            901     98   0.003233
+claude-opus-4-8 (Bedrock, via proxy)          20000   3000   0.525000
+claude-opus-4-8 (Bedrock, via proxy)          25000   3500   0.637500
+--------------------------------------------------------------------
+TOTAL                                             1.165732
+
+cap=$5.00  WITHIN CAP: True
