@@ -42,6 +42,7 @@ docs/superpowers/
 .codex/
 .claude/
 .cursor/
+.srs/
 
 # Per-task git worktrees
 .worktrees/
@@ -70,3 +71,15 @@ evidence/
 var/
 logs/
 
+
+# OI-3 acceptance run artifacts: generated evidence (env dumps, ledgers, transcripts),
+# regenerated per run — never commit (one historical run captured a raw NEXTSEEK password).
+# Ignore the whole runs/ tree EXCEPT the two synthetic fixtures that unit tests read:
+#   tests/unit/test_validate_acceptance.py         -> runs/_fixture_selftest/
+#   tests/unit/test_automode_allowlist_regression  -> runs/20260615T131344Z/classifier_verdict.json
+tools/oi3-acceptance/runs/
+!tools/oi3-acceptance/runs/_fixture_selftest/
+!tools/oi3-acceptance/runs/_fixture_selftest/**
+!tools/oi3-acceptance/runs/20260615T131344Z/
+tools/oi3-acceptance/runs/20260615T131344Z/*
+!tools/oi3-acceptance/runs/20260615T131344Z/classifier_verdict.json
