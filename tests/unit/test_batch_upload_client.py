@@ -120,3 +120,16 @@ def test_from_env_returns_client_when_creds_present(monkeypatch):
     monkeypatch.delenv("NEXTSEEK_BASE_URL", raising=False)
     c = buc.BatchUploadClient.from_env()
     assert isinstance(c, buc.BatchUploadClient)
+
+
+def test_from_env_uses_base_url_fallback(monkeypatch):
+    # Review #1: the contract names BOTH NEXTSEEK_URL and NEXTSEEK_BASE_URL; exercise the
+    # `or os.environ.get("NEXTSEEK_BASE_URL")` fallback branch directly (NEXTSEEK_URL absent).
+    monkeypatch.delenv("NEXTSEEK_URL", raising=False)
+    monkeypatch.setenv("NEXTSEEK_BASE_URL", "http://fallback.ns.test")
+    monkeypatch.setenv("API_USER", "u")
+    monkeypatch.setenv("API_PASS", "p")
+    c = buc.BatchUploadClient.from_env()
+    assert isinstance(c, buc.BatchUploadClient)
+    # the client's base_url reflects the NEXTSEEK_BASE_URL value (httpx normalizes to a URL)
+    assert str(c._client.base_url).rstrip("/") == "http://fallback.ns.test"
