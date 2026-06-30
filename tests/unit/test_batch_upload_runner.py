@@ -247,6 +247,25 @@ def test_runner_sample_read_as_merge_map_missing_attribute_map(capsys, monkeypat
     assert out == {"MUS-999": {}}, "missing attribute_map must yield empty dict, not a crash"
 
 
+def test_runner_sample_read_as_merge_map_fails_closed_on_count_mismatch(capsys, monkeypatch):
+    # Silent-wipe guard: if read_samples returns FEWER bodies than UIDs requested, a dropped UID
+    # would later look like "no existing data" to --merge-existing and could WIPE that sample's
+    # attributes. The flag must FAIL CLOSED (nonzero exit, NO partial map on stdout).
+    class _ShortClient:
+        @classmethod
+        def from_env(cls): return cls()
+        def read_samples(self, uids):
+            # 2 UIDs requested, only 1 body returned
+            return [{"data": {"attributes": {"attribute_map": {"Name": "m1"}}}}]
+
+    monkeypatch.setattr(runner, "BatchUploadClient", _ShortClient)
+    rc = runner.main(["sample-read", "--uid", "MUS-1", "--uid", "MUS-2", "--as-merge-map"])
+    out = capsys.readouterr()
+    assert rc != 0, "count mismatch must fail closed (nonzero exit)"
+    assert out.out.strip() == "", "must NOT emit a partial merge map on stdout"
+    assert "of" in out.err.lower() and "sample" in out.err.lower()
+
+
 def test_runner_sample_read_raw_path_unchanged_by_merge_map_flag(stubbed, capsys):
     # WITHOUT --as-merge-map, output must still be the raw JSON:API list (back-compat).
     assert runner.main(["sample-read", "--uid", "MUS-240101BMC-1"]) == 0

@@ -98,6 +98,15 @@ def _cmd_sample_read(argv: list[str]) -> int:
     client = BatchUploadClient.from_env()
     result = client.read_samples(args.uids)
     if args.as_merge_map:
+        # Fail closed on a count mismatch: if read_samples returned fewer bodies than UIDs
+        # requested, a dropped UID would later look like "no existing data" to --merge-existing
+        # and could silently WIPE that sample's attributes. Refuse to emit a partial map.
+        if len(result) != len(args.uids):
+            sys.stderr.write(
+                f"nextseek-error: sample-read returned {len(result)} of "
+                f"{len(args.uids)} requested samples\n"
+            )
+            return 1
         merge_map: dict[str, dict] = {}
         for uid, body in zip(args.uids, result):
             try:
