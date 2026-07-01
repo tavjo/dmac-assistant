@@ -50,6 +50,13 @@ title), not just a blank one. Current-assay preservation resolves against the **
 map** (not project-scoped); `assays` titles are parsed by **longest-match** (comma-safe);
 metadata-only updates also carry forward the current set.
 
+**Revision R7 (2026-07-01, from re-vet):** the §10 assay guard **fails closed on manifest
+incompleteness** (a missing/empty/degraded per-UID current-assay entry REFUSES before the ⊇ check —
+`⊇ ∅` is vacuous); retrieve-failure fatality broadened to **any update row** (metadata-only
+included), a null `assays` field is a retrieve failure not a zero-assay sample; `--confirm-clear-assays`
+is **per-UID scoped** (never a global disable) and must be tested. Current-assay preservation uses
+the FULL `/assays/` map (a T2/DD-04 citation of the project-scoped map was a bug, corrected).
+
 ## 0. Provenance — where the requirements come from
 
 This spec is grounded only in primary sources, not paraphrase:
@@ -351,12 +358,15 @@ parameter, not a sheet field, so it is not part of this gate:
 - **update rows (populated UID):** every `json_metadata` attribute **present in the row** is
   non-blank; omitted required attributes are NOT required (the server deep-merge preserves them);
   `UID` is the identifier, **and**
-- **assay superset-guard (update rows, R6/§7.10):** the delivered `assay_ids` must be a **superset
-  of the sample's verified current assay set** (from the per-UID current-assay manifest) — else
-  REFUSE, because the server SET/REPLACE would delete the missing ones. A blank set is the
-  degenerate case (refused). The only way to shrink the set is an explicit per-UID clear/remove
-  opt-in (`--confirm-clear-assays <UID…>`, no default). This catches a non-blank-but-**incomplete**
-  set (under-retrieval, a comma-in-title split, an unresolved title), not just a blank one, **and**
+- **assay superset-guard (update rows, R6/R7/§7.10):** for every assay-touching update row the
+  per-UID current-assay manifest MUST have a **fresh, retrieve-verified entry**; a missing, empty
+  (unless the retrieve *positively confirmed* zero assays), or retrieve-degraded entry **FAILS CLOSED
+  (REFUSE) BEFORE the superset check** — because `delivered ⊇ ∅` is vacuously true, so
+  manifest-completeness is verified first. Given a verified entry, the delivered `assay_ids` must be
+  a **superset of the manifest-current set**, else REFUSE (the server SET/REPLACE deletes the
+  missing ones). The only shrink path is an explicit **per-UID** `--confirm-clear-assays <UID…>`
+  opt-in (no default; scoped to the named UIDs, never a global guard-disable). This catches a blank
+  OR incomplete set AND a soft retrieve gap, **and**
 - `totals.processed == produced row count`, **and**
 - `checks_run` contains `structure`, `name_check`, `dag`.
 
@@ -374,10 +384,12 @@ STOP and report on failure. The guarantee lives in the skill, not only in a test
 - **`markitdown` install failure:** fail-fast and escalate the named pure-python fallback to the
   curator; do not silently switch extractors.
 - **Retrieve (advanced_search) failure on an update:** non-fatal for `json_metadata` **visibility**
-  (partial-safe; surface a degraded-visibility note and proceed), but **fatal for any update that
-  touches `assay_ids`** — without the current assay set the skill cannot carry it forward and a
-  blank `assay_ids` would wipe (§7.10), so it must REFUSE or ask rather than emit an assay-losing
-  update.
+  (partial-safe; surface a degraded-visibility note and proceed), but **fatal for ANY update row**
+  (metadata-only included — the server diffs assays on every update row) — without the verified
+  current assay set the skill cannot carry it forward, so it must REFUSE or ask, never emit an
+  assay-losing update. A **null/absent `assays` field on a matched row is treated as a retrieve
+  failure, NOT an empty current set** (only a positively-confirmed empty result is a real zero-assay
+  sample); pagination must be complete before any assay-touching update is built.
 - **Validate endpoint error / non-200:** surface verbatim; do not deliver.
 
 ## 12. API contract (verified against the deployed dev OpenAPI spec, 2026-06-30)
