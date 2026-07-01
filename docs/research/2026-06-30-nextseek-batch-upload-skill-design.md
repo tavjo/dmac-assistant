@@ -36,6 +36,13 @@ uploads) neither carries nor gates on it. §9 step 7 corrected to drop "+ `updat
 The new-sample-row rule refuses a blank non-UID required attribute (no unverifiable "explicit-blank"
 exception; optional attributes may be blank).
 
+**Revision R5 (2026-07-01, owner-directed + verified live):** assay resolution is a **2-call
+project-scoped title↔id map** (`GET /projects/{id}/` + `GET /assays/`), superseding the R2 per-assay
+`GET /assays/{id}/` fetches (§7.6). **Assay updates are SET/REPLACE** (server `smart_merge_assay_assets`
+deletes omitted assays), so update rows must **carry forward the sample's current assay set ∪
+additions** (§7.10); current assays come from the `advanced_search` `assays` titles field (§12). A
+blank `assay_ids` on an update **wipes** all the sample's assays, so the gate guards it (§10).
+
 ## 0. Provenance — where the requirements come from
 
 This spec is grounded only in primary sources, not paraphrase:
@@ -210,29 +217,47 @@ re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.writ
   (§7.6). *(Owner directive, revised 2026-06-30: "ask user directly for project name... model does
   lookup first to pull all projects user has access to, asks the user to confirm which one should be
   used to filter assays by.")*
-- **§7.6 Assays:** the curator provides assay **titles**; the skill resolves title → real
-  `assay_id`, **disambiguated by study** (the same title can exist in multiple studies). *(Owner
-  directive.)*
+- **§7.6 Assays (R5, verified live):** resolve assay titles ↔ IDs via a **project-scoped map built
+  from 2 GET calls** — `GET /projects/{id}/` (`relationships.assays.data[].id` = the project's assay
+  IDs) + `GET /assays/` (`{id, title}` for all accessible assays) — keeping only the project's
+  assays. This **supersedes** the per-assay `GET /assays/{id}/` study-disambiguation (N calls → 2
+  calls, scales). The same map converts (a) the curator's provided assay titles → IDs and (b) each
+  sample's CURRENT assay titles (from `advanced_search`, §12) → IDs. *(Owner directive: query
+  `GET /projects/{id}/` for the project's assay IDs + one `GET /assays/` for the id:title map;
+  advanced_search returns assay associations as titles.)*
 - **§7.7 Output:** flat `InputRowModel` sheet (not the 4-sheet workbook). *(Owner-confirmed
   rethink of the earlier Q-101 default.)*
 - **§7.8 Divergence handling:** `json_metadata` authoritative; materialized columns review-only;
   edits go through the skill, not the sheet. *(Owner-confirmed.)*
 - **§7.9 Model correctness:** the per-instance assay-association model (§4) is confirmed correct by
   the owner.
+- **§7.10 Assay updates are SET/REPLACE, not deep-merge (R5, verified in `batch_upload/update.py`).**
+  On an update, the row's `assay_ids` is the **complete desired set**: the server's
+  `smart_merge_assay_assets` computes `to_remove = existing_assays − new_set` and **DELETEs** the
+  omitted ones (docstring: "add new, remove unlisted"; `update.py:117`, `:431-444`). It runs on
+  **every** update row, so a blank `assay_ids` on an update **WIPES all of that sample's assays**
+  (`json_metadata`, by contrast, is deep-merged/partial-safe). Therefore for every update row the
+  skill **carries forward the sample's current assay set ∪ the curator's additions** (current assays
+  come from the `advanced_search` `assays` titles field, §5/§12, resolved to IDs via the §7.6 map);
+  removing an assay happens only when the curator explicitly asks. Assay-only updates (changing only
+  `assay_ids`) are **in V1 scope**. *(Owner-confirmed; the replace behavior verified against the
+  server code.)*
 
 ## 8. Components (and what changes vs. the broken build)
 
 - **`_batch_upload_client.py`** — read-only HTTP client (HTTP Basic via `NEXTSEEK_USERNAME`/
   `NEXTSEEK_PASSWORD`; **`orjson` for all parse/serialize**, not stdlib `json`). Methods:
-  `list_projects()` (`GET /projects/`, returns `{id, title}` per project) + `project_studies(id)`
-  (`GET /projects/{id}/`, `relationships.studies`); `current_person()` (`GET /people/current/`);
+  `list_projects()` (`GET /projects/`, returns `{id, title}` per project);
+  `project_assays(id)` (`GET /projects/{id}/`, `relationships.assays.data[].id` = the project's
+  assay IDs); `current_person()` (`GET /people/current/`);
   `sample_type_attributes(uid)` (`GET /sample_types/{uid}/`, full attribute objects);
-  `list_assays()` (`GET /assays/`, `{id, title}`) + `assay_study(id)` (`GET /assays/{id}/`,
-  `relationships.study`) for title-to-id study-scoped resolution;
+  `list_assays()` (`GET /assays/`, `{id, title}`) — combined with `project_assays` into the
+  **project-scoped title↔id map** (§7.6; **replaces** the per-assay `assay_study` single-fetch);
   **`search_samples_by_uid(uids)` (new): `POST /samples/advanced_search/` with
   `{filter_searchText: uids, searchText_logic: "OR", filter_matchType: "EXACT"}` (no `attribute`),
-  paged at `page_size <= 1000`, client-side filtered to rows whose `json_metadata.UID` is in the
-  requested set; the read-only retrieve for update-visibility (§3)**;
+  paged at `page_size <= 1000`, client-side filtered by `json_metadata.UID`; returns per sample the
+  `json_metadata` attrs AND the current **assay titles** (the row's `assays` comma-separated field,
+  §12) — the read-only retrieve for update-visibility AND assay carry-forward (§3/§7.10)**;
   **`validate_file(xlsx, project_id, checks)` (new): `POST /batch-upload/validate/`, multipart
   file mode, `checks` as a multipart form field**. **Deleted:** the per-UID `read_samples()` GET
   loop and the entire client-side merge/read-back path. No `start()`/`upload()`; structurally
@@ -262,24 +287,28 @@ re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.writ
 3. **Fetch the exact attribute schema** per sample type: `GET /sample_types/{uid}/` → full attribute
    objects (`title`, `required`, `is_title`, `base_type`). Persist the **structured** objects (not
    titles-only).
-4. **Resolve assay titles → study-scoped `assay_id`s:** `GET /assays/` gives `{id, title}` per
-   assay (list = title + id only). For a title matching multiple assays, disambiguate by study:
-   fetch `GET /assays/{id}/` (`relationships.study`) per candidate and keep the one whose study
-   belongs to the confirmed project (`GET /projects/{id}/`, `relationships.studies`). Never guess an
-   `assay_id`.
-5. **For updates, retrieve existing metadata (read-only, visibility):** call
-   `search_samples_by_uid()` (advanced_search by the UID list, §8) and client-side filter to the
-   requested UIDs; show the curator current values and compute the **resulting** sample as a display
-   overlay (current values + pending changes). Visibility only: the upload still carries only the
-   changed attributes (partial-safe). A retrieve failure is non-fatal (§11).
+4. **Build the project-scoped assay title↔id map (R5):** `GET /projects/{id}/`
+   (`relationships.assays.data[].id`) + `GET /assays/` (`{id, title}`), keep only the project's
+   assays → a `{title: id}` (and `{id: title}`) map. Resolve the curator's assay titles → IDs via
+   this map; never guess an `assay_id`. (2 GET calls; supersedes per-assay fetches.)
+5. **For updates, retrieve existing state (read-only):** call `search_samples_by_uid()`
+   (advanced_search by the UID list, §8), client-side filtered to the requested UIDs. Two uses:
+   (a) **visibility** — show current attribute values + the resulting overlay; (b) **assay
+   carry-forward (LOAD-BEARING, §7.10)** — each row's `assays` titles → IDs (via the §7.6 map) are
+   the sample's current assay set, which the update row must carry forward (∪ additions) or the
+   server WIPES it. For (a) `json_metadata` is partial-safe so a retrieve failure is non-fatal
+   (§11); for (b) a retrieve failure means the skill must NOT emit a blank-assay update (it would
+   wipe) — refuse or ask (§10/§11).
 6. **Populate values** from the curator's info into the **exact DB attribute names** (the only keys
    allowed in `json_metadata`). `Parent` is one of those attributes like any other; its *value* is
    the parent's UID or Name. **Ask the curator** for any missing required/`is_title` value or any
    unresolved assay/parent; never invent, never guess DB-specific values.
 7. **Build rows:** UID blank for a new sample / the existing NExtSEEK UID for an update
    (`update_existing` is an upload-request parameter, not a sheet field, so the sheet carries only
-   the UID); per-row `assay_ids`/`assay_titles`; the flat sheet with materialized review columns
-   (§6). No scale cap.
+   the UID). Per-row `assay_ids`/`assay_titles`: for an **update**, `assay_ids` = the sample's
+   current set (step 5) ∪ the curator's additions (SET/REPLACE, §7.10) — never blank on an update
+   unless the curator explicitly clears; for a **new sample**, the curator-provided assays. The flat
+   sheet with materialized review columns (§6). No scale cap.
 8. **Validate the produced `.xlsx`** via `validate_file` (multipart **file mode**, the way it
    uploads), all three checks (`structure,name_check,dag`), passing `checks` as a **multipart form
    field** and asserting `checks_run` contains all three.
@@ -291,18 +320,25 @@ re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.writ
 
 The skill validates the **artifact it delivers** (the `.xlsx`, file mode → server `convert.py`
 traditional/flat parse + ontology), **not** internal JSON rows (rows mode bypasses Excel parsing).
+The gate derives each row's attribute set and values by **orjson-parsing that row's `json_metadata`
+cell** (the authoritative payload) and MUST ignore the flat `REVIEW_ONLY__` materialized columns for
+every present/required/non-blank determination.
 
 Deliver **only if all hold**. Create vs update is determined **per row by UID presence** (blank UID
 = new sample; populated UID = existing sample being updated); `update_existing` is an upload-request
 parameter, not a sheet field, so it is not part of this gate:
 - `valid == true` and `errors[]` empty, **and**
-- every row has ≥ 1 real (non-UID) attribute, **and**
+- every row has ≥ 1 real (non-UID) `json_metadata` attribute **or** (for an update) a changed
+  `assay_ids` set — an assay-only update satisfies non-emptiness (§7.10), **and**
 - **new-sample rows (blank UID):** every **non-UID** `required==true` attribute is populated (`UID`
   is blank by design, the server auto-generates it; a blank non-UID required attribute REFUSES;
   optional attributes may be blank), **and**
-- **update rows (populated UID):** every attribute **present in the row** is non-blank; omitted
-  required attributes are NOT required (the server deep-merge preserves them); `UID` is the
-  identifier, **and**
+- **update rows (populated UID):** every `json_metadata` attribute **present in the row** is
+  non-blank; omitted required attributes are NOT required (the server deep-merge preserves them);
+  `UID` is the identifier, **and**
+- **assay-wipe guard (update rows, §7.10):** `assay_ids` carries the sample's current set ∪
+  additions; a **blank/empty `assay_ids` on an update REFUSES** (it would delete all the sample's
+  assays) unless the curator explicitly confirmed clear-all, **and**
 - `totals.processed == produced row count`, **and**
 - `checks_run` contains `structure`, `name_check`, `dag`.
 
@@ -319,8 +355,11 @@ STOP and report on failure. The guarantee lives in the skill, not only in a test
   surface and ask; never fabricate.
 - **`markitdown` install failure:** fail-fast and escalate the named pure-python fallback to the
   curator; do not silently switch extractors.
-- **Retrieve (advanced_search) failure on an update:** non-fatal (the update is partial-safe and
-  does not depend on the retrieve); surface a degraded-visibility note to the curator and proceed.
+- **Retrieve (advanced_search) failure on an update:** non-fatal for `json_metadata` **visibility**
+  (partial-safe; surface a degraded-visibility note and proceed), but **fatal for any update that
+  touches `assay_ids`** — without the current assay set the skill cannot carry it forward and a
+  blank `assay_ids` would wipe (§7.10), so it must REFUSE or ask rather than emit an assay-losing
+  update.
 - **Validate endpoint error / non-200:** surface verbatim; do not deliver.
 
 ## 12. API contract (verified against the deployed dev OpenAPI spec, 2026-06-30)
@@ -346,10 +385,15 @@ across every endpoint in this flow. Parse/serialize with **`orjson`**.
   searchText_logic: "OR", filter_matchType: "EXACT"}` with **no `attribute`** (verified live: adding
   `attribute:"UID"` to a list+OR query returns 0 rows). Query params `page` (1-based), `page_size`
   (default 100, max 1000). Response `SampleAdvancedSearchResult` `{total, rows[]}`; each
-  `SampleAdvancedSearchRow` carries `json_metadata` (the full populated attribute object), use it,
-  **not** `attributeValue` (HTML highlight markup). Client-side filter rows to `json_metadata.UID`
-  in the requested set (an EXACT free-text UID can also hit a sample referencing it as `Parent`).
-  *Verified live on dev 2026-06-30.*
+  `SampleAdvancedSearchRow` (additionalProperties; real fields verified live) carries `json_metadata`
+  (the full attribute object — use it, **not** the HTML `attributeValue`/`uid`/`idlink` fields);
+  `title` and `uuid` = the clean UID string (also `json_metadata.UID`); and **`assays` = a
+  COMMA-SEPARATED STRING of the sample's current assay TITLES** (e.g. `"Tissue Collection -
+  Metadata,Flow Cytometry - Data Linked"`) — the assay carry-forward source (§7.10), resolved to IDs
+  via the §7.6 project-scoped map. Client-side filter rows to `json_metadata.UID` in the requested
+  set (an EXACT free-text UID can also hit a sample referencing it as `Parent`). *Robustness: if a
+  project assay title can contain a comma, match tokens against the known project title set rather
+  than a naive split (verify at build time).* *Verified live on dev 2026-06-30.*
 - `GET /nextseek_api/sample_types/` (list) and `GET /nextseek_api/sample_types/{uid}/` (`{uid}` =
   type code e.g. `TIS` **or** numeric SEEK id). The latter returns `data.attributes.
   sample_attributes[]`; each attribute object carries **top-level `required` and `is_title`
