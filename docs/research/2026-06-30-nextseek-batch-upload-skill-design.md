@@ -43,6 +43,13 @@ deletes omitted assays), so update rows must **carry forward the sample's curren
 additions** (§7.10); current assays come from the `advanced_search` `assays` titles field (§12). A
 blank `assay_ids` on an update **wipes** all the sample's assays, so the gate guards it (§10).
 
+**Revision R6 (2026-07-01, from re-vet):** the §10 assay guard upgraded from "blank → refuse" to
+**"delivered `assay_ids` ⊇ the verified current set → else refuse"** (per-UID current-assay
+manifest, §7.10) — catches an incomplete non-blank set (under-retrieval / comma-split / unresolved
+title), not just a blank one. Current-assay preservation resolves against the **FULL `/assays/`
+map** (not project-scoped); `assays` titles are parsed by **longest-match** (comma-safe);
+metadata-only updates also carry forward the current set.
+
 ## 0. Provenance — where the requirements come from
 
 This spec is grounded only in primary sources, not paraphrase:
@@ -240,8 +247,16 @@ re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.writ
   skill **carries forward the sample's current assay set ∪ the curator's additions** (current assays
   come from the `advanced_search` `assays` titles field, §5/§12, resolved to IDs via the §7.6 map);
   removing an assay happens only when the curator explicitly asks. Assay-only updates (changing only
-  `assay_ids`) are **in V1 scope**. *(Owner-confirmed; the replace behavior verified against the
-  server code.)*
+  `assay_ids`) are **in V1 scope**. **Deterministic safety (R6):** during build the skill persists a
+  per-UID **current-assay manifest** (a gate-readable sidecar, NOT shipped in the sheet); the §10
+  superset-guard verifies the delivered `assay_ids ⊇ manifest-current` (unless a per-UID clear
+  opt-in). **Preservation resolves current titles→IDs against the FULL `GET /assays/` id↔title map,
+  not the project-scoped one** (a sample may already carry an assay outside the project's list; keep
+  what it has; the project-scoped map is only for the curator's NEW additions, §7.6). **Comma-in-title:**
+  parse the `assays` titles by **longest-match membership** against the known assay title set, not
+  `str.split(",")`; fail closed (refuse/ask) on an unresolvable token. **A metadata-only update
+  still carries the current assay set forward** (the server diffs assays on every update row).
+  *(Owner-confirmed; replace behavior verified in `update.py`; superset-guard from re-vet.)*
 
 ## 8. Components (and what changes vs. the broken build)
 
@@ -336,9 +351,12 @@ parameter, not a sheet field, so it is not part of this gate:
 - **update rows (populated UID):** every `json_metadata` attribute **present in the row** is
   non-blank; omitted required attributes are NOT required (the server deep-merge preserves them);
   `UID` is the identifier, **and**
-- **assay-wipe guard (update rows, §7.10):** `assay_ids` carries the sample's current set ∪
-  additions; a **blank/empty `assay_ids` on an update REFUSES** (it would delete all the sample's
-  assays) unless the curator explicitly confirmed clear-all, **and**
+- **assay superset-guard (update rows, R6/§7.10):** the delivered `assay_ids` must be a **superset
+  of the sample's verified current assay set** (from the per-UID current-assay manifest) — else
+  REFUSE, because the server SET/REPLACE would delete the missing ones. A blank set is the
+  degenerate case (refused). The only way to shrink the set is an explicit per-UID clear/remove
+  opt-in (`--confirm-clear-assays <UID…>`, no default). This catches a non-blank-but-**incomplete**
+  set (under-retrieval, a comma-in-title split, an unresolved title), not just a blank one, **and**
 - `totals.processed == produced row count`, **and**
 - `checks_run` contains `structure`, `name_check`, `dag`.
 
@@ -400,10 +418,12 @@ across every endpoint in this flow. Parse/serialize with **`orjson`**.
   booleans**, `pos`, `unit`, `sample_attribute_type.base_type` (nested: `Text`/`Float`/`Integer`/
   `Date`), and `sample_controlled_vocab_id` (null = free-text). *(Verified live: TIS has 90
   attributes; `Parent` is `sample_attributes[5]`, required=false, Text.)*
-- `GET /nextseek_api/projects/` and `GET /nextseek_api/assays/` — **list items carry `{id, title}`
-  only** (prose claiming studies/emails/etc. is overstated). Study linkage comes from the **single
-  fetch**: `GET /projects/{id}/` → `relationships.studies`, `GET /assays/{id}/` →
-  `relationships.study` (id/type refs only). `GET /nextseek_api/people/current/` — the logged-in
+- `GET /nextseek_api/projects/` (list, `{id, title}`) and `GET /nextseek_api/assays/` (list, all
+  accessible assays as `{id, title}` — 324 on dev). **Assay resolution (R5) uses `GET /projects/{id}/`
+  → `relationships.assays.data[].id`** (the project's assay IDs) joined with the `/assays/` id↔title
+  list into the project-scoped title↔id map — **NOT** a per-assay `GET /assays/{id}/` fetch
+  (superseded, §7.6). `GET /projects/{id}/` `relationships` also exposes `studies`, but the R5 flow
+  scopes by the project's assays, not by study. `GET /nextseek_api/people/current/` — the logged-in
   person (`data.id` = caller's SEEK person id).
 - `InputRowModel` required fields: `SampleType`, **`json_metadata` (a required JSON STRING**, built
   with `orjson.dumps(...).decode()`). Present-but-optional: `UID`, `assay_ids`, `assay_titles`,
