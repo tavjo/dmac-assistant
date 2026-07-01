@@ -29,6 +29,13 @@ blank on create (server auto-generates it), and update rows carry only changed a
 required attrs are server-preserved). Corrected per the spec's own §3 create/update semantics; §7.2
 aligned.
 
+**Revision R4 (2026-07-01, owner scope-correction):** the §10 create-vs-update classification is
+**per row by UID presence** (blank = new sample, populated = existing sample); `update_existing` is
+an **upload-request parameter, not a sheet field**, so the skill (which builds the sheet, never
+uploads) neither carries nor gates on it. §9 step 7 corrected to drop "+ `update_existing=true`".
+The new-sample-row rule refuses a blank non-UID required attribute (no unverifiable "explicit-blank"
+exception; optional attributes may be blank).
+
 ## 0. Provenance — where the requirements come from
 
 This spec is grounded only in primary sources, not paraphrase:
@@ -232,7 +239,8 @@ re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.writ
   absent.
 - **`_batch_upload_payload.py`** — flat-sheet builder: `json_metadata` (authoritative, includes
   `Parent`) + per-row `assay_ids`/`assay_titles` + materialized review columns; enforces exact DB
-  attribute names, required/`is_title` population, and non-emptiness. **Deleted:**
+  attribute names, the create-vs-update/UID-aware required-attr population (§10), and non-emptiness.
+  **Deleted:**
   `merge_attributes`, `--merge-existing`, `--as-merge-map`.
 - **`_batch_upload_runner.py`** — orchestration + the **hard delivery gate** (non-zero exit on
   fail; stage-then-promote).
@@ -268,8 +276,10 @@ re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.writ
    allowed in `json_metadata`). `Parent` is one of those attributes like any other; its *value* is
    the parent's UID or Name. **Ask the curator** for any missing required/`is_title` value or any
    unresolved assay/parent; never invent, never guess DB-specific values.
-7. **Build rows:** UID blank for create / NExtSEEK UID + `update_existing=true` for update; per-row
-   `assay_ids`/`assay_titles`; the flat sheet with materialized review columns (§6). No scale cap.
+7. **Build rows:** UID blank for a new sample / the existing NExtSEEK UID for an update
+   (`update_existing` is an upload-request parameter, not a sheet field, so the sheet carries only
+   the UID); per-row `assay_ids`/`assay_titles`; the flat sheet with materialized review columns
+   (§6). No scale cap.
 8. **Validate the produced `.xlsx`** via `validate_file` (multipart **file mode**, the way it
    uploads), all three checks (`structure,name_check,dag`), passing `checks` as a **multipart form
    field** and asserting `checks_run` contains all three.
@@ -282,16 +292,17 @@ re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.writ
 The skill validates the **artifact it delivers** (the `.xlsx`, file mode → server `convert.py`
 traditional/flat parse + ontology), **not** internal JSON rows (rows mode bypasses Excel parsing).
 
-Deliver **only if all hold** (the attribute-population conjunct is **create-vs-update and UID
-aware**, per §3):
+Deliver **only if all hold**. Create vs update is determined **per row by UID presence** (blank UID
+= new sample; populated UID = existing sample being updated); `update_existing` is an upload-request
+parameter, not a sheet field, so it is not part of this gate:
 - `valid == true` and `errors[]` empty, **and**
 - every row has ≥ 1 real (non-UID) attribute, **and**
-- **create rows:** every **non-UID** `required==true` attribute is populated. `UID` is exempt (blank
-  by design on create, the server auto-generates it), as is any other server-auto-generated
-  `is_title` attribute; a curator-confirmed explicit blank (§7.2) on a non-UID required attribute is
-  allowed, **and**
-- **update rows:** `UID` is present, and every attribute **present in the row** is non-blank; omitted
-  required attributes are NOT required here (the server deep-merge preserves them), **and**
+- **new-sample rows (blank UID):** every **non-UID** `required==true` attribute is populated (`UID`
+  is blank by design, the server auto-generates it; a blank non-UID required attribute REFUSES;
+  optional attributes may be blank), **and**
+- **update rows (populated UID):** every attribute **present in the row** is non-blank; omitted
+  required attributes are NOT required (the server deep-merge preserves them); `UID` is the
+  identifier, **and**
 - `totals.processed == produced row count`, **and**
 - `checks_run` contains `structure`, `name_check`, `dag`.
 
