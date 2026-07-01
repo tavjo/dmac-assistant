@@ -22,6 +22,13 @@ single fetches (§7.6/§9 step 4); parse/serialize with `orjson` (§12/§15). Th
 verified against `https://nextseek-dev.mit.edu` (the owner-designated source of truth), not on-disk
 source.
 
+**Revision R3 (2026-07-01, owner-approved, from re-vet):** §10 hard-gate rule made create-vs-update
+and UID aware. The prior flat rule ("every `required==true`/`is_title` attribute is populated")
+refused every valid sheet: `UID` is `required==true` AND the only `is_title==true` attribute yet is
+blank on create (server auto-generates it), and update rows carry only changed attributes (omitted
+required attrs are server-preserved). Corrected per the spec's own §3 create/update semantics; §7.2
+aligned.
+
 ## 0. Provenance — where the requirements come from
 
 This spec is grounded only in primary sources, not paraphrase:
@@ -177,10 +184,13 @@ re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.writ
   visibility (read-only, via advanced_search by UID list, §8/§12). *(Owner-confirmed: "Preserved
   (partial is safe)"; retrieve restored R2 2026-06-30: "advanced_search literally works fine... pass
   in the list of UIDs as the filter search text.")*
-- **§7.2 Missing values:** **ask the curator, then hard-gate.** After fetching the attribute
-  schema, the model identifies attributes (esp. `required`/`is_title`) it has no value for and asks
-  the curator (or for explicit-blank confirmation) before building; a deterministic gate then
-  refuses any sheet that is empty or missing a required attribute. *(Owner-confirmed.)*
+- **§7.2 Missing values:** **ask the curator, then hard-gate (create-vs-update aware, §10).** After
+  fetching the attribute schema, the model identifies the **non-UID** `required` attributes it has no
+  value for and asks the curator (or for explicit-blank confirmation) before building; a
+  deterministic gate then refuses any empty sheet, any create row missing a non-UID required
+  attribute, and any update row with a present-but-blank attribute. `UID` is blank by design on
+  create; omitted attributes on an update are server-preserved (not required). *(Owner-confirmed;
+  create/update/UID-aware per R3.)*
 - **§7.3 Scale:** no caps, no feasibility second-guessing. *(Owner directive.)*
 - **§7.4 Ontology/controlled-vocab:** out of scope V1 (free-text). *(Owner-confirmed.)*
 - **§7.5 `project_id`:** resolved interactively, **never silently auto-selected.** The skill always
@@ -272,10 +282,16 @@ re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.writ
 The skill validates the **artifact it delivers** (the `.xlsx`, file mode → server `convert.py`
 traditional/flat parse + ontology), **not** internal JSON rows (rows mode bypasses Excel parsing).
 
-Deliver **only if all hold**:
+Deliver **only if all hold** (the attribute-population conjunct is **create-vs-update and UID
+aware**, per §3):
 - `valid == true` and `errors[]` empty, **and**
 - every row has ≥ 1 real (non-UID) attribute, **and**
-- every `required==true` / `is_title` attribute is populated, **and**
+- **create rows:** every **non-UID** `required==true` attribute is populated. `UID` is exempt (blank
+  by design on create, the server auto-generates it), as is any other server-auto-generated
+  `is_title` attribute; a curator-confirmed explicit blank (§7.2) on a non-UID required attribute is
+  allowed, **and**
+- **update rows:** `UID` is present, and every attribute **present in the row** is non-blank; omitted
+  required attributes are NOT required here (the server deep-merge preserves them), **and**
 - `totals.processed == produced row count`, **and**
 - `checks_run` contains `structure`, `name_check`, `dag`.
 
