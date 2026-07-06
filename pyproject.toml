@@ -10,6 +10,7 @@ dependencies = [
     "fastapi>=0.116",
     "fastexcel>=0.20.2",
     "httpx>=0.28.1",
+    "orjson>=3.11.0",
     # Plan A · Amendment 7 v2 to T7 (2026-04-30), followed by the
     # 2026-05-04 docs-ingest stabilization: generated NExtSEEK docs are built
     # by the sibling `build_tools/` uv project, while the bridge runtime and

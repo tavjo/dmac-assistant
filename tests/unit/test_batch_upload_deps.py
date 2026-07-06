@@ -22,6 +22,7 @@ def test_dependency_declarations():
     def _named(deps, name):
         return any(d.split("[")[0].split(">")[0].split("=")[0].split("~")[0].strip() == name for d in deps)
     assert _named(main, "polars") and _named(main, "fastexcel") and _named(main, "xlsxwriter")
+    assert _named(main, "orjson")
     assert not _named(main, "openpyxl"), "do not add openpyxl as a direct dependency"
     extra = data["project"].get("optional-dependencies", {}).get("container", [])
     assert any("markitdown" in d for d in extra), "markitdown must be image-only (optional-dependencies.container)"
