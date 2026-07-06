@@ -159,15 +159,17 @@ def capture(env_file: pathlib.Path, fixtures_dir: pathlib.Path, evidence_dir: pa
 
     breadth = sorted(
         {_uid(row) for row in rows if _uid(row)},
-        key=lambda uid: next(
-            (
-                len(str(row.get("assays") or "").split(","))
-                for row in rows
-                if _uid(row) == uid
+        key=lambda uid: (
+            -next(
+                (
+                    len(str(row.get("assays") or "").split(","))
+                    for row in rows
+                    if _uid(row) == uid
+                ),
+                0,
             ),
-            0,
+            uid,
         ),
-        reverse=True,
     )[:10]
     if len(breadth) < 3:
         raise RuntimeError("fewer than three breadth probe UIDs captured")

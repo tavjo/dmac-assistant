@@ -17,6 +17,7 @@ EXPECTED = {
 COLLISION_TITLE = "Comet Chip Analysis - Data Attached"
 COLLISION_IDS = {"351", "260"}
 FIXED_UID = "D.IMG-230913ENG-1757-PUB"
+PARENT_UID = "CEL-230912ENG-2-PUB"
 
 
 def _load_json(path: pathlib.Path) -> Any:
@@ -66,6 +67,23 @@ def _sample_ids(body: dict[str, Any]) -> set[str]:
     return {str(item["id"]) for item in body["data"]["relationships"]["samples"]["data"]}
 
 
+def _expected_breadth(rows: list[dict[str, Any]]) -> list[str]:
+    return sorted(
+        {_uid(row) for row in rows if _uid(row)},
+        key=lambda uid: (
+            -next(
+                (
+                    len(str(row.get("assays") or "").split(","))
+                    for row in rows
+                    if _uid(row) == uid
+                ),
+                0,
+            ),
+            uid,
+        ),
+    )[:10]
+
+
 def verify(transcript_path: pathlib.Path, fixtures_dir: pathlib.Path) -> None:
     transcript = _load_json(transcript_path)
     calls = {call["name"]: call for call in transcript.get("calls", [])}
@@ -86,6 +104,18 @@ def verify(transcript_path: pathlib.Path, fixtures_dir: pathlib.Path) -> None:
     assay_260 = recomputed["assay_samples_260"]
 
     rows = _rows(advanced)
+    advanced_call = calls["advanced_search_uid"]
+    request = advanced_call.get("request_json")
+    expected_requested = [FIXED_UID, PARENT_UID]
+    if request != {
+        "filter_searchText": expected_requested,
+        "searchText_logic": "OR",
+        "filter_matchType": "EXACT",
+    }:
+        raise SystemExit("advanced_search request body does not match W0 contract")
+    if "attribute" in request:
+        raise SystemExit("advanced_search request unexpectedly contains attribute")
+
     fixed = [row for row in rows if _uid(row) == FIXED_UID]
     if len(fixed) != 1:
         raise SystemExit("fixed anchor row missing or duplicated")
@@ -105,6 +135,27 @@ def verify(transcript_path: pathlib.Path, fixtures_dir: pathlib.Path) -> None:
 
     provenance_path = fixtures_dir / "advanced_search_uid.provenance.json"
     provenance = _load_json(provenance_path)
+    transcript_host = str(transcript.get("base_url", "")).split("/nextseek_api", 1)[0]
+    expected_rows = [
+        {
+            "uid": _uid(row),
+            "role": "true_positive" if _uid(row) in set(expected_requested) else "false_positive",
+            "synthesized": False,
+        }
+        for row in rows
+    ]
+    if provenance.get("endpoint") != "/nextseek_api/samples/advanced_search/":
+        raise SystemExit("provenance endpoint mismatch")
+    if provenance.get("host") != transcript_host:
+        raise SystemExit("provenance host is not transcript-derived")
+    if provenance.get("capture_date") != transcript.get("capture_date"):
+        raise SystemExit("provenance capture_date is not transcript-derived")
+    if provenance.get("live_probed") is not True:
+        raise SystemExit("provenance live_probed must be true")
+    if provenance.get("requested_uids") != expected_requested:
+        raise SystemExit("provenance requested_uids mismatch")
+    if provenance.get("rows") != expected_rows:
+        raise SystemExit("provenance rows are not transcript-derived")
     if provenance.get("sha256") != _sha256(_canonical(advanced)):
         raise SystemExit("provenance sha256 does not match transcript-derived advanced_search")
     probe = provenance.get("probe_sample", {})
@@ -120,6 +171,8 @@ def verify(transcript_path: pathlib.Path, fixtures_dir: pathlib.Path) -> None:
     for key, expected in expected_probe.items():
         if probe.get(key) != expected:
             raise SystemExit(f"provenance probe_sample.{key} mismatch")
+    if probe.get("breadth_probe_uids") != _expected_breadth(rows):
+        raise SystemExit("provenance breadth_probe_uids mismatch")
 
 
 def main() -> int:

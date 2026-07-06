@@ -6,16 +6,16 @@
   "probe_sample": {
     "assays_str_len": 60,
     "breadth_probe_uids": [
-      "D.IMG-230913ENG-1770-PUB",
-      "D.IMG-230913ENG-1778-PUB",
+      "D.IMG-230913ENG-1722-PUB",
       "D.IMG-230913ENG-1723-PUB",
-      "D.IMG-230913ENG-1767-PUB",
+      "D.IMG-230913ENG-1724-PUB",
+      "D.IMG-230913ENG-1725-PUB",
+      "D.IMG-230913ENG-1726-PUB",
+      "D.IMG-230913ENG-1727-PUB",
+      "D.IMG-230913ENG-1728-PUB",
+      "D.IMG-230913ENG-1729-PUB",
       "D.IMG-230913ENG-1730-PUB",
-      "D.IMG-230913ENG-1811-PUB",
-      "D.IMG-230913ENG-1773-PUB",
-      "D.IMG-230913ENG-1733-PUB",
-      "D.IMG-230913ENG-1755-PUB",
-      "D.IMG-230913ENG-1726-PUB"
+      "D.IMG-230913ENG-1731-PUB"
     ],
     "collision_ids": [
       260,
