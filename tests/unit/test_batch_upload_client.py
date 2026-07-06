@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 import json
 import pathlib
 import sys
@@ -211,6 +212,50 @@ def test_search_samples_by_uid_pages_and_handles_string_metadata(monkeypatch):
     assert [row["numeric_seek_id"] for row in rows] == [7, 8]
 
 
+def test_search_samples_by_uid_longest_match_parses_comma_titles():
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "total": 1,
+                "rows": [
+                    {
+                        "id": 9,
+                        "json_metadata": {"UID": "u1"},
+                        "assays": "Alpha, with comma, Alpha, Beta",
+                    }
+                ],
+            },
+        )
+
+    rows = _client(handler).search_samples_by_uid(
+        ["u1"],
+        known_assay_titles=["Alpha", "Alpha, with comma", "Beta"],
+    )
+
+    assert rows[0]["assay_titles"] == ["Alpha, with comma", "Alpha", "Beta"]
+
+
+def test_search_samples_by_uid_longest_match_fails_closed_on_unknown_title():
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "total": 1,
+                "rows": [
+                    {
+                        "id": 9,
+                        "json_metadata": {"UID": "u1"},
+                        "assays": "Known, Unknown",
+                    }
+                ],
+            },
+        )
+
+    with pytest.raises(ValueError, match="could not parse"):
+        _client(handler).search_samples_by_uid(["u1"], known_assay_titles=["Known"])
+
+
 def test_search_samples_by_uid_ignores_non_list_rows_and_non_dict_metadata():
     def handler(request):
         return httpx.Response(200, json={"total": 3, "rows": {"not": "a-list"}})
@@ -290,6 +335,8 @@ def test_list_assays_projects_and_title_resolution_branches():
     assert c.resolve_assay_title("Comet Chip", title_map, project_ids) == 351
     with pytest.raises(ValueError, match="ambiguous"):
         c.resolve_assay_title("Comet Chip", title_map, {260, 351})
+    with pytest.raises(ValueError, match="ambiguous"):
+        c.resolve_assay_title("Solo", title_map, {351})
     assert any("page=2" in url for url in calls)
 
 
@@ -330,6 +377,14 @@ def test_current_assay_titles_fast_path_and_failure_branches():
             ["Ambiguous"],
             sample_numeric_id="324503",
             title_map={"Ambiguous": [351, 260]},
+            project_assay_ids={351, 260},
+        )
+
+    with pytest.raises(ValueError, match="not in project"):
+        c2.resolve_current_assay_titles(
+            ["Out of Project"],
+            sample_numeric_id="324503",
+            title_map={"Out of Project": [999]},
             project_assay_ids={351, 260},
         )
 
@@ -431,16 +486,23 @@ def test_from_env_credential_precedence_and_transport(monkeypatch):
     c = buc.BatchUploadClient.from_env(transport=httpx.MockTransport(handler))
     c.list_sample_types()
     assert seen["auth"].startswith("Basic ")
+    encoded = seen["auth"].removeprefix("Basic ")
+    assert base64.b64decode(encoded).decode() == "next-user:next-pass"
     assert str(c._client.base_url).rstrip("/") == "http://ns.test"
 
 
-def test_from_env_legacy_fallback_and_missing(monkeypatch):
+def test_from_env_legacy_fallback_partial_nextseek_pair_and_missing(monkeypatch):
     for key in ("NEXTSEEK_URL", "NEXTSEEK_BASE_URL", "NEXTSEEK_USERNAME", "NEXTSEEK_PASSWORD", "API_USER", "API_PASS"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("NEXTSEEK_BASE_URL", "http://fallback.ns.test")
     monkeypatch.setenv("API_USER", "u")
     monkeypatch.setenv("API_PASS", "p")
     assert isinstance(buc.BatchUploadClient.from_env(), buc.BatchUploadClient)
+    monkeypatch.setenv("NEXTSEEK_USERNAME", "partial-user")
+    with pytest.raises(SystemExit) as partial:
+        buc.BatchUploadClient.from_env()
+    assert partial.value.code == 2
+    monkeypatch.delenv("NEXTSEEK_USERNAME")
     monkeypatch.delenv("API_PASS")
     with pytest.raises(SystemExit) as exc:
         buc.BatchUploadClient.from_env()

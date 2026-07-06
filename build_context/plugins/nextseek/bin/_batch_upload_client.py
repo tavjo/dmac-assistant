@@ -36,8 +36,16 @@ class BatchUploadClient:
         cls, *, transport: httpx.BaseTransport | None = None
     ) -> "BatchUploadClient":
         base = os.environ.get("NEXTSEEK_URL") or os.environ.get("NEXTSEEK_BASE_URL") or ""
-        user = os.environ.get("NEXTSEEK_USERNAME") or os.environ.get("API_USER") or ""
-        password = os.environ.get("NEXTSEEK_PASSWORD") or os.environ.get("API_PASS") or ""
+        ns_user = os.environ.get("NEXTSEEK_USERNAME") or ""
+        ns_password = os.environ.get("NEXTSEEK_PASSWORD") or ""
+        legacy_user = os.environ.get("API_USER") or ""
+        legacy_password = os.environ.get("API_PASS") or ""
+        if ns_user or ns_password:
+            user = ns_user
+            password = ns_password
+        else:
+            user = legacy_user
+            password = legacy_password
         if not base or not user or not password:
             sys.stderr.write(
                 "nextseek-error: CONFIG_MISSING — NEXTSEEK_URL/NEXTSEEK_BASE_URL "
@@ -96,10 +104,9 @@ class BatchUploadClient:
         if not candidates:
             raise ValueError(f"assay title not accessible: {title}")
         in_project = [item for item in candidates if item in project_assay_ids]
-        remaining = in_project or candidates
-        if len(remaining) != 1:
+        if len(in_project) != 1:
             raise ValueError(f"ambiguous assay title: {title}")
-        return remaining[0]
+        return in_project[0]
 
     def assay_samples(self, assay_ids: Iterable[int]) -> dict[int, set[str]]:
         out: dict[int, set[str]] = {}
@@ -125,7 +132,8 @@ class BatchUploadClient:
             if not candidates:
                 raise ValueError(f"current assay title not accessible: {title}")
             narrowed = [item for item in candidates if item in project_assay_ids]
-            narrowed = narrowed or candidates
+            if not narrowed:
+                raise ValueError(f"current assay title not in project: {title}")
             if len(narrowed) == 1:
                 resolved.add(narrowed[0])
             else:
@@ -143,8 +151,14 @@ class BatchUploadClient:
             resolved.update(matched)
         return resolved
 
-    def search_samples_by_uid(self, uids: list[str]) -> list[dict[str, Any]]:
+    def search_samples_by_uid(
+        self,
+        uids: list[str],
+        *,
+        known_assay_titles: Iterable[str] | None = None,
+    ) -> list[dict[str, Any]]:
         wanted = {uid for uid in uids if uid}
+        known_titles = list(known_assay_titles or [])
         by_uid: dict[str, dict[str, Any]] = {}
         for chunk in _chunks(sorted(wanted), _UID_CHUNK_SIZE):
             page = 1
@@ -169,7 +183,10 @@ class BatchUploadClient:
                 for row in rows:
                     uid = _metadata_uid(row)
                     if uid in wanted:
-                        by_uid[uid] = _normalize_sample_row(row)
+                        by_uid[uid] = _normalize_sample_row(
+                            row,
+                            known_assay_titles=known_titles,
+                        )
                 total = int(body.get("total") or len(rows))
                 if page * _PAGE_SIZE >= total or not rows:
                     break
@@ -259,11 +276,18 @@ def _metadata_uid(row: dict[str, Any]) -> str:
     return uid if isinstance(uid, str) else ""
 
 
-def _normalize_sample_row(row: dict[str, Any]) -> dict[str, Any]:
+def _normalize_sample_row(
+    row: dict[str, Any],
+    *,
+    known_assay_titles: Iterable[str] | None = None,
+) -> dict[str, Any]:
     metadata = row.get("json_metadata")
     if isinstance(metadata, str):
         metadata = orjson.loads(metadata)
-    titles = _parse_assay_titles(row.get("assays") or "")
+    titles = _parse_assay_titles(
+        row.get("assays") or "",
+        known_assay_titles=known_assay_titles,
+    )
     return {
         **row,
         "json_metadata": metadata if isinstance(metadata, dict) else {},
@@ -272,5 +296,28 @@ def _normalize_sample_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _parse_assay_titles(raw: str) -> list[str]:
-    return [part.strip() for part in raw.split(",") if part.strip()]
+def _parse_assay_titles(
+    raw: str,
+    *,
+    known_assay_titles: Iterable[str] | None = None,
+) -> list[str]:
+    if not known_assay_titles:
+        return [part.strip() for part in raw.split(",") if part.strip()]
+
+    titles = sorted({title for title in known_assay_titles if title}, key=len, reverse=True)
+    parsed: list[str] = []
+    pos = 0
+    while pos < len(raw):
+        while pos < len(raw) and raw[pos] in {",", " "}:
+            pos += 1
+        if pos >= len(raw):
+            break
+        match = next((title for title in titles if raw.startswith(title, pos)), None)
+        if match is None:
+            raise ValueError(f"could not parse assay titles: {raw}")
+        end = pos + len(match)
+        if end < len(raw) and raw[end] not in {",", " "}:
+            raise ValueError(f"could not parse assay titles: {raw}")
+        parsed.append(match)
+        pos = end
+    return parsed
