@@ -21,9 +21,9 @@ Global execution rules:
 
 | Wave | Tasks | Status | Commit(s) | Validation / Evidence | Review Findings |
 | --- | --- | --- | --- | --- | --- |
-| 0 | W0 live anchor capture | remediation implemented after partial review; rereview pending | `e6f93ac` + pending remediation commit | `evidence/batch-upload-w0/20260706T173555Z/capture_transcript.json` (ignored, persisted on disk); positive verifier passes; fabricated-assays, bogus-request, and tampered-provenance controls reject | first review partial: verifier did not recompute every provenance/request field |
-| 1 | T0 deps, fixtures, pin registry | remediation implemented after partial review; rereview pending | `185a337` + pending remediation commit | `out/T0.log`, `out/T0.xml`; exact-count `verify_pins_contract.py` => pass; `check_pins.py test_ns_fixtures.py out/T0.xml` => pass; `check_pins.py test_check_pins.py out/T0.xml` => pass | first review partial: real-JUnit oracle and pin-count verifier were too weak; fixture assertions were representative |
-| 2 | T1 client; T7 cost relay | pending | pending | pending | pending |
+| 0 | W0 live anchor capture | complete after remediation review | `e6f93ac`, `79e33a8` | `evidence/batch-upload-w0/20260706T173555Z/capture_transcript.json` (ignored, persisted on disk); positive verifier passes; fabricated-assays, bogus-request, and tampered-provenance controls reject | rereview pass in `.claude/plans/nextseek-batch-upload-skill-build-2026-06-30-vet/codex-wave-reviews/w0-remediation-review-2026-07-06.md` |
+| 1 | T0 deps, fixtures, pin registry | complete after second remediation review | `185a337`, `9eda1d4`, `947d672` | `out/T0.log`, `out/T0.xml`; exact-count `verify_pins_contract.py` => pass; `check_pins.py test_ns_fixtures.py out/T0.xml` => pass; `check_pins.py test_check_pins.py out/T0.xml` => pass | second rereview pass in `.claude/plans/nextseek-batch-upload-skill-build-2026-06-30-vet/codex-wave-reviews/t0-second-remediation-review-2026-07-06.md` |
+| 2 | T1 client; T7 cost relay | implemented; review pending | pending | `out/T1.log`, `out/T1.xml`: T1 client tests 19 passed, `_batch_upload_client` coverage 100%, pin check pass; `out/T7.log`, `out/T7.xml`: T7 relay tests and CC callback regression 6 passed, pin check pass | pending |
 | 3 | T2 payload; T5 extract | pending | pending | pending | pending |
 | 4 | T3 runner/hard gate/resolution | pending | pending | pending | pending |
 | 5 | T4 shims; T6 skill contract | pending | pending | pending | pending |

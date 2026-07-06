@@ -224,9 +224,17 @@ def stream_event_to_ws_frames(
                 )
         return frames
     if etype == "result":
-        return [
-            {"type": "session_ended", "session_id": current_session_id}
-        ]
+        frame: dict[str, Any] = {
+            "type": "session_ended",
+            "session_id": current_session_id,
+        }
+        if "usage" in payload:
+            frame["usage"] = payload["usage"]
+        if "total_cost_usd" in payload:
+            frame["total_cost_usd"] = payload["total_cost_usd"]
+        elif "usage" in payload:
+            frame["total_cost_usd"] = None
+        return [frame]
     return []
 
 

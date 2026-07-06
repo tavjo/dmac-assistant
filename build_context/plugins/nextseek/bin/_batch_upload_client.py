@@ -1,20 +1,29 @@
-"""Read-only NExtSEEK batch-upload client. Fetches sample-type attributes, reads
-existing samples, and calls the read-only `validate` endpoint. There is deliberately
-no upload/update method; the only write-side endpoint is never referenced here, so the
-client cannot submit a batch upload.
-Auth = per-session user NS login as HTTP Basic (mirrors _assistant_client.py)."""
+"""Read-only NExtSEEK batch-upload payload-builder client."""
 from __future__ import annotations
 
 import os
+import pathlib
 import sys
+from collections.abc import Iterable
+from typing import Any
+
 import httpx
+import orjson
 
 _API = "/nextseek_api"
+_UID_CHUNK_SIZE = 1000
+_PAGE_SIZE = 1000
 
 
 class BatchUploadClient:
-    def __init__(self, base_url: str, auth: tuple[str, str],
-                 transport: httpx.BaseTransport | None = None, timeout: float = 60.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        auth: tuple[str, str],
+        *,
+        transport: httpx.BaseTransport | None = None,
+        timeout: float = 60.0,
+    ) -> None:
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
             auth=auth,
@@ -23,71 +32,245 @@ class BatchUploadClient:
         )
 
     @classmethod
-    def from_env(cls) -> "BatchUploadClient":
+    def from_env(
+        cls, *, transport: httpx.BaseTransport | None = None
+    ) -> "BatchUploadClient":
         base = os.environ.get("NEXTSEEK_URL") or os.environ.get("NEXTSEEK_BASE_URL") or ""
-        user = os.environ.get("API_USER", "")
-        pw = os.environ.get("API_PASS", "")
-        if not base or not user or not pw:
+        user = os.environ.get("NEXTSEEK_USERNAME") or os.environ.get("API_USER") or ""
+        password = os.environ.get("NEXTSEEK_PASSWORD") or os.environ.get("API_PASS") or ""
+        if not base or not user or not password:
             sys.stderr.write(
-                "nextseek-error: CONFIG_MISSING — NEXTSEEK_URL / API_USER / API_PASS not set\n"
+                "nextseek-error: CONFIG_MISSING — NEXTSEEK_URL/NEXTSEEK_BASE_URL "
+                "and NEXTSEEK_USERNAME/NEXTSEEK_PASSWORD or API_USER/API_PASS not set\n"
             )
             raise SystemExit(2)
-        return cls(base_url=base, auth=(user, pw))
+        return cls(base_url=base, auth=(user, password), transport=transport)
 
-    def list_sample_types(self) -> list[dict]:
-        """GET /nextseek_api/sample_types/ — returns the raw data list."""
-        r = self._client.get(f"{_API}/sample_types/")
-        r.raise_for_status()
-        body = r.json()
+    def list_sample_types(self) -> list[dict[str, Any]]:
+        response = self._client.get(f"{_API}/sample_types/")
+        response.raise_for_status()
+        body = _json(response)
         return body.get("data", body) if isinstance(body, dict) else body
 
-    def sample_type_attributes(self, type_ref: str) -> dict:
-        """GET /nextseek_api/sample_types/{type_ref}/ — returns
-        {"sample_type": <ref>, "attributes": [<raw per-attribute object>, ...]}.
-
-        Step-0 confirmed shape: data.attributes.sample_attributes is the list.
-        Each per-attribute object: title, required, pos, unit, is_title, and
-        sample_attribute_type.base_type (nested, NOT a top-level key).
-        """
-        r = self._client.get(f"{_API}/sample_types/{type_ref}/")
-        r.raise_for_status()
-        body = r.json()
+    def sample_type_attributes(self, type_ref: str) -> dict[str, Any]:
+        response = self._client.get(f"{_API}/sample_types/{type_ref}/")
+        response.raise_for_status()
+        body = _json(response)
         data = body.get("data", {})
         attrs = data.get("attributes", {})
         sample_attrs = attrs.get("sample_attributes", []) if isinstance(attrs, dict) else []
         return {"sample_type": type_ref, "attributes": list(sample_attrs)}
 
-    def read_samples(self, uids: list[str]) -> list[dict]:
-        """Per-UID GET /nextseek_api/samples/{uid}/ — returns raw JSON:API bodies.
+    def current_person(self) -> dict[str, Any]:
+        response = self._client.get(f"{_API}/people/current/")
+        response.raise_for_status()
+        return _json(response)
 
-        2C-1: Step-0 CONFIRMED that data.attributes.attribute_map carries the existing
-        attribute name->value map (it IS present on retrieve responses, same key as the
-        write-side SamplePatchAttributes, verified against real sample A.ADCD-250312ALT-1-PUB).
-        Uses individual GETs rather than the write-endpoint because SampleAdvancedSearchRequest
-        is extra='forbid' + requires filter_searchText, so a {"filter_uids": [...]} body 422s.
-        """
-        out: list[dict] = []
-        for uid in uids:
-            r = self._client.get(f"{_API}/samples/{uid}/")
-            r.raise_for_status()
-            out.append(r.json())
+    def list_projects(self) -> list[dict[str, Any]]:
+        return self._paged_get(f"{_API}/projects/")
+
+    def list_assays(self) -> dict[str, list[int]]:
+        title_map: dict[str, list[int]] = {}
+        for item in self._paged_get(f"{_API}/assays/"):
+            title = item.get("attributes", {}).get("title")
+            if isinstance(title, str) and title:
+                title_map.setdefault(title, []).append(int(item["id"]))
+        for ids in title_map.values():
+            ids.sort()
+        return title_map
+
+    def project_assays(self, project_id: int | str) -> set[int]:
+        response = self._client.get(f"{_API}/projects/{project_id}/")
+        response.raise_for_status()
+        body = _json(response)
+        rel = body["data"]["relationships"]["assays"]["data"]
+        return {int(item["id"]) for item in rel}
+
+    def resolve_assay_title(
+        self,
+        title: str,
+        title_map: dict[str, list[int]],
+        project_assay_ids: set[int],
+    ) -> int:
+        candidates = [int(item) for item in title_map.get(title, [])]
+        if not candidates:
+            raise ValueError(f"assay title not accessible: {title}")
+        in_project = [item for item in candidates if item in project_assay_ids]
+        remaining = in_project or candidates
+        if len(remaining) != 1:
+            raise ValueError(f"ambiguous assay title: {title}")
+        return remaining[0]
+
+    def assay_samples(self, assay_ids: Iterable[int]) -> dict[int, set[str]]:
+        out: dict[int, set[str]] = {}
+        for assay_id in sorted({int(item) for item in assay_ids}):
+            samples: set[str] = set()
+            for item in self._paged_relationship_get(f"{_API}/assays/{assay_id}/", "samples"):
+                samples.add(str(item["id"]))
+            out[assay_id] = samples
         return out
 
-    def validate(self, rows: list[dict], project_id: int, *,
-                 update_existing: bool, checks: str) -> dict:
-        """POST /nextseek_api/batch-upload/validate/ — returns the ValidationResult dict.
+    def resolve_current_assay_titles(
+        self,
+        titles: list[str],
+        *,
+        sample_numeric_id: int | str,
+        title_map: dict[str, list[int]],
+        project_assay_ids: set[int],
+    ) -> set[int]:
+        resolved: set[int] = set()
+        ambiguous: dict[str, list[int]] = {}
+        for title in titles:
+            candidates = [int(item) for item in title_map.get(title, [])]
+            if not candidates:
+                raise ValueError(f"current assay title not accessible: {title}")
+            narrowed = [item for item in candidates if item in project_assay_ids]
+            narrowed = narrowed or candidates
+            if len(narrowed) == 1:
+                resolved.add(narrowed[0])
+            else:
+                ambiguous[title] = narrowed
+        if not ambiguous:
+            return resolved
 
-        This is the only POST the client issues. The write/submit endpoint is intentionally
-        absent from this class.
-        """
-        r = self._client.post(
-            f"{_API}/batch-upload/validate/",
-            json={
-                "rows": rows,
-                "project_id": project_id,
-                "update_existing": update_existing,
-                "checks": checks,
-            },
-        )
-        r.raise_for_status()
-        return r.json()
+        candidate_ids = {item for ids in ambiguous.values() for item in ids}
+        samples_by_assay = self.assay_samples(candidate_ids)
+        sample_key = str(sample_numeric_id)
+        for title, ids in ambiguous.items():
+            matched = {item for item in ids if sample_key in samples_by_assay.get(item, set())}
+            if not matched:
+                raise ValueError(f"could not resolve current assay title: {title}")
+            resolved.update(matched)
+        return resolved
+
+    def search_samples_by_uid(self, uids: list[str]) -> list[dict[str, Any]]:
+        wanted = {uid for uid in uids if uid}
+        by_uid: dict[str, dict[str, Any]] = {}
+        for chunk in _chunks(sorted(wanted), _UID_CHUNK_SIZE):
+            page = 1
+            while True:
+                response = self._client.post(
+                    f"{_API}/samples/advanced_search/",
+                    params={"page": page, "page_size": _PAGE_SIZE},
+                    content=orjson.dumps(
+                        {
+                            "filter_searchText": chunk,
+                            "searchText_logic": "OR",
+                            "filter_matchType": "EXACT",
+                        }
+                    ),
+                    headers={"content-type": "application/json"},
+                )
+                response.raise_for_status()
+                body = _json(response)
+                rows = body.get("rows", [])
+                if not isinstance(rows, list):
+                    rows = []
+                for row in rows:
+                    uid = _metadata_uid(row)
+                    if uid in wanted:
+                        by_uid[uid] = _normalize_sample_row(row)
+                total = int(body.get("total") or len(rows))
+                if page * _PAGE_SIZE >= total or not rows:
+                    break
+                page += 1
+        return [by_uid[uid] for uid in uids if uid in by_uid]
+
+    def validate_file(
+        self,
+        path: str | pathlib.Path,
+        *,
+        project_id: int,
+        checks: str,
+    ) -> dict[str, Any]:
+        with pathlib.Path(path).open("rb") as handle:
+            response = self._client.post(
+                f"{_API}/batch-upload/validate/",
+                data={"project_id": str(project_id), "checks": checks},
+                files={
+                    "file": (
+                        pathlib.Path(path).name,
+                        handle,
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                },
+            )
+        response.raise_for_status()
+        return _json(response)
+
+    def _paged_get(self, path: str) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            response = self._client.get(path, params={"page": page, "page_size": _PAGE_SIZE})
+            response.raise_for_status()
+            body = _json(response)
+            data = body.get("data", [])
+            if not isinstance(data, list):
+                raise ValueError(f"expected list data from {path}")
+            items.extend(data)
+            next_link = body.get("links", {}).get("next") if isinstance(body.get("links"), dict) else None
+            total = body.get("meta", {}).get("count") if isinstance(body.get("meta"), dict) else None
+            if not next_link and (total is None or len(items) >= int(total)):
+                break
+            if not data:
+                break
+            page += 1
+        return items
+
+    def _paged_relationship_get(self, path: str, relationship: str) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            response = self._client.get(path, params={"page": page, "page_size": _PAGE_SIZE})
+            response.raise_for_status()
+            body = _json(response)
+            rel_body = body["data"]["relationships"][relationship]
+            rel = rel_body["data"]
+            if not isinstance(rel, list):
+                raise ValueError(f"expected {relationship} relationship list")
+            items.extend(rel)
+            rel_next = rel_body.get("links", {}).get("next") if isinstance(rel_body.get("links"), dict) else None
+            body_next = body.get("links", {}).get("next") if isinstance(body.get("links"), dict) else None
+            if not (rel_next or body_next):
+                break
+            if not rel:
+                break
+            page += 1
+        return items
+
+
+def _chunks(values: list[str], size: int) -> Iterable[list[str]]:
+    for idx in range(0, len(values), size):
+        yield values[idx : idx + size]
+
+
+def _json(response: httpx.Response) -> Any:
+    return orjson.loads(response.content)
+
+
+def _metadata_uid(row: dict[str, Any]) -> str:
+    metadata = row.get("json_metadata")
+    if isinstance(metadata, str):
+        metadata = orjson.loads(metadata)
+    if not isinstance(metadata, dict):
+        return ""
+    uid = metadata.get("UID")
+    return uid if isinstance(uid, str) else ""
+
+
+def _normalize_sample_row(row: dict[str, Any]) -> dict[str, Any]:
+    metadata = row.get("json_metadata")
+    if isinstance(metadata, str):
+        metadata = orjson.loads(metadata)
+    titles = _parse_assay_titles(row.get("assays") or "")
+    return {
+        **row,
+        "json_metadata": metadata if isinstance(metadata, dict) else {},
+        "assay_titles": titles,
+        "numeric_seek_id": row.get("id"),
+    }
+
+
+def _parse_assay_titles(raw: str) -> list[str]:
+    return [part.strip() for part in raw.split(",") if part.strip()]
