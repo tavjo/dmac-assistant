@@ -83,6 +83,9 @@ def test_blank_uid_create_required_attrs_pass(tmp_path):
     assert "assay_titles" not in _metadata(row)
     assert "assay_titles" in df.columns
     assert any(column.startswith(bp.REVIEW_PREFIX) for column in df.columns)
+    assert row[f"{bp.REVIEW_PREFIX}Name"] == "sample-1"
+    assert row[f"{bp.REVIEW_PREFIX}Scientist"] == "Curator"
+    assert row[f"{bp.REVIEW_PREFIX}Parent"] == "PARENT-1"
 
 
 def test_create_missing_required_refuse(tmp_path):
@@ -328,6 +331,16 @@ def test_normalize_rows_raises_on_uid_mismatch():
             [
                 {
                     "UID": "UID-1",
+                    "SampleType": "TIS",
+                    "attributes": {"UID": "UID-2", "Treatment": "drug"},
+                }
+            ]
+        )
+    with pytest.raises(ValueError, match="uid_mismatch"):
+        bp.normalize_rows(
+            [
+                {
+                    "UID": "",
                     "SampleType": "TIS",
                     "attributes": {"UID": "UID-2", "Treatment": "drug"},
                 }

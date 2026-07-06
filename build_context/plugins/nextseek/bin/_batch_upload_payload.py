@@ -24,6 +24,8 @@ def normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         meta_uid = _clean(attrs.get("UID"))
         if uid and meta_uid and uid != meta_uid:
             raise ValueError("uid_mismatch")
+        if not uid and meta_uid:
+            raise ValueError("uid_mismatch")
         metadata = {str(key): value for key, value in attrs.items() if key != "UID"}
         if uid:
             metadata["UID"] = uid
@@ -75,6 +77,7 @@ def build(
     current = resolved_current or {}
     title_map = {int(key): value for key, value in (id_to_title or {}).items()}
     records: list[dict[str, Any]] = []
+    review_attr_titles: list[str] = []
     for row in normalized:
         _validate_row(row, schema)
         delivered_ids = _delivered_assay_ids(row, current)
@@ -83,12 +86,15 @@ def build(
             raise ValueError("assay_ids_titles_length_mismatch")
         if not _has_real_attribute(row["json_metadata"]) and not delivered_ids:
             raise ValueError("non_empty")
+        for key in row["json_metadata"]:
+            if key != "UID" and key not in review_attr_titles:
+                review_attr_titles.append(key)
         records.append(_record(row, delivered_ids, delivered_titles))
 
     out = pathlib.Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     path = out / output_name
-    _write_flat_xlsx(records, path)
+    _write_flat_xlsx(records, path, review_attr_titles=review_attr_titles)
     return [str(path)]
 
 
@@ -172,7 +178,12 @@ def _record(
     }
 
 
-def _write_flat_xlsx(records: list[dict[str, Any]], path: pathlib.Path) -> None:
+def _write_flat_xlsx(
+    records: list[dict[str, Any]],
+    path: pathlib.Path,
+    *,
+    review_attr_titles: list[str],
+) -> None:
     columns = [
         "UID",
         "SampleType",
@@ -183,6 +194,11 @@ def _write_flat_xlsx(records: list[dict[str, Any]], path: pathlib.Path) -> None:
         f"{REVIEW_PREFIX}attributes",
         f"{REVIEW_PREFIX}assays",
     ]
+    for title in review_attr_titles:
+        columns.append(f"{REVIEW_PREFIX}{title}")
+        for record in records:
+            metadata = orjson.loads(record["json_metadata"])
+            record[f"{REVIEW_PREFIX}{title}"] = metadata.get(title, "")
     df = pl.DataFrame(
         {column: [str(record.get(column) or "") for record in records] for column in columns},
         schema={column: pl.Utf8 for column in columns},
