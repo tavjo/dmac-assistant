@@ -123,23 +123,47 @@ def test_check_pins_rejects_tampered_required_block(tmp_path):
 
 
 def test_check_pins_real_junit_oracle(tmp_path):
-    test_file = tmp_path / "test_real_oracle.py"
-    test_file.write_text(
+    good = tmp_path / "test_real_oracle.py"
+    wrong = tmp_path / "test_wrong_file.py"
+    good.write_text(
         textwrap.dedent(
             """
             import pytest
 
-            def test_pass[case]():
+            def test_pass():
+                pass
+
+            @pytest.mark.parametrize("value", ["case"])
+            def test_param(value):
+                pass
+
+            @pytest.mark.skip(reason="oracle")
+            def test_skipped():
+                pass
+
+            def test_failed():
+                assert False
+
+            def test_errored():
+                raise RuntimeError("oracle")
+            """
+        )
+    )
+    wrong.write_text(
+        textwrap.dedent(
+            """
+            def test_pass():
                 pass
             """
-        ).replace("test_pass[case]", "test_pass")
+        )
     )
     result = subprocess.run(
         [
             sys.executable,
             "-m",
             "pytest",
-            str(test_file),
+            str(good),
+            str(wrong),
             "--override-ini",
             "addopts=-q",
             "--junitxml",
@@ -150,12 +174,37 @@ def test_check_pins_real_junit_oracle(tmp_path):
         stderr=subprocess.PIPE,
         text=True,
     )
-    assert result.returncode == 0
-    registry, sha = _write_registry(tmp_path, [f"{test_file}::test_pass"])
-    errors = check_pins.check_pins(
-        test_file.name,
+    assert result.returncode != 0
+
+    registry, sha = _write_registry(tmp_path, [f"{good}::test_pass"])
+    assert check_pins.check_pins(
+        good.name,
         tmp_path / "real.xml",
         registry=registry,
         sha_path=sha,
+    ) == []
+
+    registry, sha = _write_registry(tmp_path, [f"{good}::test_missing"])
+    assert check_pins.check_pins(good.name, tmp_path / "real.xml", registry=registry, sha_path=sha)
+
+    registry, sha = _write_registry(tmp_path, [f"{good}::test_skipped"])
+    assert check_pins.check_pins(good.name, tmp_path / "real.xml", registry=registry, sha_path=sha)
+
+    registry, sha = _write_registry(tmp_path, [f"{good}::test_failed"])
+    assert check_pins.check_pins(good.name, tmp_path / "real.xml", registry=registry, sha_path=sha)
+
+    registry, sha = _write_registry(tmp_path, [f"{good}::test_errored"])
+    assert check_pins.check_pins(good.name, tmp_path / "real.xml", registry=registry, sha_path=sha)
+
+    registry, sha = _write_registry(tmp_path, [f"{good}::test_param[case]"])
+    assert check_pins.check_pins(good.name, tmp_path / "real.xml", registry=registry, sha_path=sha) == []
+
+    registry, sha = _write_registry(tmp_path, [f"{good}::test_param[other]"])
+    assert check_pins.check_pins(good.name, tmp_path / "real.xml", registry=registry, sha_path=sha)
+
+    registry, sha = _write_registry(tmp_path, [f"{good}::test_pass"])
+    wrong_only = _write_junit(
+        tmp_path,
+        "<testcase classname='test_wrong_file' name='test_pass' />",
     )
-    assert errors == []
+    assert check_pins.check_pins(good.name, wrong_only, registry=registry, sha_path=sha)

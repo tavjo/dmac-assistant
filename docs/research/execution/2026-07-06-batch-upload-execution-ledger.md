@@ -22,7 +22,7 @@ Global execution rules:
 | Wave | Tasks | Status | Commit(s) | Validation / Evidence | Review Findings |
 | --- | --- | --- | --- | --- | --- |
 | 0 | W0 live anchor capture | remediation implemented after partial review; rereview pending | `e6f93ac` + pending remediation commit | `evidence/batch-upload-w0/20260706T173555Z/capture_transcript.json` (ignored, persisted on disk); positive verifier passes; fabricated-assays, bogus-request, and tampered-provenance controls reject | first review partial: verifier did not recompute every provenance/request field |
-| 1 | T0 deps, fixtures, pin registry | implemented; review pending | pending | `out/T0.log`, `out/T0.xml`; `uv run python tools/verify_pins_contract.py tests/unit/pinned_nodes.txt tests/unit/pinned_nodes.required.sha256` => pass; `uv run python tests/unit/check_pins.py test_ns_fixtures.py out/T0.xml` => pass; `uv run python tests/unit/check_pins.py test_check_pins.py out/T0.xml` => pass | pending |
+| 1 | T0 deps, fixtures, pin registry | remediation implemented after partial review; rereview pending | `185a337` + pending remediation commit | `out/T0.log`, `out/T0.xml`; exact-count `verify_pins_contract.py` => pass; `check_pins.py test_ns_fixtures.py out/T0.xml` => pass; `check_pins.py test_check_pins.py out/T0.xml` => pass | first review partial: real-JUnit oracle and pin-count verifier were too weak; fixture assertions were representative |
 | 2 | T1 client; T7 cost relay | pending | pending | pending | pending |
 | 3 | T2 payload; T5 extract | pending | pending | pending | pending |
 | 4 | T3 runner/hard gate/resolution | pending | pending | pending | pending |

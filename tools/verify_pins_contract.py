@@ -6,7 +6,7 @@ import hashlib
 import pathlib
 
 SENTINEL = "# === END REQUIRED (T0-sealed; do NOT edit above this line) ==="
-MIN_REQUIRED_NODE_IDS = 1
+EXPECTED_REQUIRED_NODE_IDS = 68
 
 
 def _required_block(path: pathlib.Path) -> str:
@@ -37,8 +37,8 @@ def main() -> int:
     if actual != expected:
         raise SystemExit("required block sha mismatch")
     count = _node_count(block)
-    if count < MIN_REQUIRED_NODE_IDS:
-        raise SystemExit("required block has too few node ids")
+    if count != EXPECTED_REQUIRED_NODE_IDS:
+        raise SystemExit(f"required block node-id count mismatch: {count} != {EXPECTED_REQUIRED_NODE_IDS}")
     print(f"ok {count}")
     return 0
 
