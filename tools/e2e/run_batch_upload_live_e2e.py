@@ -48,7 +48,7 @@ from tools.e2e.batch_upload_live_evidence import (  # noqa: E402
     write_evidence_bundle,
 )
 from tools.e2e.ledger import LedgerCeilingError, SpendLedger  # noqa: E402
-from tools.e2e.verify_batch_upload_live import POLICY_CAP_USD  # noqa: E402
+from tools.e2e.verify_batch_upload_live import POLICY_CAP_USD, clamp_cap  # noqa: E402
 from tools.e2e.run_router_e2e import (  # noqa: E402
     BRIDGE_READY_TIMEOUT_S,
     _build_child_env,
@@ -194,6 +194,9 @@ async def _async_main(*, cap_usd: float, query: str, evidence_root: pathlib.Path
         catalog_file=REPO_ROOT / "vendor" / "chat_nextseek" / "agent_model_catalog.json",
         ns_stderr_dir=out_dir / "ns-stderr",
     )
+    # PREVENTION, not just detection: make Claude Code itself halt the turn at the policy cap via
+    # its own --max-budget-usd (else the container default $10 bounds the spend, 2x the $5 cap).
+    child_env["DMAC_CC_MAX_BUDGET_USD"] = f"{cap_usd:.2f}"
     proc = _launch_bridge(
         port=port, child_env=child_env,
         stdout_log=out_dir / "bridge.stdout.log", stderr_log=out_dir / "bridge.stderr.log",
@@ -252,7 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     load_dotenv(REPO_ROOT / ".env", override=False)
 
     query = args.query or os.environ.get("DMAC_T10_QUERY") or DEFAULT_QUERY
-    cap = min(args.cap, POLICY_CAP_USD)  # never loosen the policy ceiling
+    cap = clamp_cap(args.cap)  # never loosen the policy ceiling
 
     if args.preflight_only or not args.paid:
         problems = preflight()

@@ -72,15 +72,19 @@ COST_SOURCE_AUTHORITATIVE = "claude_code_result"
 COST_SOURCE_ESTIMATE = "usage_estimate_on_timeout"
 COST_SOURCE_NONE = "unavailable"
 
-# Shell operator tokens that separate a command line into independently-headed segments.
-# Matched against LEXED tokens (never a raw string split) so an operator INSIDE a quoted
-# literal — e.g. echo "a && nextseek-validate-upload" — is NOT a separator (fix C1).
-_OPERATOR_TOKENS = frozenset({"&&", "||", ";", ";;", "|", "|&", "&", "(", ")", "<", ">", ">>"})
+# Command operators only ( ; | & families ) are treated as punctuation for lexing — NOT ( ) < >.
+# Excluding parens/redirects is deliberate: it prevents a shim dequoted out of a NON-executing
+# context — a single-quoted string, a `#` comment, an escaped `\$(...)`, a heredoc body, or a
+# `print('shim')` — from being exposed as a bare segment head (fix CRITICAL-1 / re-vet round 2).
+# Quote- and comment-awareness come from shlex itself (posix + commenters='#').
+_LEX_PUNCTUATION = ";|&"
 _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-# Wrapper heads that delegate to a following command word (strip to find the real head).
-_WRAPPER_HEADS = frozenset({"env", "nohup", "time", "exec", "sudo", "stdbuf", "nice"})
-# Command-substitution inners: $(...) and `...` — their contents are separate commands.
-_CMD_SUBST = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
+# Wrapper heads that simply delegate to a following command word (strip to reach the real head).
+_SIMPLE_WRAPPERS = frozenset(
+    {"env", "nohup", "sudo", "exec", "time", "then", "do", "else", "stdbuf", "nice"}
+)
+# A combined short-flag ending in c (bash -lc / sh -ec) — the NEXT token is the inner command.
+_INNER_C_FLAG = re.compile(r"^-[A-Za-z]*c$")
 _MAX_RECURSION = 4
 
 
@@ -211,9 +215,10 @@ class Invocation:
 
 
 def _lex(command: str) -> list[str] | None:
-    """Shell-aware lex: quotes are honored, operators become their own tokens. Returns None on a
-    lexer error (unbalanced quote), so operators inside quotes are NEVER treated as separators."""
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    """Shell-aware lex: quotes honored, ``#`` comments stripped, only ``; | &`` operators become
+    their own tokens. Returns None on a lexer error (unbalanced quote) — a syntax-error command
+    executes nothing, so we conservatively detect no invocation."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=_LEX_PUNCTUATION)
     lexer.whitespace_split = True
     try:
         return list(lexer)
@@ -221,77 +226,88 @@ def _lex(command: str) -> list[str] | None:
         return None
 
 
-def _strip_wrappers(tokens: list[str]) -> list[str]:
-    """Drop leading ``VAR=val`` assignments and wrapper heads (env/nohup/sudo/...) to reach the
-    real command word."""
+def _effective_tokens(seg: list[str]) -> list[str]:
+    """Strip leading subshell/brace openers, ``VAR=val`` assignments, and wrapper prefixes
+    (env/nohup/sudo/exec/time/then/do/else/stdbuf/nice, ``timeout <dur>``, ``uv run``) to reach the
+    real command word + its args."""
+    toks = list(seg)
+    while toks and toks[0] in {"(", "{"}:
+        toks = toks[1:]
     i = 0
-    while i < len(tokens):
-        tok = tokens[i]
+    while i < len(toks):
+        tok = toks[i]
+        base = os.path.basename(tok)
         if _ENV_ASSIGN.match(tok) and "/" not in tok.split("=", 1)[0]:
             i += 1
-            continue
-        if os.path.basename(tok) in _WRAPPER_HEADS:
+        elif base in _SIMPLE_WRAPPERS:
             i += 1
-            continue
-        break
-    return tokens[i:]
+        elif base == "timeout":
+            i += 1
+            while i < len(toks) and toks[i].startswith("-"):
+                i += 1
+            if i < len(toks):  # the DURATION argument
+                i += 1
+        elif base == "uv":
+            i += 1
+            if i < len(toks) and toks[i] == "run":
+                i += 1
+            while i < len(toks) and toks[i].startswith("-"):
+                i += 1
+        else:
+            break
+    return toks[i:]
+
+
+def _heads_from_tokens(toks: list[str], shims: set[str], depth: int) -> list[str]:
+    """Classify one segment's effective tokens into shim invocations."""
+    if not toks or depth > _MAX_RECURSION:
+        return []
+    base = os.path.basename(toks[0])
+    if base in shims:
+        return [base]
+    if base in {"bash", "sh"}:  # bash -c/-lc "<inner>" — the inner string is a real command
+        for j in range(1, len(toks)):
+            if toks[j] == "-c" or _INNER_C_FLAG.match(toks[j]):
+                return _command_heads(toks[j + 1], shims, depth + 1) if j + 1 < len(toks) else []
+        return []
+    if base == "eval":  # eval joins its args and runs the result
+        return _command_heads(" ".join(toks[1:]), shims, depth + 1)
+    if base == "xargs":  # xargs [flags] <shim> — first non-flag token is the command word
+        for tok in toks[1:]:
+            if tok.startswith("-"):
+                continue
+            b = os.path.basename(tok)
+            return [b] if b in shims else []
+    return []
 
 
 def _command_heads(command: str, shims: set[str], depth: int = 0) -> list[str]:
-    """Return every shim basename that is genuinely INVOKED as a command word in ``command``.
+    """Return every shim basename genuinely INVOKED as a command word in ``command``.
 
-    Handles: control-operator segmentation on LEXED tokens (so quoted operators do not split),
-    env/wrapper prefixes, ``bash -c "<inner>"`` / ``sh -c`` string args, ``xargs <shim>``, and
-    ``$(...)`` / backtick command substitutions — all recursively. ``command -v``/``which``/
-    ``echo`` heads and mere quoted mentions do NOT count. basename-exact, so ``nextseek-api``
-    never matches ``nextseek-api-write``.
-    """
+    Segmentation is on LEXED operator tokens only, so an operator inside a quoted literal never
+    splits, and a shim appearing in a single-quoted string, a ``#`` comment, an escaped
+    ``\\$(...)``, a heredoc, or a ``print('shim')`` is NOT counted (it does not execute). Handles
+    env/wrapper prefixes, ``timeout``/``uv run``, ``bash -c``/``eval`` inner commands, and
+    ``xargs`` — all recursively. basename-exact, so ``nextseek-api`` never matches
+    ``nextseek-api-write``. Conservative: a genuine ``$(shim)`` substitution is NOT detected (a
+    safe false-negative — a real turn calls the shim directly per SKILL.md), because detecting it
+    would re-open the forgery vector."""
     if depth > _MAX_RECURSION:
         return []
-    found: list[str] = []
-    # Recurse into command substitutions first (their contents are separate commands).
-    for m in _CMD_SUBST.finditer(command):
-        inner = m.group(1) or m.group(2) or ""
-        if inner:
-            found.extend(_command_heads(inner, shims, depth + 1))
-
     tokens = _lex(command)
     if tokens is None:
-        return found
-
+        return []
+    found: list[str] = []
     segment: list[str] = []
-    segments: list[list[str]] = []
     for tok in tokens:
-        if tok in _OPERATOR_TOKENS or (tok and set(tok) <= set("&|;()<>")):
+        if tok and set(tok) <= set(_LEX_PUNCTUATION):  # an operator run (&&, ||, ;, |, &, ...)
             if segment:
-                segments.append(segment)
+                found.extend(_heads_from_tokens(_effective_tokens(segment), shims, depth))
                 segment = []
         else:
             segment.append(tok)
     if segment:
-        segments.append(segment)
-
-    for seg in segments:
-        head = _strip_wrappers(seg)
-        if not head:
-            continue
-        base = os.path.basename(head[0])
-        if base in shims:
-            found.append(base)
-            continue
-        # bash -c "<inner>" / sh -c "<inner>": the inner string is a real command.
-        if base in {"bash", "sh"} and "-c" in head:
-            idx = head.index("-c")
-            if idx + 1 < len(head):
-                found.extend(_command_heads(head[idx + 1], shims, depth + 1))
-        # xargs [flags] <shim> ...: the first non-flag token after xargs is the command word.
-        elif base == "xargs":
-            for tok in head[1:]:
-                if tok.startswith("-"):
-                    continue
-                if os.path.basename(tok) in shims:
-                    found.append(os.path.basename(tok))
-                break
+        found.extend(_heads_from_tokens(_effective_tokens(segment), shims, depth))
     return found
 
 

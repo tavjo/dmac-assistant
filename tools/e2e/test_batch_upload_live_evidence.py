@@ -219,13 +219,19 @@ def test_invocation_env_prefix_head():
 @pytest.mark.parametrize(
     "command",
     [
+        # operator inside quotes (round-1 C1)
         'echo "step1 && nextseek-validate-upload && step3"',
         "printf '%s' 'hello|nextseek-validate-upload|world'",
         'echo "note; nextseek-validate-upload; done"',
-        'python -c "print(\'nextseek-validate-upload\')"',
+        # non-executing substitution / quoting / comment / escape / print (round-2 CRITICAL-1)
+        "echo 'plan: $(nextseek-validate-upload --project-id 1)'",
+        "echo 'run `nextseek-validate-upload`'",
+        "echo hi  # $(nextseek-validate-upload)",
+        'echo "literal is \\$(nextseek-validate-upload)"',
+        "python3 -c \"print('nextseek-validate-upload')\"",
     ],
 )
-def test_invocation_quoted_operator_not_counted(command):
+def test_invocation_non_executing_mention_not_counted(command):
     assert ev.extract_tool_invocations([_bash(command)]) == []
 
 
@@ -245,23 +251,45 @@ def test_invocation_full_turn_forgery_rejected():
 # --- M3: legitimate real-invocation forms must be detected ---
 
 
-def test_invocation_bash_c_inner():
-    invs = ev.extract_tool_invocations([_bash('bash -c "nextseek-validate-upload --project-id 1"')])
-    assert "nextseek-validate-upload" in [i.shim for i in invs]
+@pytest.mark.parametrize(
+    "command",
+    [
+        'bash -c "nextseek-validate-upload --project-id 1"',
+        'bash -lc "nextseek-validate-upload --project-id 1"',
+        'sh -ec "nextseek-validate-upload --project-id 1"',
+        "timeout 60 nextseek-validate-upload --project-id 1",
+        "uv run nextseek-validate-upload --project-id 1",
+        'eval "nextseek-validate-upload --project-id 1"',
+        "echo 1 | xargs nextseek-validate-upload",
+        "if true; then nextseek-validate-upload --project-id 1; fi",
+        "FOO=bar nextseek-validate-upload --project-id 1",
+    ],
+)
+def test_invocation_real_forms_detected(command):
+    assert "nextseek-validate-upload" in [
+        i.shim for i in ev.extract_tool_invocations([_bash(command)])
+    ]
 
 
-def test_invocation_command_substitution():
-    invs = ev.extract_tool_invocations([_bash("RESULT=$(nextseek-validate-upload --project-id 1)")])
-    assert "nextseek-validate-upload" in [i.shim for i in invs]
+def test_invocation_substitution_is_conservative_miss():
+    # A genuine $(shim) / backtick substitution DOES execute, but detecting it would re-open the
+    # forgery vector, so we conservatively do NOT count it (a safe false-negative: the real agent
+    # calls the shim directly per SKILL.md). Documented trade-off, pinned so it stays intentional.
+    assert ev.extract_tool_invocations([_bash("RESULT=$(nextseek-validate-upload --p 1)")]) == []
+    assert ev.extract_tool_invocations([_bash("X=`nextseek-build-payload --out /tmp/x`")]) == []
 
 
-def test_invocation_backtick_substitution():
-    invs = ev.extract_tool_invocations([_bash("X=`nextseek-build-payload --out /tmp/x`")])
-    assert "nextseek-build-payload" in [i.shim for i in invs]
+def test_invocation_recursion_bounded():
+    # Deeply nested bash -c must not blow up; bounded at _MAX_RECURSION.
+    cmd = "nextseek-validate-upload --p 1"
+    for _ in range(ev._MAX_RECURSION + 2):
+        cmd = f'bash -c "{cmd}"'
+    # Either detected or conservatively dropped, but never raises / hangs.
+    ev.extract_tool_invocations([_bash(cmd)])
 
 
-def test_invocation_xargs():
-    invs = ev.extract_tool_invocations([_bash("echo 1 | xargs nextseek-validate-upload")])
+def test_invocation_xargs_with_flag():
+    invs = ev.extract_tool_invocations([_bash("echo x | xargs -I{} nextseek-validate-upload")])
     assert "nextseek-validate-upload" in [i.shim for i in invs]
 
 
@@ -620,6 +648,22 @@ def test_verify_multiple_session_ended_flagged(tmp_path):
     result = vr.verify(transcript)
     assert result["ok"] is False
     assert any("session_ended frames" in p for p in result["problems"])
+
+
+def test_verify_rejects_fresh_session_violation(tmp_path):
+    # M4: a turn with a missing session id is an honest all_pass=False; the verifier's ok must
+    # require the recomputed verdict to pass, not merely row.passed + cap.
+    frames = [_route(), *_all_shims_bash(), _reply("done"), _ended(session_id="", cost=0.3)]
+    transcript = _write_bundle(tmp_path, frames, ledger_cost=0.3)
+    result = vr.verify(transcript)
+    assert result["ok"] is False
+    assert any("fresh-session violation" in p for p in result["problems"])
+
+
+def test_clamp_cap_tightens_only():
+    assert vr.clamp_cap(1000.0) == vr.POLICY_CAP_USD  # cannot loosen
+    assert vr.clamp_cap(1.0) == 1.0  # may tighten
+    assert vr.clamp_cap(vr.POLICY_CAP_USD) == vr.POLICY_CAP_USD
 
 
 def test_verify_main_exit_codes(tmp_path, capsys):

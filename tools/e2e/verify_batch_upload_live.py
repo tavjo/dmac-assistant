@@ -38,6 +38,11 @@ POLICY_CAP_USD = 5.00
 _RECONCILE_TOL = 1e-6
 
 
+def clamp_cap(requested_usd: float, policy_cap_usd: float = POLICY_CAP_USD) -> float:
+    """The effective cap — an operator may only TIGHTEN the policy ceiling, never loosen it."""
+    return min(requested_usd, policy_cap_usd)
+
+
 def _load(path: pathlib.Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -71,9 +76,6 @@ def verify(
         problems.append("missing ledger.jsonl (markdown is never proof)")
     if not summary_path.exists():
         problems.append("missing per_turn_summary.json")
-    json_evidence = [p for p in bundle.iterdir() if p.suffix in {".json", ".jsonl"}]
-    if not json_evidence:
-        problems.append("bundle carries no .json/.jsonl evidence — prose is not proof")
 
     # A decoy cheap result frame before the real one would mask the true cost (M2).
     if len(session_ended_frames(frames)) > 1:
@@ -123,6 +125,14 @@ def verify(
 
     if not row.passed:
         problems.extend(f"verdict: {p}" for p in row.problems)
+    # ok/exit-0 must mean the run PASSED — reject the remaining all_pass failure modes that
+    # row.passed alone does not cover (fix M4).
+    if recomputed["fresh_session_violations"]:
+        problems.append(
+            "fresh-session violation: " + "; ".join(recomputed["fresh_session_violations"])
+        )
+    if recomputed["aborted_on_budget"]:
+        problems.append("run aborted on budget")
 
     # Tamper detection: the persisted summary must agree with the recompute.
     if summary_path.exists():
@@ -163,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
         help=f"Policy spend cap in USD to enforce (default {POLICY_CAP_USD}; may only tighten).",
     )
     args = parser.parse_args(argv)
-    cap = min(args.cap, POLICY_CAP_USD)  # an operator may tighten, never loosen, the policy cap
+    cap = clamp_cap(args.cap)  # an operator may tighten, never loosen, the policy cap
     result = verify(args.transcript, policy_cap_usd=cap)
     print(json.dumps(result, sort_keys=True))
     return 0 if result["ok"] else 1
