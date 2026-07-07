@@ -43,6 +43,14 @@ CONTRADICTIONS = [
     r"proceed after warning",
     r"manual edits are acceptable",
     r"submit when ready",
+    r"send .*spreadsheet.*nextseek",
+    r"send .*sheet.*nextseek",
+    r"trigger submission",
+    r"perform .*final import",
+    r"run .*final import",
+    r"final import",
+    r"execute .*submission",
+    r"complete .*submission",
     r"upload the workbook",
     r"start the batch",
     r"validation failure.*warning",
@@ -116,6 +124,10 @@ def test_skill_contract_rejects_distant_and_synonym_contradictions():
         original + "\n\n## Later Shortcut\nSubmit when ready after the sheet looks good.\n",
         original + "\n\n## Later Shortcut\nUpload the workbook once the user approves.\n",
         original + "\n\n## Later Shortcut\nStart the batch after inspection.\n",
+        original + "\n\n## Later Shortcut\nSend the spreadsheet to NExtSEEK when validation is done.\n",
+        original + "\n\n## Later Shortcut\nTrigger submission from the prepared artifact.\n",
+        original + "\n\n## Later Shortcut\nPerform the final import after curator approval.\n",
+        original + "\n\n## Later Shortcut\nExecute the submission after inspection.\n",
     ]
     for candidate in tampered:
         try:
