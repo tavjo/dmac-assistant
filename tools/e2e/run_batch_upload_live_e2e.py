@@ -57,6 +57,7 @@ from tools.e2e.run_router_e2e import (  # noqa: E402
     _free_port,
     _launch_bridge,
     _login,
+    _synthetic_project,
     _terminate_bridge,
     _wait_for_ready,
 )
@@ -197,10 +198,16 @@ async def _async_main(*, cap_usd: float, query: str, evidence_root: pathlib.Path
 
     port = _free_port()
     scratch_root = out_dir / "scratch_state"
+    dropbox_root = out_dir / "dropbox_state"
+    # The bridge + Popen log files need these to exist BEFORE launch (mirrors
+    # run_router_e2e._async_main's mkdirs; without them _launch_bridge crashes pre-spawn).
+    for d in (out_dir, scratch_root, out_dir / "output_state", dropbox_root,
+              out_dir / "ns-stderr", dropbox_root / _synthetic_project()):
+        d.mkdir(parents=True, exist_ok=True)
     child_env = _build_child_env(
         scratch_root=scratch_root,
         output_root=out_dir / "output_state",
-        dropbox_root=out_dir / "dropbox_state",
+        dropbox_root=dropbox_root,
         catalog_file=REPO_ROOT / "vendor" / "chat_nextseek" / "agent_model_catalog.json",
         ns_stderr_dir=out_dir / "ns-stderr",
     )
