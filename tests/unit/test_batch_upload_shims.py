@@ -128,6 +128,50 @@ def test_build_payload_shim_writes_staging_only(tmp_path):
     assert not pathlib.Path("/data/scratch/out/payload_flat.xlsx").exists()
 
 
+def test_project_resolve_shim_forwards_name(tmp_path):
+    # SKILL step 1 prescribes `nextseek-project-resolve --name '<project name>'`; the shim MUST
+    # forward it to the runner (W8R remediation review H1: the shim rejected --name with exit 3,
+    # forcing the agent to bypass the shim and call the runner module directly).
+    argv = _run_with_fake_python(
+        tmp_path, "nextseek-project-resolve",
+        "--name", "Published Data", "--confirmed", "--out", str(tmp_path / "token.json"),
+    )
+    assert argv[0].endswith("_batch_upload_runner.py")
+    assert argv[1] == "project-resolve"
+    name_idx = argv.index("--name")
+    assert argv[name_idx + 1] == "Published Data"
+    assert "--confirmed" in argv
+
+
+def test_project_resolve_shim_two_step_unconfirmed(tmp_path):
+    # Step 1 of the curator flow: resolve WITHOUT --confirmed (the runner emits the id+title for
+    # curator confirmation). The shim must allow it and must NOT inject --confirmed itself.
+    argv = _run_with_fake_python(
+        tmp_path, "nextseek-project-resolve",
+        "--name", "Published Data", "--out", str(tmp_path / "token.json"),
+    )
+    assert "--name" in argv
+    assert "--confirmed" not in argv
+
+
+def test_project_resolve_shim_still_forwards_project_id(tmp_path):
+    argv = _run_with_fake_python(
+        tmp_path, "nextseek-project-resolve",
+        "--project-id", "1", "--confirmed", "--out", str(tmp_path / "token.json"),
+    )
+    id_idx = argv.index("--project-id")
+    assert argv[id_idx + 1] == "1"
+
+
+def test_project_resolve_shim_requires_id_or_name(tmp_path):
+    result = subprocess.run(
+        [str(BIN / "nextseek-project-resolve"), "--out", str(tmp_path / "token.json")],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 3
+    assert "--project-id or --name" in result.stderr
+
+
 def test_shim_no_dynamic_forbidden_subcommand():
     assert not (BIN / "nextseek-sample-read").exists()
     for name in _shim_names():
