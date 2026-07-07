@@ -296,21 +296,51 @@ def _cmd_extract(argv: list[str], *, transport=None) -> int:
 
 def _cmd_project_resolve(argv: list[str], *, transport=None) -> int:
     parser = argparse.ArgumentParser(prog="nextseek-project-resolve")
-    parser.add_argument("--project-id", type=int, required=True)
+    parser.add_argument("--project-id", type=int)
+    parser.add_argument("--name", help="Resolve the project by its exact live title (preferred).")
     parser.add_argument("--confirmed", action="store_true")
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
+    if args.project_id is None and args.name is None:
+        parser.error("one of --project-id or --name is required")
     client = _client(transport)
-    projects = client.list_projects()
-    accessible = [int(item["id"]) for item in projects]
-    token = {
-        "project_id": args.project_id,
-        "accessible_project_ids": accessible,
-        "confirmed": bool(args.confirmed and args.project_id in accessible),
-    }
-    pathlib.Path(args.out).write_text(json.dumps(token, indent=2))
-    print(json.dumps(token))
-    return 0 if token["confirmed"] else 1
+    # Titles come from the LIVE /projects/ list — never a baked catalog — so name resolution
+    # is authoritative and the curator can be shown real options on any failure.
+    accessible = [
+        {"id": int(item["id"]), "title": (item.get("attributes") or {}).get("title")}
+        for item in client.list_projects()
+    ]
+    accessible_ids = [item["id"] for item in accessible]
+
+    def _emit(token: dict[str, Any]) -> int:
+        pathlib.Path(args.out).write_text(json.dumps(token, indent=2))
+        print(json.dumps(token))
+        return 0 if token["confirmed"] else 1
+
+    base = {"accessible_project_ids": accessible_ids, "accessible_projects": accessible}
+    project_id = args.project_id
+    resolved_title = None
+    if args.name is not None:
+        matches = [item for item in accessible if item["title"] == args.name]
+        if len(matches) != 1:
+            error = "name_not_found" if not matches else "name_ambiguous"
+            return _emit({"project_id": None, "resolved_title": None, "confirmed": False,
+                          "name": args.name, "error": error, **base})
+        if project_id is not None and project_id != matches[0]["id"]:
+            return _emit({"project_id": None, "resolved_title": None, "confirmed": False,
+                          "name": args.name, "error": "name_id_mismatch", **base})
+        project_id = matches[0]["id"]
+        resolved_title = matches[0]["title"]
+    else:
+        resolved_title = next(
+            (item["title"] for item in accessible if item["id"] == project_id), None
+        )
+    return _emit({
+        "project_id": project_id,
+        "resolved_title": resolved_title,
+        "confirmed": bool(args.confirmed and project_id in accessible_ids),
+        **base,
+    })
 
 
 def _cmd_assay_resolve(argv: list[str], *, transport=None) -> int:

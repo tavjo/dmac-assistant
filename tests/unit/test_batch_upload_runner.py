@@ -33,12 +33,14 @@ FIXTURES = pathlib.Path("tests/unit/fixtures/ns")
 class StubClient:
     last = None
 
-    def __init__(self, *, validate=None, search_rows=None, samples=None, schema=None):
+    def __init__(self, *, validate=None, search_rows=None, samples=None, schema=None,
+                 projects=None):
         type(self).last = self
         self.validate_response = validate or _valid(1)
         self.search_rows = search_rows
         self.samples = samples or {351: {"324503"}, 260: set()}
         self.schema = schema or SCHEMA[0]
+        self.projects = projects
         self.calls = []
         self.validated_path = None
 
@@ -53,6 +55,8 @@ class StubClient:
         return self.schema
 
     def list_projects(self):
+        if self.projects is not None:
+            return self.projects
         return [{"id": "1", "attributes": {"title": "P"}}]
 
     def list_assays(self):
@@ -497,6 +501,106 @@ def test_attrs_extract_and_resolution_commands(tmp_path, capsys, monkeypatch):
     assert runner.main(["assay-resolve", "--project-id", "1", "--title", TITLE], transport=StubClient()) != 0
     gate = _last_gate(capsys)
     assert gate == {"gate": "assay_resolution", "detail": TITLE}
+
+
+_NAMED_PROJECTS = [
+    {"id": "1", "attributes": {"title": "Published Data"}},
+    {"id": "2", "attributes": {"title": "Other Project"}},
+]
+
+
+def test_project_resolve_by_name_confirms(tmp_path):
+    out = tmp_path / "project.json"
+    rc = runner.main(
+        ["project-resolve", "--name", "Published Data", "--confirmed", "--out", str(out)],
+        transport=StubClient(projects=_NAMED_PROJECTS),
+    )
+    assert rc == 0
+    token = json.loads(out.read_text())
+    assert token["project_id"] == 1
+    assert token["resolved_title"] == "Published Data"
+    assert token["confirmed"] is True
+    assert token["accessible_project_ids"] == [1, 2]
+    assert {"id": 1, "title": "Published Data"} in token["accessible_projects"]
+
+
+def test_project_resolve_by_name_two_step_unconfirmed(tmp_path):
+    # Step 1 of the curator flow: resolve the name WITHOUT --confirmed -> id+title surfaced for
+    # curator confirmation, token not yet valid (rc 1, confirmed false).
+    out = tmp_path / "project.json"
+    rc = runner.main(
+        ["project-resolve", "--name", "Published Data", "--out", str(out)],
+        transport=StubClient(projects=_NAMED_PROJECTS),
+    )
+    assert rc == 1
+    token = json.loads(out.read_text())
+    assert token["project_id"] == 1
+    assert token["resolved_title"] == "Published Data"
+    assert token["confirmed"] is False
+
+
+def test_project_resolve_unknown_name_fails_closed(tmp_path):
+    out = tmp_path / "project.json"
+    rc = runner.main(
+        ["project-resolve", "--name", "Nope", "--confirmed", "--out", str(out)],
+        transport=StubClient(projects=_NAMED_PROJECTS),
+    )
+    assert rc == 1
+    token = json.loads(out.read_text())
+    assert token["confirmed"] is False
+    assert token["project_id"] is None
+    assert token["error"] == "name_not_found"
+    # The accessible titles are surfaced so the agent can show the curator real options.
+    assert {"id": 1, "title": "Published Data"} in token["accessible_projects"]
+
+
+def test_project_resolve_ambiguous_name_fails_closed(tmp_path):
+    dup = [
+        {"id": "1", "attributes": {"title": "Published Data"}},
+        {"id": "7", "attributes": {"title": "Published Data"}},
+    ]
+    out = tmp_path / "project.json"
+    rc = runner.main(
+        ["project-resolve", "--name", "Published Data", "--confirmed", "--out", str(out)],
+        transport=StubClient(projects=dup),
+    )
+    assert rc == 1
+    token = json.loads(out.read_text())
+    assert token["confirmed"] is False
+    assert token["project_id"] is None
+    assert token["error"] == "name_ambiguous"
+
+
+def test_project_resolve_name_id_mismatch_fails_closed(tmp_path):
+    out = tmp_path / "project.json"
+    rc = runner.main(
+        ["project-resolve", "--project-id", "2", "--name", "Published Data",
+         "--confirmed", "--out", str(out)],
+        transport=StubClient(projects=_NAMED_PROJECTS),
+    )
+    assert rc == 1
+    token = json.loads(out.read_text())
+    assert token["confirmed"] is False
+    assert token["error"] == "name_id_mismatch"
+
+
+def test_project_resolve_by_id_exposes_title(tmp_path):
+    out = tmp_path / "project.json"
+    rc = runner.main(
+        ["project-resolve", "--project-id", "1", "--confirmed", "--out", str(out)],
+        transport=StubClient(projects=_NAMED_PROJECTS),
+    )
+    assert rc == 0
+    token = json.loads(out.read_text())
+    assert token["resolved_title"] == "Published Data"
+    assert token["confirmed"] is True
+
+
+def test_project_resolve_requires_id_or_name(tmp_path):
+    with pytest.raises(SystemExit) as exc:
+        runner.main(["project-resolve", "--out", str(tmp_path / "p.json")],
+                    transport=StubClient())
+    assert exc.value.code == 2
 
 
 def test_build_payload_staging_command(tmp_path):

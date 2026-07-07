@@ -14,10 +14,16 @@ The safe output is the workbook path plus the validation result.
 ## Required Flow
 
 1. Resolve the project with `nextseek-project-resolve`.
-   First list or look up accessible projects through the API, match the project by
-   name, and get curator-confirmed selection before use. Resolve by name, not typed id.
-   Never auto-select, even when exactly one project exists. Keep the
-   non-secret confirmation token and pass it to validation.
+   Run `nextseek-project-resolve --name '<project name>' --out <token path>` — it queries the
+   live `/projects/` API and resolves the exact title against the accessible projects,
+   returning their ids and titles. Resolve by name, not typed id. Get curator-confirmed
+   selection before use, then re-run with `--confirmed` to mint the token (when the curator
+   already confirmed the named project in their request, run with `--confirmed` directly).
+   Never auto-select, even when exactly one project exists, and never derive a project id
+   from the cached catalogs under `context/` (for example `projects_db.json`) — they are
+   stale snapshots, not authoritative; only this tool's live answer counts. Do not use any
+   other nextseek-* tool for project lookup. Keep the non-secret confirmation token and pass
+   it to validation.
 
 2. Fetch the structured schema with `nextseek-sampletype-attrs`.
    Do this for every SampleType. Persist the structured schema, not just title
