@@ -75,6 +75,31 @@ uv run python tools/e2e/run_batch_upload_live_e2e.py --paid --cap 5.00
 uv run python tools/e2e/verify_batch_upload_live.py evidence/batch-upload-e2e/<ts>/live_e2e_transcript.json
 ```
 
+## Live infra setup (deconflicted from the running NExtSEEK stack, 2026-07-07)
+
+The dmac repo's `make proxy-up` hardcodes `container_name: dmac-bedrock-proxy`, which collides with a
+running container of that name owned by the separate NExtSEEK integration stack
+(`project=nextseek`, `~/step7d-greenfield/NExtSEEK`, image `nextseek-bedrock-proxy:latest`, on
+`dmac-cc-net`). To avoid touching the running stack (owner directive), the T10 Bedrock proxy is a
+distinctly-tagged image + distinctly-named container on its own network, carrying the `bedrock-proxy`
+alias the bridge resolves:
+
+```
+docker build -f bedrock-proxy/Dockerfile -t dmac-bedrock-proxy:poc-t10 .
+docker network create dmac-nextseek-net
+docker run -d --name dmac-bedrock-proxy-t10 \
+  --network dmac-nextseek-net --network-alias bedrock-proxy \
+  --env-file bedrock-proxy/proxy-secret.env --restart unless-stopped \
+  dmac-bedrock-proxy:poc-t10
+# teardown:  docker rm -f dmac-bedrock-proxy-t10 && docker network rm dmac-nextseek-net
+```
+
+No image-name collision (dmac builds `:poc-t10`; the running proxy is `nextseek-bedrock-proxy:latest`).
+The bridge attaches the agent to `dmac-nextseek-net` (config `sidecar_network` default) and injects
+`ANTHROPIC_BEDROCK_BASE_URL=http://bedrock-proxy:8080` (config default), so the alias is what matters,
+not the container name. The batch-upload skill does NOT use the NS shared-cred sidecar, so preflight
+checks the Bedrock proxy on the network — not `_check_sidecar`'s NS-sidecar container.
+
 ## Sequence
 
 Build (1)+(3)+(4) TDD ($0) → independent adversarial review → wire (2) → $0 preflight/dry-run to

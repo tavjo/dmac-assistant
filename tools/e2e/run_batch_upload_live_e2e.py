@@ -28,7 +28,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import pathlib
+import subprocess
 import sys
 import time
 from datetime import UTC, datetime
@@ -52,7 +54,6 @@ from tools.e2e.run_router_e2e import (  # noqa: E402
     _build_child_env,
     _check_credentials,
     _check_image,
-    _check_sidecar,
     _free_port,
     _launch_bridge,
     _login,
@@ -82,8 +83,46 @@ REPRODUCE_CMD = (
 )
 
 
+_PROXY_NETWORK = os.environ.get("DMAC_SIDECAR_NETWORK", "dmac-nextseek-net")
+_PROXY_ALIAS = "bedrock-proxy"
+
+
 def _utc_now() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _check_bedrock_proxy(network: str = _PROXY_NETWORK, alias: str = _PROXY_ALIAS) -> str | None:
+    """Return an error string if the T10 dependency is unmet, else None.
+
+    T10 is a ``container_cc`` paid turn: the agent reaches Bedrock via the de-credentialing proxy at
+    ``http://bedrock-proxy:8080`` on the sidecar network (config default ``dmac-nextseek-net``). The
+    NS shared-cred sidecar is NOT used by the batch-upload skill, so — unlike the router E2E — we do
+    NOT require it; we require the network to exist AND a RUNNING container carrying the
+    ``bedrock-proxy`` network alias on it.
+    """
+    try:
+        net = subprocess.run(
+            ["docker", "network", "inspect", network, "--format", "{{json .Containers}}"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return f"could not verify bedrock proxy: {type(exc).__name__}"
+    if net.returncode != 0:
+        return f"network {network!r} not found; build+run the dmac Bedrock proxy on it first"
+    try:
+        containers = json.loads(net.stdout or "{}") or {}
+    except json.JSONDecodeError:
+        containers = {}
+    for cid in containers:
+        insp = subprocess.run(
+            ["docker", "inspect", cid, "--format",
+             '{{.State.Status}} {{json (index .NetworkSettings.Networks "' + network + '").Aliases}}'],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        out = insp.stdout.strip()
+        if out.startswith("running") and f'"{alias}"' in out:
+            return None
+    return f"no running {alias!r} container on network {network!r}; build+run the dmac Bedrock proxy"
 
 
 def preflight() -> list[str]:
@@ -94,9 +133,9 @@ def preflight() -> list[str]:
         problems.append(f"missing credentials: {', '.join(missing)}")
     if not _check_image():
         problems.append("dmac-assistant:poc image not found (make image-build)")
-    sidecar = _check_sidecar()
-    if sidecar is not None:
-        problems.append(f"sidecar precondition failed: {sidecar}")
+    proxy = _check_bedrock_proxy()
+    if proxy is not None:
+        problems.append(f"bedrock proxy precondition failed: {proxy}")
     return problems
 
 
@@ -211,8 +250,6 @@ def main(argv: list[str] | None = None) -> int:
 
     load_dotenv(REPO_ROOT / ".env.dev", override=False)
     load_dotenv(REPO_ROOT / ".env", override=False)
-
-    import os
 
     query = args.query or os.environ.get("DMAC_T10_QUERY") or DEFAULT_QUERY
     cap = min(args.cap, POLICY_CAP_USD)  # never loosen the policy ceiling
