@@ -1,301 +1,474 @@
-# tests/unit/test_batch_upload_runner.py
-import json, sys, pathlib
+from __future__ import annotations
+
+import json
+import pathlib
+import hashlib
+import sys
+
+import orjson
+import polars as pl
 import pytest
 
 sys.path.insert(0, str(pathlib.Path("build_context/plugins/nextseek/bin")))
-import _batch_upload_runner as runner   # must expose main(argv) -> int and module-level
-                                        # BatchUploadClient + extract_text seams (see Step 3)
+import _batch_upload_runner as runner
 
 
-class _StubClient:
+UID = "D.IMG-230913ENG-1757-PUB"
+TITLE = "Comet Chip Analysis - Data Attached"
+SCHEMA = [
+    {
+        "sample_type": "TIS",
+        "attributes": [
+            {"title": "UID", "required": True, "is_title": True},
+            {"title": "Name", "required": True, "is_title": False},
+            {"title": "Scientist", "required": True, "is_title": False},
+            {"title": "Parent", "required": False, "is_title": False},
+            {"title": "Treatment", "required": False, "is_title": False},
+        ],
+    }
+]
+
+
+class StubClient:
     last = None
-    def __init__(self):
-        self.calls = []
+
+    def __init__(self, *, validate=None, search_rows=None, samples=None, schema=None):
         type(self).last = self
+        self.validate_response = validate or _valid(1)
+        self.search_rows = search_rows
+        self.samples = samples or {351: {"324503"}, 260: set()}
+        self.schema = schema or SCHEMA[0]
+        self.calls = []
+        self.validated_path = None
+
     @classmethod
-    def from_env(cls):
+    def from_env(cls, *, transport=None):
+        if isinstance(transport, StubClient):
+            return transport
         return cls()
-    def sample_type_attributes(self, type_ref):
-        self.calls.append(("attrs", type_ref))
-        return {"sample_type": type_ref, "attributes": [{"title": "Name", "required": True}]}
-    def read_samples(self, uids):
-        self.calls.append(("read", list(uids)))
-        return [{"data": {"attributes": {"attribute_map": {"Name": "m1"}}}}]
-    def validate(self, rows, project_id, *, update_existing, checks):
-        self.calls.append(("validate", project_id, checks))
-        self.rows_seen = rows                          # LOW(2B): record the rows actually POSTed
-        self.update_existing_seen = update_existing   # 2D-F3: record the parsed bool kwarg
-        return {"valid": True, "summary": "ok", "errors": [],
-                "checks_run": ["structure", "name_check", "dag"], "checks_skipped": []}
+
+    def sample_type_attributes(self, sample_type):
+        self.calls.append(("schema", sample_type))
+        return self.schema
+
+    def list_projects(self):
+        return [{"id": "1", "attributes": {"title": "P"}}]
+
+    def list_assays(self):
+        return {TITLE: [351, 260], "RNA-seq": [9], "Imaging": [2], "Solo": [400]}
+
+    def project_assays(self, project_id):
+        return {351, 260, 9, 2, 400}
+
+    def resolve_assay_title(self, title, title_map, project_assay_ids):
+        candidates = [item for item in title_map.get(title, []) if item in project_assay_ids]
+        if len(candidates) != 1:
+            raise ValueError("ambiguous")
+        return candidates[0]
+
+    def search_samples_by_uid(self, uids, *, known_assay_titles=None):
+        self.calls.append(("search", list(uids), tuple(sorted(known_assay_titles or []))))
+        if self.search_rows is not None:
+            return self.search_rows
+        return [
+            {
+                "id": 324503,
+                "numeric_seek_id": 324503,
+                "json_metadata": {"UID": UID},
+                "assays": TITLE,
+                "assay_titles": [TITLE],
+            }
+        ]
+
+    def assay_samples(self, assay_ids):
+        self.calls.append(("assay_samples", sorted(assay_ids)))
+        return {int(assay_id): set(self.samples.get(int(assay_id), set())) for assay_id in assay_ids}
+
+    def resolve_current_assay_titles(self, titles, *, sample_numeric_id, title_map, project_assay_ids):
+        ambiguous = []
+        resolved = set()
+        for title in titles:
+            candidates = [item for item in title_map.get(title, []) if item in project_assay_ids]
+            if len(candidates) == 1:
+                resolved.add(candidates[0])
+            else:
+                ambiguous.extend(candidates)
+        if ambiguous:
+            by_assay = self.assay_samples(set(ambiguous))
+            matched = {aid for aid in ambiguous if str(sample_numeric_id) in by_assay.get(aid, set())}
+            if not matched:
+                raise ValueError("unresolved")
+            resolved |= matched
+        return resolved
+
+    def validate_file(self, path, *, project_id, checks):
+        self.calls.append(("validate_file", pathlib.Path(path), project_id, checks))
+        self.validated_path = pathlib.Path(path)
+        self.validated_hash = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+        return self.validate_response
 
 
-@pytest.fixture
-def stubbed(monkeypatch):
-    monkeypatch.setattr(runner, "BatchUploadClient", _StubClient)
-    return _StubClient
-
-
-def test_runner_attrs_prints_attribute_json(stubbed, capsys):
-    assert runner.main(["attrs", "--type", "MUS"]) == 0
-    data = json.loads(capsys.readouterr().out)
-    assert data["sample_type"] == "MUS" and data["attributes"][0]["title"] == "Name"
-    assert ("attrs", "MUS") in stubbed.last.calls
-
-
-def test_runner_sample_read_prints_existing_attribute_map(stubbed, capsys):
-    assert runner.main(["sample-read", "--uid", "MUS-240101BMC-1"]) == 0
-    body = json.loads(capsys.readouterr().out)
-    assert body[0]["data"]["attributes"]["attribute_map"]["Name"] == "m1"
-    assert ("read", ["MUS-240101BMC-1"]) in stubbed.last.calls
-
-
-def test_runner_validate_writes_result_file_and_prints_verdict(stubbed, capsys, tmp_path):
-    rows = tmp_path / "rows.json"   # raw {UID, SampleType, attributes} rows; the runner normalizes them
-    rows.write_text(json.dumps([{"UID": "", "SampleType": "MUS", "attributes": {"Name": "m1"}}]))
-    out_dir = tmp_path / "out"
-    rc = runner.main(["validate", "--rows", str(rows), "--project-id", "1",
-                      "--update-existing", "false", "--checks", "structure,name_check,dag",
-                      "--out", str(out_dir)])
-    assert rc == 0
-    written = out_dir / "validation_result.json"
-    assert written.is_file(), "validate must persist validation_result.json under --out"
-    saved = json.loads(written.read_text())
-    assert saved["valid"] is True and "structure" in saved["checks_run"]
-    assert "valid" in capsys.readouterr().out.lower()           # verdict echoed to stdout
-    assert any(c[0] == "validate" for c in stubbed.last.calls)  # real dispatch, not a no-op
-
-
-def test_runner_validate_parses_update_existing_bool(stubbed, tmp_path):
-    # 2D-F3: pin the --update-existing <true|false> -> real bool parse (a naive bool("false") is True,
-    # so an unguarded parse would send update_existing=True for "false"). The stub records the kwarg
-    # actually passed to client.validate; assert "false"->False and "true"->True. (Low impact because the
-    # server validate ignores update_existing, but the parse must be pinned.)
-    rows = tmp_path / "rows.json"
-    rows.write_text(json.dumps([{"UID": "", "SampleType": "MUS", "attributes": {"Name": "m1"}}]))
-    assert runner.main(["validate", "--rows", str(rows), "--project-id", "1",
-                        "--update-existing", "false", "--checks", "structure,name_check,dag",
-                        "--out", str(tmp_path / "f")]) == 0
-    assert stubbed.last.update_existing_seen is False   # "false" must NOT become bool("false")==True
-    assert runner.main(["validate", "--rows", str(rows), "--project-id", "1",
-                        "--update-existing", "true", "--checks", "structure,name_check,dag",
-                        "--out", str(tmp_path / "t")]) == 0
-    assert stubbed.last.update_existing_seen is True     # "true" -> True
-
-
-def test_runner_validate_posts_normalized_rows(stubbed, tmp_path):
-    # LOW (pass-6 2B): the runner MUST normalize_rows the RAW --rows BEFORE posting to client.validate. The
-    # server's InputRowModel REQUIRES json_metadata (a JSON string); RAW {UID, SampleType, attributes} rows lack
-    # it and 422 LIVE. A runner that forwarded the raw rows would pass every other unit assertion and only fail at
-    # the PAID live E2E (server 422) — so pin here, for $0, that what is POSTed is the normalize_rows OUTPUT shape
-    # ({UID, SampleType, json_metadata, assay_ids}): each posted row has a json_metadata JSON-string key and NO raw
-    # `attributes` key.
-    rows = tmp_path / "rows.json"
-    rows.write_text(json.dumps([{"UID": "", "SampleType": "MUS", "attributes": {"Name": "m1"}}]))
-    assert runner.main(["validate", "--rows", str(rows), "--project-id", "1",
-                        "--update-existing", "false", "--checks", "structure,name_check,dag",
-                        "--out", str(tmp_path / "n")]) == 0
-    posted = stubbed.last.rows_seen
-    assert posted, "validate must POST a non-empty rows list"
-    for r in posted:
-        assert "attributes" not in r, "validate must NOT post the raw `attributes` key (un-normalized row)"
-        assert isinstance(r.get("json_metadata"), str), "validate must post normalized rows (json_metadata string)"
-        json.loads(r["json_metadata"])              # the posted json_metadata parses as JSON
-        assert r.get("SampleType") == "MUS"
-
-
-def test_runner_build_payload_writes_artifact(stubbed, capsys, tmp_path):
-    rows = tmp_path / "rows.json"
-    rows.write_text(json.dumps([{"UID": "", "SampleType": "MUS", "attributes": {"Name": "m1"}}]))
-    out_dir = tmp_path / "out"
-    assert runner.main(["build-payload", "--rows", str(rows), "--out", str(out_dir)]) == 0
-    assert list(out_dir.glob("payload_*.xlsx")), "build-payload must write a payload artifact"
-
-
-def test_runner_build_payload_merges_existing_attributes(stubbed, tmp_path):
-    # 2B-3 / Q-004: --merge-existing makes the full-attribute-set survival DETERMINISTIC code in the
-    # build path (not CC reasoning). The update row changes only Sex; Name/Strain must survive the merge.
-    import polars as pl
-    rows = tmp_path / "rows.json"
-    rows.write_text(json.dumps([{"UID": "MUS-240101BMC-1", "SampleType": "MUS",
-                                 "attributes": {"UID": "MUS-240101BMC-1", "Sex": "F"}}]))
-    existing = tmp_path / "existing.json"
-    existing.write_text(json.dumps({"MUS-240101BMC-1": {"Name": "m1", "Sex": "M", "Strain": "C57BL/6"}}))
-    known = tmp_path / "known.json"   # also exercises the --known-attrs no-violation pass-through path
-    known.write_text(json.dumps({"MUS": ["Name", "Sex", "Strain"]}))
-    out_dir = tmp_path / "out"
-    assert runner.main(["build-payload", "--rows", str(rows), "--merge-existing", str(existing),
-                        "--known-attrs", str(known), "--out", str(out_dir)]) == 0
-    wb = next(iter(out_dir.glob("payload_*.xlsx")))
-    samples = pl.read_excel(str(wb), sheet_name="Samples", engine="calamine")
-    assert {"UID", "Name", "Sex", "Strain"} <= set(samples.columns)   # omitted Name/Strain survived
-    assert samples["Sex"][0] == "F" and samples["Name"][0] == "m1" and samples["Strain"][0] == "C57BL/6"
-
-
-def test_runner_build_payload_rejects_invented_attribute(stubbed, tmp_path):
-    # 2D-1 / never-invent: with --known-attrs supplied, a row whose attribute name is not in the fetched
-    # sample-type titles is rejected deterministically (non-zero exit, no artifact written).
-    rows = tmp_path / "rows.json"
-    rows.write_text(json.dumps([{"UID": "", "SampleType": "MUS", "attributes": {"Wieght": "20g"}}]))
-    known = tmp_path / "known.json"
-    known.write_text(json.dumps({"MUS": ["Name", "Sex", "Weight"]}))
-    out_dir = tmp_path / "out"
-    rc = runner.main(["build-payload", "--rows", str(rows),
-                      "--known-attrs", str(known), "--out", str(out_dir)])
-    assert rc != 0, "an invented attribute name must be rejected"
-    assert not list(out_dir.glob("payload_*.xlsx")), "no artifact when an attribute name is invented"
-
-
-def test_runner_known_attrs_exempts_merged_legacy_attribute(stubbed, tmp_path):
-    # 2B-LOW (pass-7): the never-invent check is scoped to the keys the USER is CHANGING (the row's OWN PRE-MERGE
-    # attributes), NOT the full merged set. On an update, --merge-existing carries forward ALL of the real sample's
-    # current attributes; a LEGACY attribute no longer in the type's CURRENT definition (so absent from --known-attrs)
-    # must NOT false-reject a legitimate update, and must SURVIVE the merge (Q-004 full-set survival).
-    import polars as pl
-    rows = tmp_path / "rows.json"
-    # the user changes ONLY Sex (a known attr); the row supplies no invented name
-    rows.write_text(json.dumps([{"UID": "MUS-240101BMC-1", "SampleType": "MUS",
-                                 "attributes": {"UID": "MUS-240101BMC-1", "Sex": "F"}}]))
-    existing = tmp_path / "existing.json"   # the real sample carries a LEGACY attr not in --known-attrs
-    existing.write_text(json.dumps(
-        {"MUS-240101BMC-1": {"Name": "m1", "Sex": "M", "LegacyField": "old"}}))
-    known = tmp_path / "known.json"          # CURRENT type definition: NO "LegacyField"
-    known.write_text(json.dumps({"MUS": ["Name", "Sex"]}))
-    out_dir = tmp_path / "out"
-    rc = runner.main(["build-payload", "--rows", str(rows), "--merge-existing", str(existing),
-                      "--known-attrs", str(known), "--out", str(out_dir)])
-    assert rc == 0, "a merged-in legacy DB attribute must NOT trip the never-invent check"
-    wb = next(iter(out_dir.glob("payload_*.xlsx")))
-    samples = pl.read_excel(str(wb), sheet_name="Samples", engine="calamine")
-    assert "LegacyField" in set(samples.columns) and samples["LegacyField"][0] == "old"  # preserved, not rejected
-    assert samples["Sex"][0] == "F" and samples["Name"][0] == "m1"
-
-
-def test_runner_extract_prints_text(stubbed, capsys, tmp_path, monkeypatch):
-    monkeypatch.setattr(runner, "extract_text", lambda p: "Subject: A123")
-    f = tmp_path / "protocol.pdf"; f.write_text("x")
-    assert runner.main(["extract", "--file", str(f)]) == 0
-    assert "Subject: A123" in capsys.readouterr().out
-
-
-def test_runner_merge_existing_skips_row_uid_not_in_map(stubbed, tmp_path):
-    # 2B-3 branch: a NON-BLANK-UID row whose UID is ABSENT from the --merge-existing map must build with
-    # ONLY its own attributes (the merge is skipped for that row — not an error). Covers the
-    # "uid not in existing_map" branch so 95% is reachable without DI.
-    import polars as pl
-    rows = tmp_path / "rows.json"
-    rows.write_text(json.dumps([{"UID": "MUS-NOTINMAP-9", "SampleType": "MUS",
-                                 "attributes": {"UID": "MUS-NOTINMAP-9", "Sex": "F"}}]))
-    existing = tmp_path / "existing.json"   # map covers a DIFFERENT uid -> this row's uid is not present
-    existing.write_text(json.dumps({"MUS-240101BMC-1": {"Name": "m1", "Sex": "M", "Strain": "C57BL/6"}}))
-    out_dir = tmp_path / "out"
-    assert runner.main(["build-payload", "--rows", str(rows), "--merge-existing", str(existing),
-                        "--out", str(out_dir)]) == 0
-    wb = next(iter(out_dir.glob("payload_*.xlsx")))
-    samples = pl.read_excel(str(wb), sheet_name="Samples", engine="calamine")
-    assert samples["Sex"][0] == "F"                 # the row's own attribute survives
-    assert "Strain" not in set(samples.columns)     # nothing merged in (the uid was not in the map)
-
-
-def test_runner_sample_read_as_merge_map_single_uid(stubbed, capsys):
-    # --as-merge-map flag: one UID, real Step-0 shape {data: {attributes: {attribute_map: {...}}}}
-    # Output must be exactly {<UID>: {<title>: <value>}} — no raw JSON:API envelope.
-    assert runner.main(["sample-read", "--uid", "MUS-240101BMC-1", "--as-merge-map"]) == 0
-    out = json.loads(capsys.readouterr().out)
-    assert out == {"MUS-240101BMC-1": {"Name": "m1"}}, (
-        "--as-merge-map must emit {UID: attribute_map} not the raw JSON:API body"
-    )
-    assert ("read", ["MUS-240101BMC-1"]) in stubbed.last.calls
-
-
-def test_runner_sample_read_as_merge_map_two_uids(capsys, monkeypatch):
-    # --as-merge-map with two UIDs — stub returns two different attribute_maps.
-    class _TwoSampleClient:
-        last = None
-        def __init__(self): type(self).last = self; self.calls = []
-        @classmethod
-        def from_env(cls): return cls()
-        def read_samples(self, uids):
-            self.calls.append(("read", list(uids)))
-            return [
-                {"data": {"attributes": {"attribute_map": {"Name": "alpha", "Sex": "F"}}}},
-                {"data": {"attributes": {"attribute_map": {"Name": "beta",  "Sex": "M"}}}},
-            ]
-
-    monkeypatch.setattr(runner, "BatchUploadClient", _TwoSampleClient)
-    assert runner.main(["sample-read",
-                        "--uid", "MUS-1", "--uid", "MUS-2",
-                        "--as-merge-map"]) == 0
-    out = json.loads(capsys.readouterr().out)
-    assert out == {
-        "MUS-1": {"Name": "alpha", "Sex": "F"},
-        "MUS-2": {"Name": "beta",  "Sex": "M"},
+def _valid(processed=1):
+    return {
+        "valid": True,
+        "errors": [],
+        "checks_run": ["structure", "name_check", "dag"],
+        "totals": {"processed": processed},
     }
 
 
-def test_runner_sample_read_as_merge_map_missing_attribute_map(capsys, monkeypatch):
-    # Graceful handling: if a sample's body lacks data.attributes.attribute_map, emit
-    # an empty map for that UID rather than crashing.
-    class _MissingMapClient:
-        @classmethod
-        def from_env(cls): return cls()
-        def read_samples(self, uids):
-            return [{"data": {"attributes": {}}}]   # no attribute_map key
-
-    monkeypatch.setattr(runner, "BatchUploadClient", _MissingMapClient)
-    assert runner.main(["sample-read", "--uid", "MUS-999", "--as-merge-map"]) == 0
-    out = json.loads(capsys.readouterr().out)
-    assert out == {"MUS-999": {}}, "missing attribute_map must yield empty dict, not a crash"
+def _rows_file(tmp_path, rows):
+    path = tmp_path / "rows.json"
+    path.write_text(json.dumps(rows))
+    return path
 
 
-def test_runner_sample_read_as_merge_map_fails_closed_on_count_mismatch(capsys, monkeypatch):
-    # Silent-wipe guard: if read_samples returns FEWER bodies than UIDs requested, a dropped UID
-    # would later look like "no existing data" to --merge-existing and could WIPE that sample's
-    # attributes. The flag must FAIL CLOSED (nonzero exit, NO partial map on stdout).
-    class _ShortClient:
-        @classmethod
-        def from_env(cls): return cls()
-        def read_samples(self, uids):
-            # 2 UIDs requested, only 1 body returned
-            return [{"data": {"attributes": {"attribute_map": {"Name": "m1"}}}}]
-
-    monkeypatch.setattr(runner, "BatchUploadClient", _ShortClient)
-    rc = runner.main(["sample-read", "--uid", "MUS-1", "--uid", "MUS-2", "--as-merge-map"])
-    out = capsys.readouterr()
-    assert rc != 0, "count mismatch must fail closed (nonzero exit)"
-    assert out.out.strip() == "", "must NOT emit a partial merge map on stdout"
-    assert "of" in out.err.lower() and "sample" in out.err.lower()
+def _confirm_file(tmp_path, *, project_id=1, confirmed=True, accessible=(1,)):
+    path = tmp_path / "project.json"
+    path.write_text(
+        json.dumps(
+            {
+                "project_id": project_id,
+                "confirmed": confirmed,
+                "accessible_project_ids": list(accessible),
+            }
+        )
+    )
+    return path
 
 
-def test_runner_sample_read_raw_path_unchanged_by_merge_map_flag(stubbed, capsys):
-    # WITHOUT --as-merge-map, output must still be the raw JSON:API list (back-compat).
-    assert runner.main(["sample-read", "--uid", "MUS-240101BMC-1"]) == 0
-    body = json.loads(capsys.readouterr().out)
-    # The stub returns [{data: {attributes: {attribute_map: {Name: "m1"}}}}]
-    assert isinstance(body, list) and body[0]["data"]["attributes"]["attribute_map"]["Name"] == "m1"
+def _schema_file(tmp_path, schema=SCHEMA):
+    path = tmp_path / "schema.json"
+    path.write_text(json.dumps(schema))
+    return path
 
 
-def test_runner_config_missing_propagates(monkeypatch):
-    # 2B-3 branch: when BatchUploadClient.from_env raises SystemExit(2) (CONFIG_MISSING — creds/URL absent),
-    # a subcommand that constructs the client PROPAGATES a non-zero exit (it does not swallow it or exit 0).
-    # Covers the CONFIG_MISSING propagation path so 95% is reachable. Overrides the stub seam directly.
-    import pytest
-    class _NoCredsClient:
-        @classmethod
-        def from_env(cls):
-            raise SystemExit(2)
-    monkeypatch.setattr(runner, "BatchUploadClient", _NoCredsClient)
-    with pytest.raises(SystemExit) as ei:
-        runner.main(["attrs", "--type", "MUS"])
-    assert ei.value.code == 2
+def _titles_file(tmp_path, mapping=None):
+    path = tmp_path / "id_to_title.json"
+    path.write_text(json.dumps(mapping or {351: TITLE, 260: TITLE, 9: "RNA-seq", 2: "Imaging"}))
+    return path
 
 
-def test_runner_unknown_subcommand_errors(stubbed):
-    # 2B-1: cover the runner's unknown-subcommand / arg-error branch so the 95% gate is reachable
-    # without deleting the dispatcher's error handling. argparse subparsers raise SystemExit(2) on an
-    # unknown subcommand; a manual dispatcher returns a non-zero code -> accept either.
-    try:
-        rc = runner.main(["definitely-not-a-subcommand"])
-    except SystemExit as exc:
-        assert exc.code not in (0, None)
-    else:
-        assert rc != 0
+def _current_file(tmp_path, mapping=None):
+    path = tmp_path / "current.json"
+    path.write_text(json.dumps(mapping or {UID: [351]}))
+    return path
+
+
+def _create_row(**extra):
+    row = {"UID": "", "SampleType": "TIS", "attributes": {"Name": "sample", "Scientist": "Curator"}}
+    row.update(extra)
+    return row
+
+
+def _update_row(**extra):
+    row = {"UID": UID, "SampleType": "TIS", "attributes": {"Treatment": "drug"}, "assay_ids": []}
+    row.update(extra)
+    return row
+
+
+def _run(tmp_path, client, rows, *extra):
+    return runner.main(
+        [
+            "build-validate",
+            "--rows",
+            str(_rows_file(tmp_path, rows)),
+            "--project-id",
+            "1",
+            "--project-confirmation",
+            str(_confirm_file(tmp_path)),
+            "--out",
+            str(tmp_path / "scratch"),
+            *extra,
+        ],
+        transport=client,
+    )
+
+
+def _artifact(tmp_path):
+    return next((tmp_path / "scratch").glob("payload_flat.xlsx"))
+
+
+def _sheet(path):
+    df = pl.read_excel(path, sheet_name="Samples", engine="calamine")
+    return [{column: df[column][idx] for column in df.columns} for idx in range(df.height)]
+
+
+def test_gate_a_content_bad_reaches_validate_then_refuses(tmp_path):
+    client = StubClient(validate=_valid(1))
+    artifact = tmp_path / "payload_flat.xlsx"
+    _write_artifact(
+        artifact,
+        [{"UID": UID, "json_metadata": {"UID": UID, "Treatment": "drug", "Parent": ""}, "assay_ids": [351]}],
+    )
+    validation = client.validate_file(artifact, project_id=1, checks="structure,name_check,dag")
+    with pytest.raises(runner.GateError, match="present_blank"):
+        runner._artifact_gate(
+            artifact=artifact,
+            validation=validation,
+            manifest={UID: {"retrieve_status": "verified", "current_assay_ids": [351]}},
+        )
+    assert any(call[0] == "validate_file" for call in client.calls)
+
+
+def test_gate_a2_valid_false(tmp_path):
+    rc = _run(tmp_path, StubClient(validate={**_valid(1), "valid": False}), [_create_row()])
+    assert rc != 0
+
+
+def test_gate_b_missing_checks(tmp_path):
+    rc = _run(tmp_path, StubClient(validate={**_valid(1), "checks_run": ["structure"]}), [_create_row()])
+    assert rc != 0
+
+
+def test_gate_c_totals_mismatch(tmp_path):
+    rc = _run(tmp_path, StubClient(validate=_valid(0)), [_create_row()])
+    assert rc != 0
+
+
+def test_gate_d_staged_hash_equals_promoted(tmp_path):
+    client = StubClient(validate=_valid(1))
+    assert _run(tmp_path, client, [_create_row(assay_ids=[9])]) == 0
+    promoted = _artifact(tmp_path)
+    assert client.validated_path is not None
+    assert client.validated_hash == runner._sha256(promoted)
+    assert runner.SCRATCH_ROOT not in client.validated_path.parents
+
+
+def test_gate_e_no_scratch_on_failure(tmp_path):
+    rc = _run(tmp_path, StubClient(validate={**_valid(1), "valid": False}), [_create_row()])
+    assert rc != 0
+    assert not list((tmp_path / "scratch").glob("*.xlsx"))
+
+
+def test_gate_e2_validate_file_mode(tmp_path):
+    client = StubClient(validate=_valid(1))
+    assert _run(tmp_path, client, [_create_row()]) == 0
+    call = next(call for call in client.calls if call[0] == "validate_file")
+    assert call[1].name == "payload_flat.xlsx"
+    assert call[3] == "structure,name_check,dag"
+
+
+def test_gate_f_absent_project_id(tmp_path):
+    rows = _rows_file(tmp_path, [_create_row()])
+    rc = runner.main(["build-validate", "--rows", str(rows), "--out", str(tmp_path / "scratch")], transport=StubClient())
+    assert rc != 0
+
+
+def test_gate_f2_unverified_project_id(tmp_path):
+    rows = _rows_file(tmp_path, [_create_row()])
+    confirm = _confirm_file(tmp_path, confirmed=False)
+    rc = runner.main(
+        ["build-validate", "--rows", str(rows), "--project-id", "1", "--project-confirmation", str(confirm), "--out", str(tmp_path / "scratch")],
+        transport=StubClient(),
+    )
+    assert rc != 0
+
+
+def test_gate_g_project_confirmation_token(tmp_path):
+    assert runner._read_confirmation(_confirm_file(tmp_path), 1)["confirmed"] is True
+    with pytest.raises(runner.GateError):
+        runner._read_confirmation(_confirm_file(tmp_path, project_id=2), 1)
+
+
+def test_gate_h_confirmed_project_accessible(tmp_path):
+    with pytest.raises(runner.GateError):
+        runner._read_confirmation(_confirm_file(tmp_path, accessible=(2,)), 1)
+
+
+def test_gate_j_assay_subset_refused(tmp_path):
+    artifact = tmp_path / "payload_flat.xlsx"
+    _write_artifact(artifact, [{"UID": UID, "json_metadata": {"UID": UID, "Treatment": "drug"}, "assay_ids": [9]}])
+    with pytest.raises(runner.GateError, match="assay_superset"):
+        runner._artifact_gate(artifact=artifact, validation=_valid(1), manifest={UID: {"retrieve_status": "verified", "current_assay_ids": [351]}})
+    runner._artifact_gate(artifact=artifact, validation=_valid(1), manifest={UID: {"retrieve_status": "verified", "current_assay_ids": [351]}}, confirm_clear_assays={UID})
+
+
+def test_gate_k_confirm_clear_assays_scoped(tmp_path):
+    artifact = tmp_path / "payload_flat.xlsx"
+    _write_artifact(artifact, [{"UID": UID, "json_metadata": {"UID": UID}, "assay_ids": []}])
+    manifest = {UID: {"retrieve_status": "verified", "current_assay_ids": [351]}}
+    runner._artifact_gate(artifact=artifact, validation=_valid(1), manifest=manifest, confirm_clear_assays={UID})
+    with pytest.raises(runner.GateError):
+        runner._artifact_gate(artifact=artifact, validation=_valid(1), manifest=manifest, confirm_clear_assays={"other"})
+
+
+def test_gate_l_retrieve_failure_refused(tmp_path):
+    rc = _run(tmp_path, StubClient(search_rows=[]), [_update_row(assay_ids=[9])])
+    assert rc != 0
+
+
+def test_gate_m_manifest_schema(tmp_path):
+    manifest = runner._resolve_manifest([_update_row(assay_ids=[9])], StubClient(), {TITLE: [351, 260]}, {351, 260})
+    assert manifest[UID]["retrieve_status"] == "verified"
+    assert manifest[UID]["current_assay_ids"] == [351]
+
+
+def test_gate_n_metadata_only_carries_forward(tmp_path):
+    client = StubClient(validate=_valid(1))
+    assert _run(tmp_path, client, [_update_row(attributes={"Treatment": "drug"}, assay_ids=[])]) == 0
+    row = _sheet(_artifact(tmp_path))[0]
+    assert orjson.loads(row["json_metadata"]) == {"Treatment": "drug", "UID": UID}
+    assert 351 in orjson.loads(row["assay_ids"])
+
+
+def test_gate_o_degraded_manifest_refused_zero_assay_passes(tmp_path):
+    degraded = StubClient(search_rows=[{"json_metadata": {"UID": UID}, "id": 1, "numeric_seek_id": 1}])
+    assert _run(tmp_path, degraded, [_update_row(assay_ids=[9])]) != 0
+    zero = StubClient(search_rows=[{"json_metadata": {"UID": UID}, "id": 1, "numeric_seek_id": 1, "assays": "", "assay_titles": []}])
+    assert _run(tmp_path, zero, [_update_row(assay_ids=[9])]) == 0
+
+
+def test_gate_p_shrink_without_confirm_refused(tmp_path):
+    artifact = tmp_path / "payload_flat.xlsx"
+    _write_artifact(artifact, [{"UID": UID, "json_metadata": {"UID": UID}, "assay_ids": []}])
+    with pytest.raises(runner.GateError):
+        runner._artifact_gate(artifact=artifact, validation=_valid(1), manifest={UID: {"retrieve_status": "verified", "current_assay_ids": [351]}})
+
+
+def test_gate_q_path2_resolves_351_not_260(tmp_path):
+    client = StubClient(samples={351: {"324503"}, 260: set()})
+    manifest = runner._resolve_manifest([_update_row(assay_ids=[9])], client, {TITLE: [351, 260]}, {351, 260})
+    assert manifest[UID]["current_assay_ids"] == [351]
+    assert ("assay_samples", [260, 351]) in client.calls
+    assert not any("samples/" in str(call) for call in client.calls)
+
+
+def test_gate_q2_carry_both(tmp_path):
+    client = StubClient(samples={351: {"324503"}, 260: {"324503"}}, validate=_valid(1))
+    assert _run(tmp_path, client, [_update_row()]) == 0
+    row = _sheet(_artifact(tmp_path))[0]
+    assert set(orjson.loads(row["assay_ids"])) >= {351, 260}
+    assert orjson.loads(row["assay_titles"]).count(TITLE) == 2
+
+
+def test_gate_r_truncation(tmp_path):
+    long = StubClient(search_rows=[{"json_metadata": {"UID": UID}, "id": 1, "numeric_seek_id": 1, "assays": "x" * 900, "assay_titles": []}])
+    assert _run(tmp_path, long, [_update_row(assay_ids=[9])]) != 0
+    short = StubClient(search_rows=[{"json_metadata": {"UID": UID}, "id": 1, "numeric_seek_id": 1, "assays": "", "assay_titles": []}])
+    assert _run(tmp_path, short, [_update_row(assay_ids=[9])]) == 0
+
+
+def test_gate_s_create_addition_resolve(tmp_path):
+    client = StubClient(validate=_valid(1))
+    assert _run(tmp_path, client, [_create_row(assay_titles=["RNA-seq"])]) == 0
+    assert 9 in orjson.loads(_sheet(_artifact(tmp_path))[0]["assay_ids"])
+
+
+def test_gate_t_update_addition_resolve(tmp_path):
+    client = StubClient(validate=_valid(1))
+    assert _run(tmp_path, client, [_update_row(assay_titles=["RNA-seq"])]) == 0
+    ids = set(orjson.loads(_sheet(_artifact(tmp_path))[0]["assay_ids"]))
+    assert {9, 351} <= ids
+
+
+def test_attrs_extract_and_resolution_commands(tmp_path, capsys, monkeypatch):
+    assert runner.main(["attrs", "--type", "TIS"], transport=StubClient()) == 0
+    assert json.loads(capsys.readouterr().out)["sample_type"] == "TIS"
+    monkeypatch.setattr(runner, "extract_text", lambda path, fallback=None: "text")
+    assert runner.main(["extract", "--file", str(tmp_path / "x.pdf")]) == 0
+    assert "text" in capsys.readouterr().out
+    out = tmp_path / "project.json"
+    assert runner.main(["project-resolve", "--project-id", "1", "--confirmed", "--out", str(out)], transport=StubClient()) == 0
+    assert runner.main(["assay-resolve", "--project-id", "1", "--title", "Solo"], transport=StubClient()) == 0
+    assert runner.main(["sample-search", "--uid", UID], transport=StubClient()) == 0
+
+
+def test_build_payload_staging_command(tmp_path):
+    rows = _rows_file(tmp_path, [_create_row(assay_ids=[9])])
+    rc = runner.main(
+        [
+            "build-payload",
+            "--rows", str(rows),
+            "--schema", str(_schema_file(tmp_path)),
+            "--id-to-title", str(_titles_file(tmp_path, {9: "RNA-seq"})),
+            "--out", str(tmp_path / "stage"),
+        ]
+    )
+    assert rc == 0
+    assert (tmp_path / "stage" / "payload_flat.xlsx").exists()
+
+
+def test_unknown_subcommand_errors():
+    assert runner.main(["definitely-not-a-command"]) != 0
+
+
+def test_defensive_branches_and_helpers(tmp_path, capsys, monkeypatch):
+    runner._emit_gate(runner.GateError("x", "detail"))
+    assert json.loads(capsys.readouterr().out) == {"gate": "x", "detail": "detail"}
+
+    sentinel = object()
+    monkeypatch.setattr(runner.BatchUploadClient, "from_env", classmethod(lambda cls, transport=None: sentinel))
+    assert runner._client("transport") is sentinel
+
+    bad_rows = tmp_path / "bad_rows.json"
+    bad_rows.write_text("{}")
+    with pytest.raises(runner.GateError, match="rows"):
+        runner._load_rows(bad_rows)
+    with pytest.raises(runner.GateError, match="project_unconfirmed"):
+        runner._read_confirmation(None, 1)
+    with pytest.raises(runner.GateError, match="non_empty"):
+        runner._preflight_non_empty([])
+    assert runner._assay_touching(_update_row(assay_titles=["RNA-seq"]))
+
+    with pytest.raises(runner.GateError, match="schema"):
+        runner._schema_for_rows(StubClient(), [{"SampleType": ""}])
+    with pytest.raises(runner.GateError, match="schema"):
+        runner._schema_for_rows(StubClient(schema={"sample_type": "TIS", "attributes": []}), [_create_row()])
+    with pytest.raises(runner.GateError, match="schema"):
+        runner._schema_for_rows(StubClient(schema={"sample_type": "TIS", "attributes": [{"required": True}]}), [_create_row()])
+    with pytest.raises(runner.GateError, match="schema"):
+        runner._schema_for_rows(StubClient(schema={"sample_type": "TIS", "attributes": [{"title": "Name"}]}), [_create_row()])
+
+    manifest = runner._resolve_manifest(
+        [_update_row(assay_ids=[9])],
+        StubClient(search_rows=[{"json_metadata": {"UID": UID}, "assays": TITLE, "assay_titles": [TITLE]}]),
+        {TITLE: [351, 260]},
+        {351, 260},
+    )
+    assert manifest[UID]["retrieve_status"] == "degraded"
+
+    artifact = tmp_path / "payload_flat.xlsx"
+    _write_artifact(artifact, [{"UID": "", "json_metadata": {}, "assay_ids": []}])
+    with pytest.raises(runner.GateError, match="required_missing"):
+        runner._artifact_gate(artifact=artifact, validation=_valid(1), manifest={})
+    _write_artifact(artifact, [{"UID": UID, "json_metadata": {"UID": UID}, "assay_ids": []}])
+    with pytest.raises(runner.GateError, match="non_empty"):
+        runner._artifact_gate(artifact=artifact, validation=_valid(1), manifest={})
+
+    with pytest.raises(runner.GateError, match="staging"):
+        runner._promote(pathlib.Path("/data/scratch/payload_flat.xlsx"), tmp_path)
+    current = _current_file(tmp_path, {UID: [351, 260]})
+    assert runner._load_current(str(current)) == {UID: {351, 260}}
+
+    with pytest.raises(runner.GateError, match="staging"):
+        runner.main(
+            [
+                "build-payload",
+                "--rows", str(_rows_file(tmp_path, [_create_row()])),
+                "--schema", str(_schema_file(tmp_path)),
+                "--id-to-title", str(_titles_file(tmp_path)),
+                "--out", "/data/scratch/out",
+            ]
+        )
+
+
+def _write_artifact(path, rows):
+    records = []
+    for row in rows:
+        records.append(
+            {
+                "UID": row.get("UID", ""),
+                "SampleType": "TIS",
+                "json_metadata": orjson.dumps(row["json_metadata"]).decode(),
+                "assay_ids": orjson.dumps(row.get("assay_ids", [])).decode(),
+                "assay_titles": "[]",
+            }
+        )
+    pl.DataFrame(records).write_excel(
+        workbook=str(path),
+        worksheet="Samples",
+        include_header=True,
+        autofilter=False,
+        table_style=None,
+    )
