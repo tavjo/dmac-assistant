@@ -54,11 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     for shim, subcmd in NEW_SHIMS.items():
         _assert_dispatch(args.image, shim, subcmd)
     _plugin_validate_or_fallback(args.image)
-    _docker(
-        args.image,
-        "python -m py_compile "
-        + " ".join(f"{IMAGE_PLUGIN_ROOT}/bin/{module}" for module in PY_MODULES),
-    )
+    _docker(args.image, _compile_modules_script())
     actual = actual_manifest(args.image)
     if actual != expected:
         missing = sorted(set(expected) - set(actual))
@@ -137,6 +133,18 @@ def _plugin_validate_or_fallback(image: str) -> None:
         "fi"
     )
     _docker(image, script)
+
+
+def _compile_modules_script() -> str:
+    modules = json.dumps([f"{IMAGE_PLUGIN_ROOT}/bin/{module}" for module in PY_MODULES])
+    return (
+        "python - <<'PY'\n"
+        "import json, pathlib\n"
+        f"for path in json.loads({modules!r}):\n"
+        "    source = pathlib.Path(path).read_text()\n"
+        "    compile(source, path, 'exec')\n"
+        "PY\n"
+    )
 
 
 def _docker(image: str, script: str) -> None:
