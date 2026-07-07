@@ -3,6 +3,7 @@
 # Cannot upload, write to NExtSEEK, or start a batch upload.
 set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=build_context/plugins/nextseek/bin/_nextseek_common.sh
 . "$SCRIPT_DIR/_nextseek_common.sh"
 
 ROWS=""; SCHEMA=""; CURRENT=""; TITLES=""; OUT="${NEXTSEEK_OUTPUTS_DIR}"
@@ -14,7 +15,7 @@ while [ $# -gt 0 ]; do
     --id-to-title) TITLES="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --confirmed-write|--start|--upload)
-      nextseek_die 3 "$1 is forbidden: this tool builds payload files only and cannot upload" ;;
+      nextseek_die 3 "$1 is forbidden: this tool builds payload files only and cannot write" ;;
     --help)
       echo "Usage: nextseek-build-payload --rows <file.json> --schema <schema.json> --id-to-title <map.json>"
       echo "       [--resolved-current <current.json>] [--out <dir>]"

@@ -3,12 +3,13 @@
 # Read-only; cannot upload, write, or start a batch upload.
 set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=build_context/plugins/nextseek/bin/_nextseek_common.sh
 . "$SCRIPT_DIR/_nextseek_common.sh"
 
 for arg in "$@"; do
   case "$arg" in
     --confirmed-write|--start|--upload)
-      nextseek_die 3 "$arg is forbidden: this tool is read-only and cannot upload" ;;
+      nextseek_die 3 "$arg is forbidden: this tool is read-only and cannot write" ;;
     --help)
       echo "Usage: nextseek-extract-text --file <path>"
       echo ""

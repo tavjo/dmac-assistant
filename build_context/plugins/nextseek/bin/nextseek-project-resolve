@@ -1,0 +1,27 @@
+#!/bin/sh
+# nextseek-project-resolve: create a project confirmation token after curator confirmation.
+set -eu
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=build_context/plugins/nextseek/bin/_nextseek_common.sh
+. "$SCRIPT_DIR/_nextseek_common.sh"
+
+PROJECT_ID=""; CONFIRMED=""; OUT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --project-id) PROJECT_ID="$2"; shift 2 ;;
+    --confirmed) CONFIRMED="--confirmed"; shift ;;
+    --out) OUT="$2"; shift 2 ;;
+    --confirmed-write|--start|--upload)
+      nextseek_die 3 "$1 is forbidden: this tool confirms project selection only and cannot write samples" ;;
+    --help)
+      echo "Usage: nextseek-project-resolve --project-id <id> --confirmed --out <token.json>"
+      echo ""
+      echo "Write a non-secret project confirmation token after curator confirmation."
+      exit 0 ;;
+    *) nextseek_die 3 "unknown arg: $1" ;;
+  esac
+done
+[ -n "$PROJECT_ID" ] || nextseek_die 3 "--project-id is required"
+[ -n "$CONFIRMED" ] || nextseek_die 3 "--confirmed is required"
+[ -n "$OUT" ] || nextseek_die 3 "--out is required"
+exec python "$SCRIPT_DIR/_batch_upload_runner.py" project-resolve --project-id "$PROJECT_ID" "$CONFIRMED" --out "$OUT"

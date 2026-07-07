@@ -1,99 +1,71 @@
 ---
 name: nextseek-batch-upload
 description: >
-  Build (never submit) a NExtSEEK batch-upload payload to create or update samples.
-  Use when the user asks to prepare/build/validate an upload or update sheet/payload
-  for NExtSEEK samples, or to add/update sample metadata, from chat info or files in
-  /data/projects. Triggers on: "build an upload", "prepare a batch upload", "validate
-  an upload payload", "add sample metadata", "update sample metadata", "create upload
-  workbook", "prepare update payload". Read-only: validates via the API but never
-  uploads.
+  Build and validate a read-only NExtSEEK batch-upload workbook for sample create
+  or update work. Use when preparing sample metadata rows, resolving upload
+  project and assay context, or validating a workbook before human inspection.
 ---
 
-# NExtSEEK Batch-Upload Payload Builder
+# NExtSEEK Batch Upload
 
-You build a NExtSEEK batch-upload **create/update payload** and validate it. You NEVER upload it.
-`POST .../batch-upload/start/` is **FORBIDDEN**; you have no tool for it, so do not attempt it.
+You prepare a flat create/update workbook and validate it. You do not submit it.
+The safe output is the workbook path plus the validation result.
 
-## Procedure (follow in order)
+## Required Flow
 
-1. **Understand the request.** New samples, updates, or both? Which sample type(s)? Which project?
-   Source = the user's message and/or files under `/data/projects/<project>/` (read-only).
+1. Resolve the project with `nextseek-project-resolve`.
+   First list or look up accessible projects through the API, match the project by
+   name, and get curator-confirmed selection before use. Resolve by name, not typed id.
+   Never auto-select, even when exactly one project exists. Keep the
+   non-secret confirmation token and pass it to validation.
 
-2. **Resolve the project id.** Use `nextseek-sampletype-attrs --list` and a projects lookup; if
-   ambiguous, ask the user.
+2. Fetch the structured schema with `nextseek-sampletype-attrs`.
+   Do this for every SampleType. Persist the structured schema, not just title
+   strings, and use it for value population. If a required value is missing or
+   ambiguous, ask for the missing value instead of inventing it.
 
-3. **Fetch the attribute list (MANDATORY, first).** For EACH sample type:
-   `nextseek-sampletype-attrs --type <TYPE>`. Use ONLY these attribute names; never invent them.
-   Save the fetched titles per sample type into a JSON object
-   `{"<TYPE>": ["<title>", ...], ...}` (e.g. `/data/scratch/<user>/<run>/known_attrs.json`)
-   and pass it as `--known-attrs` in steps 7–8, so the tools reject any invented attribute name
-   deterministically.
+3. Retrieve on update with `nextseek-sample-search`.
+   A populated UID means an update. Retrieve the visible current sample row before
+   building so the hard gate can preserve current assay links and refuse missing
+   or degraded current-assay evidence.
 
-4. **Read unstructured inputs if provided.** For a protocol, PDF, or docx the user points at:
-   `nextseek-extract-text --file /data/projects/<...>` and read the missing/changed values from
-   the text.
+4. Resolve assay titles with `nextseek-assay-resolve`.
+   Use the accessible `/assays/` map and the selected project's assay set as the
+   project tie-break. Fail-closed on ambiguity or zero matches for curator-added
+   assay titles. Ask the curator instead of guessing.
 
-5. **For UPDATES, fetch the existing samples and MERGE.** Run:
-   ```
-   nextseek-sample-read --uid <UID1> [--uid <UID2> ...] --as-merge-map
-   ```
-   Save the printed JSON directly as `existing.json`
-   (e.g. `/data/scratch/<user>/<run>/existing.json`) and pass it as `--merge-existing`
-   in steps 7–8. The `--as-merge-map` flag extracts each sample's current attribute map
-   and keys it by UID deterministically; the tools then carry forward ALL current attributes
-   and overlay your changes, so the payload has the FULL attribute set. NExtSEEK silently
-   removes attributes you omit on an update, so the full merge is mandatory.
+5. Build the rows JSON.
+   Each row has `UID`, `SampleType`, `attributes`, and optional `assay_ids` or
+   assay titles. Blank UID creates a sample. Populated UID updates a sample.
+   Values belong in `attributes`; the tools build canonical `json_metadata`.
 
-6. **Apply the UID rule.** New sample → leave `UID` blank. Update → set `UID` to the existing
-   sample's UID. The UID column must equal `json_metadata.UID`.
+6. Build only staged payloads with `nextseek-build-payload`.
+   Use a non-scratch staging directory for build-only inspection. Do not hand-edit
+   the sheet. If the user changes values, update the rows JSON and
+   rebuild from the source rows so schema and gate checks still apply.
 
-7. **Build the payload.** Write a rows JSON, one object per sample:
-   ```json
-   {"UID": "<blank-for-new or existing-UID-for-update>",
-    "SampleType": "<TYPE>",
-    "attributes": {"<title>": "<value>", ...},
-    "assay_ids": [...]}
-   ```
-   (The tools normalize it into NExtSEEK `json_metadata` rows; do not hand-build `json_metadata`.)
+7. Validate in file mode with `nextseek-validate-upload`.
+   Pass `--project-id` and the matching `--project-confirmation` token. The
+   validator builds, posts the workbook in file mode, requires
+   `structure,name_check,dag`, and then applies the runner hard gate. The hard
+   gate checks server verdict, processed row count, structured schema-required
+   values, populated update fields, current-assay manifest completeness, and
+   delivered-assay superset safety.
 
-   Then run:
-   ```
-   nextseek-build-payload \
-     --rows <rows.json> \
-     --known-attrs <known_attrs.json> \
-     [--merge-existing <existing.json>] \
-     --out /data/scratch/<user>/<run>
-   ```
+8. STOP on failure.
+   Any validation failure, hard gate refusal, missing project confirmation,
+   schema problem, retrieve problem, assay ambiguity, or promotion failure stops
+   the workflow. Fix the source rows or ask the curator, then rebuild and
+   validate again.
 
-   Always pass `--known-attrs`. Pass `--merge-existing` for any update. Omit `--format` to use
-   the default: single sample type → 4-sheet workbook; multiple types → flat single-sheet xlsx.
-   Never output JSON unless the user explicitly asks for the programmatic JSON rows.
+9. Return the artifact for inspection.
+   Report the validation verdict and the generated workbook path. Warn that
+   update rows require `update_existing=true` during any later human-run upload,
+   because the server default skips populated-UID updates. Flag mixed create+update
+   sheets so the curator knows that setting matters.
 
-8. **Validate (MANDATORY, before returning).** Run:
-   ```
-   nextseek-validate-upload \
-     --rows <rows.json> \
-     --project-id <id> \
-     [--update-existing] \
-     --known-attrs <known_attrs.json> \
-     [--merge-existing <existing.json>] \
-     --out /data/scratch/<user>/<run>
-   ```
+## Forbidden Actions
 
-   Validation always runs all three checks (`structure`, `name_check`, `dag`). If `valid` is
-   false, fix the rows per `errors[]` and re-validate.
-
-   **For UPDATES** (you passed `--update-existing` with a populated UID): a `name_check` finding
-   that the Name "already exists" or is a duplicate is EXPECTED and is NOT a real problem. You are
-   updating an existing sample, so its Name legitimately already exists. The `name_check` check
-   flags already-existing Names to catch accidental CREATE duplicates, which does not apply to a
-   deliberate update. Do NOT drop `name_check` to avoid it; instead, when you report the verdict
-   in step 9, tell the user that on an update an "already exists" `name_check` finding is the
-   normal/expected signal, so a `valid:false` driven only by that `name_check` finding on an
-   update is not alarming.
-
-9. **Return for inspection.** Tell the user the validation verdict and the artifact path(s). The
-   files you wrote to `/data/scratch/<user>/<run>` are delivered to their Dropbox folder
-   automatically by the bridge copier. NEVER upload. `POST .../batch-upload/start/` is
-   **FORBIDDEN** — there is no tool for it and you must not attempt it.
+POST .../batch-upload/start/ is forbidden. Never submit a batch, trigger write
+actions, or treat validation as permission to write. This skill builds and
+validates only.
