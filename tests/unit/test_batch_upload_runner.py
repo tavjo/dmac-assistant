@@ -332,6 +332,13 @@ def test_gate_j_assay_subset_refused(tmp_path):
         runner._artifact_gate(artifact=artifact, validation=_valid(1), manifest={})
     runner._artifact_gate(artifact=artifact, validation=_valid(1), manifest={UID: {"retrieve_status": "verified", "current_assay_ids": [351]}}, confirm_clear_assays={UID})
 
+    _write_artifact(
+        artifact,
+        [{"UID": UID, "json_metadata": {"UID": UID, "Treatment": "drug"}, "assay_ids": []}],
+    )
+    with pytest.raises(runner.GateError, match="manifest"):
+        runner._artifact_gate(artifact=artifact, validation=_valid(1), manifest={})
+
 
 def test_gate_k_confirm_clear_assays_scoped(tmp_path):
     artifact = tmp_path / "payload_flat.xlsx"
@@ -505,7 +512,7 @@ def test_defensive_branches_and_helpers(tmp_path, capsys, monkeypatch):
     with pytest.raises(runner.GateError, match="required_missing"):
         runner._artifact_gate(artifact=artifact, validation=_valid(1), manifest={})
     _write_artifact(artifact, [{"UID": UID, "json_metadata": {"UID": UID}, "assay_ids": []}])
-    with pytest.raises(runner.GateError, match="non_empty"):
+    with pytest.raises(runner.GateError, match="manifest"):
         runner._artifact_gate(artifact=artifact, validation=_valid(1), manifest={})
 
     with pytest.raises(runner.GateError, match="staging"):

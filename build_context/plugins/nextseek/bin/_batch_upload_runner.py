@@ -217,7 +217,7 @@ def _artifact_gate(
                     raise GateError("present_blank", key)
         elif not real_attrs:
             raise GateError("required_missing")
-        if uid and assay_ids and uid not in manifest:
+        if uid and uid not in manifest:
             raise GateError("manifest")
         if uid and uid in manifest:
             entry = manifest[uid]
