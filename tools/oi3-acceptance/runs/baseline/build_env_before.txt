@@ -1,9 +1,0 @@
-{
-  "AWS_BEARER_TOKEN_BEDROCK": "bearer-abc",
-  "AWS_REGION": "us-east-1",
-  "CATALOG_FILE": "/etc/dmac/agent_model_catalog.json",
-  "CLAUDE_CODE_ENABLE_AUTO_MODE": "1",
-  "CLAUDE_CODE_USE_BEDROCK": "1",
-  "NEXTSEEK_PASSWORD": "s3cret",
-  "NEXTSEEK_USERNAME": "alice"
-}

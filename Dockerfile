@@ -84,7 +84,7 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/dmac-venv \
 # source code lives on the host, not in this image.
 COPY pyproject.toml uv.lock /tmp/dmac-deps/
 RUN cd /tmp/dmac-deps \
-    && uv sync --locked --no-install-project \
+    && uv sync --locked --no-install-project --extra container \
     && echo "uv sync done; deps installed into /opt/dmac-venv"
 
 # T11 (U-11, resolves OI-2): chat_nextseek + torch are NO LONGER installed in

@@ -1,0 +1,53 @@
+{
+  "report_metadata": {
+    "title": "NExtSEEK Batch-Upload Payload-Builder Skill — Decision Round 2",
+    "project": "dmac_assistant",
+    "report_path": "docs/research/nextseek_batch_upload_skill_findings_and_decisions_v2.html",
+    "research_timestamp": "2026-06-25",
+    "question_set_version": "2.0",
+    "export_basename": "nextseek_batch_upload_skill_decisions_round2",
+    "round": 2,
+    "supersedes": "nextseek_batch_upload_skill_findings_and_decisions_v1.html",
+    "corpus": {
+      "round1_locked": [
+        "Q-001:all-three-formats",
+        "Q-002:dropbox-via-copier",
+        "Q-003:dedicated-tools",
+        "Q-004:fetch-merge-full",
+        "Q-005:all-checks",
+        "Q-006:fresh",
+        "Q-007:local-then-paid-dev",
+        "Q-008:unstructured-ingest"
+      ]
+    }
+  },
+  "research_timestamp": "2026-06-25",
+  "export_timestamp_utc": "2026-06-25T19:23:51.708Z",
+  "question_set_version": "2.0",
+  "selected_answers": {
+    "Q-101": "OTHER",
+    "Q-102": "A"
+  },
+  "comments": {},
+  "write_in_answers": {
+    "Q-101": "Default to 4-sheet workbook since it is more human-readable but user can specify which format they want. If multiple sample types detected, defaults to flat single-sheet excel file. The json rows should never be the default. This is only suitable for purely programmatic upload/updates."
+  },
+  "unanswered_questions": [],
+  "recommended_defaults": {
+    "Q-101": "B",
+    "Q-102": "A"
+  },
+  "evidence_references": {
+    "Q-101": [
+      "NExtSEEK/nextseek_api/batch_upload/convert.py:40 (4-sheet detection, single-type)",
+      "batch_upload/models.py:115 (InputRowModel — SampleType per row → multi-type flat)",
+      "DMAC_docs/gitbook/03-uploading.md:9-23 (4-sheet workbook layout)",
+      "Round-1 Q-001 write-in"
+    ],
+    "Q-102": [
+      "Round-1 Q-008 write-in (markitdown-style extraction)",
+      "dmac_assistant docs/known-issues nextseek-doc-ingest-stabilization (prior markitdown removal — build-determinism context)",
+      "Round-1 Q-004=A (fetch existing + merge full attributes)"
+    ]
+  }
+}

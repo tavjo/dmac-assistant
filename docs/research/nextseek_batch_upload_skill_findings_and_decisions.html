@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<!--
+  scout — NExtSEEK batch-upload payload-builder skill: findings + MCQ decision report.
+  Standalone: no external JS/CSS/fonts/images/network. Light background. Renders from file://.
+  Confidence labels: OFFICIAL / SEMI-OFFICIAL / LOCAL-FIXTURE / INFERENCE.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NExtSEEK Batch-Upload Payload-Builder Skill — Findings &amp; Decision Report</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --panel:#ffffff; --ink:#1d2433; --muted:#5b6577; --line:#e2e6ee;
+    --accent:#2d5bd7; --accent-soft:#eaf0ff; --ok:#1f8a4c; --warn:#b6791f; --bad:#c23b3b;
+    --code:#f0f2f7; --rec:#0f7a44;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto;padding:28px 22px 90px}
+  header.top{border-bottom:2px solid var(--line);padding-bottom:18px;margin-bottom:8px}
+  h1{font-size:25px;margin:0 0 4px}
+  h2{font-size:20px;margin:34px 0 10px;padding-top:10px;border-top:1px solid var(--line)}
+  h3{font-size:16px;margin:20px 0 6px}
+  .sub{color:var(--muted);font-size:13.5px}
+  p{margin:8px 0}
+  code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:13px}
+  pre{background:var(--code);padding:12px 14px;border-radius:8px;overflow:auto;font-size:12.5px;border:1px solid var(--line)}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:var(--accent-soft)}
+  .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.02em;padding:2px 8px;border-radius:999px;color:#fff}
+  .t-blk{background:var(--bad)} .t-later{background:var(--warn)} .t-def{background:var(--ok)}
+  .pill{display:inline-block;font-size:11px;padding:1px 7px;border-radius:5px;background:var(--accent-soft);color:var(--accent);font-weight:600}
+  .callout{background:var(--accent-soft);border:1px solid #cdd9f7;border-left:4px solid var(--accent);padding:10px 14px;border-radius:8px;margin:12px 0}
+  .nav{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin:14px 0;font-size:13.5px;columns:2;column-gap:28px}
+  .nav a{color:var(--accent);text-decoration:none} .nav a:hover{text-decoration:underline}
+  .q{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:16px 0;box-shadow:0 1px 2px rgba(20,30,60,.04)}
+  .q h3{margin-top:0;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .q .qid{font-family:ui-monospace,monospace;background:var(--ink);color:#fff;padding:2px 8px;border-radius:6px;font-size:12.5px}
+  .q .meta{font-size:13px;color:var(--muted);margin:4px 0}
+  .q .meta b{color:var(--ink)}
+  .opt{display:block;border:1px solid var(--line);border-radius:8px;padding:9px 12px;margin:7px 0;cursor:pointer;transition:.08s}
+  .opt:hover{border-color:var(--accent);background:#fafbff}
+  .opt input{margin-right:9px}
+  .opt .lab{font-weight:600}
+  .opt .cons{display:block;color:var(--muted);font-size:12.5px;margin-top:3px;margin-left:23px}
+  .opt.isrec{border-color:#bfe6cf;background:#f3fbf6}
+  .recbadge{color:var(--rec);font-weight:700;font-size:11.5px;margin-left:6px}
+  .cmt{width:100%;margin-top:8px;border:1px solid var(--line);border-radius:8px;padding:8px;font-family:inherit;font-size:13px;resize:vertical}
+  .writein{width:100%;margin-top:6px;border:1px solid var(--line);border-radius:8px;padding:7px;font-size:13px;display:none}
+  .affect{font-size:12.5px;color:var(--muted);margin-top:8px;border-top:1px dashed var(--line);padding-top:7px}
+  .bar{position:sticky;bottom:0;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin-top:22px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;box-shadow:0 -2px 12px rgba(20,30,60,.06)}
+  button{font:inherit;font-weight:600;border:1px solid var(--accent);background:var(--accent);color:#fff;padding:9px 16px;border-radius:8px;cursor:pointer}
+  button.ghost{background:#fff;color:var(--accent)}
+  button:hover{filter:brightness(1.05)}
+  #status{font-size:13px;color:var(--muted)}
+  #preview{margin-top:10px;max-height:340px}
+  .src-official{color:var(--ok);font-weight:700}
+  .src-semi{color:var(--warn);font-weight:700}
+  .src-local{color:var(--accent);font-weight:700}
+  .src-inf{color:#86509a;font-weight:700}
+  .small{font-size:12.5px;color:var(--muted)}
+  .legend span{margin-right:14px;font-size:12.5px}
+  footer{margin-top:40px;border-top:1px solid var(--line);padding-top:14px;color:var(--muted);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <h1>NExtSEEK Batch-Upload Payload-Builder Skill — Findings &amp; Decision Report</h1>
+  <div class="sub">
+    Project: <b>dmac_assistant</b> (in-container Claude Code "container CC") · Research date: <b>2026-06-25</b> ·
+    Question set version <b>1.0</b> · Round 1 · Standalone (no network/JS/CSS deps).<br>
+    Inputs inspected: <i>dmac_assistant</i> (<code>container/</code>, <code>Dockerfile</code>,
+    <code>build_context/plugins/nextseek/</code>, <code>src/dmac_assistant/ws.py</code>, <code>router/</code>,
+    <code>tools/e2e/</code>); <i>NExtSEEK</i> (<code>nextseek_api/batch_upload/</code>,
+    <code>services/assistant.py</code>, <code>origin/dev</code> + integration worktree); <i>work/BMC</i>
+    (<code>DMAC_docs/gitbook/03-uploading.md</code>, <code>dmac-curation-tools/</code>).
+  </div>
+</header>
+
+<div class="legend callout" style="background:#fff;border-left-color:#999">
+  <b>Confidence legend (used throughout):</b><br>
+  <span class="src-official">OFFICIAL</span> vendor / standard documentation &nbsp;·&nbsp;
+  <span class="src-semi">SEMI-OFFICIAL</span> vendor source repo / wiki / issue &nbsp;·&nbsp;
+  <span class="src-local">LOCAL-FIXTURE</span> validated against on-disk files here &nbsp;·&nbsp;
+  <span class="src-inf">INFERENCE</span> reasoned, not directly proven.
+</div>
+
+<nav class="nav">
+  <a href="#s1">1. Executive summary</a><br>
+  <a href="#s2">2. Project purpose (inferred)</a><br>
+  <a href="#s3">3. Repository map</a><br>
+  <a href="#s4">4. What existing documents already decide</a><br>
+  <a href="#s5">5. What the code implements</a><br>
+  <a href="#s6">6. What tests cover</a><br>
+  <a href="#s7">7. What remains genuinely open</a><br>
+  <a href="#s8">8. Local research methods</a><br>
+  <a href="#s9">9. Local findings with evidence</a><br>
+  <a href="#s10">10. Web research findings</a><br>
+  <a href="#s11">11. Source-quality table</a><br>
+  <a href="#s12">12. Current architecture</a><br>
+  <a href="#s13">13. Data model / interface</a><br>
+  <a href="#s14">14. Risks &amp; uncertainties</a><br>
+  <a href="#s15">15. Security / privacy observations</a><br>
+  <a href="#s16">16. Implementation implications</a><br>
+  <a href="#s17">17. Backward-compat / migration</a><br>
+  <a href="#s18">18. Decisions to make (MCQs)</a><br>
+  <a href="#s19">19. Export decision JSON</a>
+</nav>
+
+<!-- ===== 1 ===== -->
+<h2 id="s1">1. Executive summary</h2>
+<p>The goal is a <b>simple, read-only "payload-builder" skill</b> for the in-container Claude Code agent
+("container CC") in <code>dmac_assistant</code>. Given sample information from the user or from the mounted
+Dropbox project directory, the skill should: (1) fetch the <b>attribute list of the relevant sample type(s)</b>
+via read-only API calls; (2) build a NExtSEEK <b>batch-upload create/update payload</b> honoring the UID rule
+(blank UID = new sample, populated UID = update); (3) call the read-only <b><code>validate</code></b> endpoint;
+and (4) return the payload plus the validation verdict to the user for inspection. <b>Performing the actual
+upload/update (<code>start/</code>) is explicitly forbidden.</b> This is <i>not</i> a full curation skill.</p>
+<p>The good news from discovery: the load-bearing piece — the read-only
+<code>POST /nextseek_api/batch-upload/validate/</code> endpoint — <b>exists on the upstream <code>dev</code>
+branch</b> the user pointed at (<span class="src-local">LOCAL-FIXTURE</span>, verified by
+<code>git grep origin/dev</code>), and the in-container skill mechanism is well understood (drop a
+<code>skills/&lt;name&gt;/SKILL.md</code> into the already-baked <code>nextseek</code> plugin; no marketplace
+or settings edits needed). The hard parts are not "can it be built" but a handful of genuine design choices the
+repository does not settle.</p>
+<p><b>Open decisions: 3 blockers + 1 execution-blocker + 4 defaultable.</b> The blockers are the
+<b>payload output format</b> (JSON rows vs xlsx workbook), the <b>read-only API-call mechanism</b> (a read-only
+<code>POST</code> fights the repo's "POST = write = gated" model), and <b>update-mode attribute handling</b> (a
+documented silent-data-loss footgun). <b>Delivery is NOT a blocker</b> — the post-turn bridge copier
+(<code>copier.py</code> + <code>ws.py:296 dispatch_post_turn_copy</code>) is already built and live: the skill
+writes its payload to <code>/data/scratch</code> and the copier publishes it to the user's delivery folder
+(Dropbox), so Q-002 is only "what to write." The execution-blocker is <b>how the mandatory live dev-server E2E
+runs</b> (it incurs paid Bedrock inference and may need VPN). All are in §18.</p>
+
+<!-- ===== 2 ===== -->
+<h2 id="s2">2. Project purpose as inferred from evidence</h2>
+<p><span class="src-local">LOCAL-FIXTURE</span> <code>dmac_assistant</code> wraps Claude Code as the agent
+runtime for MIT BioMicro Center lab users: a thin FastAPI bridge authenticates a user, starts a per-user Docker
+container running <code>claude</code>, and relays <code>stream-json</code> between the chat UI and the agent
+(<code>.claude/CLAUDE.md</code> "What This System Is"). A per-turn LLM router sends each message to one of three
+paths: <code>container_cc</code> (general agent work, where skills run), <code>nextseek_query</code> (a thin
+server-side read-only NExtSEEK query pipeline), or <code>unrelated</code> (a canned reply).</p>
+<p><span class="src-inf">INFERENCE</span> The new skill is a <code>container_cc</code> capability: container CC,
+driven by a SKILL.md and small read-only CLI tools, turns user/Dropbox sample data into an inspectable,
+pre-validated NExtSEEK batch-upload payload — without ever writing to the database. This deliberately complements
+(does not duplicate) the existing read-only <i>query</i> capability and stops short of the host-side
+<code>dmac-curation-tools</code> "full curation" toolkit.</p>
+
+<!-- ===== 3 ===== -->
+<h2 id="s3">3. Repository map</h2>
+<pre>dmac_assistant/                         # the target repo (where the skill is built)
+├─ Dockerfile                           # builds dmac-assistant:poc; :40 COPY plugins; :118 PATH; :49 CLAUDE.md
+├─ container/
+│  ├─ CLAUDE.md                         # always-on in-container memory (write-safety, router behavior)
+│  ├─ entrypoint.sh                     # :78-88 symlinks /app/plugins/* -> ~/.claude/plugins/local/* (discovery)
+│  └─ runner_ns.py                      # the nextseek_query route runner (NOT where the skill lives)
+├─ build_context/plugins/nextseek/      # THE baked plugin (skill goes here)
+│  ├─ skills/nextseek/SKILL.md          # existing read-only query skill (contract precedent)
+│  ├─ bin/                              # nextseek-query, nextseek-api-read, nextseek-api-write, ... (+ _*.py libs)
+│  └─ .claude-plugin/plugin.json
+├─ build_context/plugins/nextseek-api/  # generic SchemaRAG plugin — host-only, NOT baked into the image
+├─ src/dmac_assistant/
+│  ├─ ws.py                             # /ws/chat; _dispatch_one_turn -> container_cc / nextseek_query / unrelated
+│  └─ router/                           # RouterAgent + baml_client
+├─ baml_src/router.baml                 # Route enum (nextseek_query|container_cc|unrelated)
+├─ build_context/route_capabilities.json# the route registry the router LLM sees (2 routes)
+└─ tools/e2e/run_router_e2e.py          # LIVE E2E "via the bridge" (boots uvicorn + WS + BAML judge)
+
+work/BMC/NExtSEEK/nextseek_api/         # the NExtSEEK API (origin/dev HAS validate)
+├─ batch_upload/views.py                # :160 start/ (FORBIDDEN), :405 validate/ (read-only, used)
+├─ batch_upload/models.py               # InputRowModel (:115), ValidationResult (:843)
+├─ services/sample_types.py             # :88 list types, :114 retrieve type WITH attributes
+└─ assistant/read_safe_endpoints.json   # read allowlist (has sample_types/ GET, not {uid}/, not validate)
+
+work/BMC/dmac-curation-tools/           # host-side "full curation" toolkit + rules (reuse candidate)
+work/BMC/DMAC_docs/gitbook/03-uploading.md   # OFFICIAL-ish UID + workbook rules</pre>
+
+<!-- ===== 4 ===== -->
+<h2 id="s4">4. What existing documents already decide</h2>
+<p>Treated as authoritative and <b>not</b> turned into questions:</p>
+<table>
+<tr><th>Area</th><th>Decision</th><th>Source</th></tr>
+<tr><td>Route</td><td>Skill rides <code>container_cc</code> (only that route runs skills)</td><td>user prompt ("skill for container CC")</td></tr>
+<tr><td>Write safety</td><td>Actual upload/update (<code>start/</code>) is FORBIDDEN; skill is read-only toward the DB</td><td>user prompt</td></tr>
+<tr><td>Mandatory step</td><td>Skill MUST call the read-only <code>validate</code> endpoint before returning the payload</td><td>user prompt</td></tr>
+<tr><td>Mandatory step</td><td>Skill MUST first fetch the sample-type <b>attribute list</b> via read-only API calls</td><td>user prompt</td></tr>
+<tr><td>UID semantics</td><td>Blank UID = new sample; populated UID = update an existing sample</td><td>user prompt; <code>curation-reference.md</code> Rule 4.3 (716-720); <code>03-uploading.md:38-43</code></td></tr>
+<tr><td>Scope</td><td>Simple payload-builder, explicitly NOT a full curation skill</td><td>user prompt</td></tr>
+<tr><td>Inputs</td><td>From the user (chat) OR the mounted Dropbox project directory</td><td>user prompt</td></tr>
+<tr><td>Acceptance</td><td>Fully wired &amp; LIVE; live E2E via the bridge against the dev server; "no gotchas"</td><td>user prompt</td></tr>
+<tr><td>Validate endpoint</td><td><code>POST /nextseek_api/batch-upload/validate/</code> is read-only and EXISTS on <code>origin/dev</code></td><td><code>git grep origin/dev .../views.py:405</code></td></tr>
+<tr><td>Skill install</td><td>New skill = <code>skills/&lt;name&gt;/SKILL.md</code> under <code>build_context/plugins/nextseek/</code>; symlink auto-discovers it</td><td><code>Dockerfile:40</code>, <code>entrypoint.sh:78-88</code></td></tr>
+</table>
+
+<!-- ===== 5 ===== -->
+<h2 id="s5">5. What the code already implements</h2>
+<p><span class="src-local">LOCAL-FIXTURE</span> The NExtSEEK side is fully built and on <code>dev</code>:</p>
+<ul>
+  <li><b>Validate (read-only):</b> <code>BatchUploadViewSet.validate</code>
+    (<code>batch_upload/views.py:405</code>) runs the pipeline through TRANSFORM and stops before INSERT — no
+    Celery job, no DB write. Accepts <code>rows</code> JSON or multipart <code>.xlsx</code>, requires
+    <code>project_id</code>, takes <code>checks</code> &sub; <code>{structure, name_check, dag}</code>
+    (default <code>structure</code>). Returns <code>ValidationResult</code>
+    (<code>{valid, summary, errors[], error_groups[], totals, checks_run, checks_skipped}</code>).</li>
+  <li><b>Sample-type attributes (read-only):</b> <code>GET /nextseek_api/sample_types/</code> lists types;
+    <code>GET /nextseek_api/sample_types/{uid}/</code> returns one type WITH its
+    <code>sample_attributes</code> (title/base_type/required/pos/unit/is_title) — the "attribute list" the
+    skill's preliminary step needs (<code>services/sample_types.py:88,114</code>).</li>
+  <li><b>Upload (FORBIDDEN for the skill):</b> <code>POST .../batch-upload/start/</code>
+    (<code>views.py:160</code>) — same endpoint for create AND update; UID + <code>update_existing</code> flag
+    decide which.</li>
+</ul>
+<p>The dmac side has the in-container plugin scaffolding but <b>no</b> batch-upload / validate / attribute tool
+yet. Existing <code>nextseek</code> bin tools: <code>nextseek-query</code>, <code>nextseek-api-read</code>
+(allowlist-gated), <code>nextseek-api-write</code> (confirmation-gated), <code>nextseek-generate-submission</code>
+(<b>publication</b> submissions — GEO/SRA, a DIFFERENT artifact, not sample batch-upload). The skill therefore
+needs a new read-only call path (§18 Q-003).</p>
+
+<!-- ===== 6 ===== -->
+<h2 id="s6">6. What the tests already cover</h2>
+<p><span class="src-local">LOCAL-FIXTURE</span> NExtSEEK validate/upload is well tested server-side:
+<code>batch_upload/tests/test_views.py</code> (request bodies, 202/400/413/422 paths),
+<code>test_validation.py</code>, and xlsx fixtures <code>wave3_default_mode.xlsx</code> (create: UID blank,
+<code>json_metadata.UID=null</code>) + <code>wave3_update_mode.xlsx</code> (update: UID populated, incl. a
+partial "UID-only" row updating just <code>Scientist</code>). The dmac image is regression-locked by
+<code>tests/test_image_smoke.py:206-304</code> (asserts the plugin symlink resolves and
+<code>claude plugin validate</code> passes). The live bridge E2E is <code>tools/e2e/run_router_e2e.py</code>
+(boots a real uvicorn bridge, drives <code>/ws/chat</code>, asserts route-match + a BAML semantic judge).
+<b>No test yet exercises an end-to-end "build payload → validate" path</b> — that is exactly what the new
+live E2E case must add.</p>
+
+<!-- ===== 7 ===== -->
+<h2 id="s7">7. What remains genuinely open</h2>
+<p>Each maps to a question in §18. Blockers must be resolved before the plan is written; "later" items affect
+specific task specs; "defaultable" items have a safe recommended default but still require the user to confirm or
+accept the default (nothing is auto-deferred).</p>
+<table>
+<tr><th>ID</th><th>Open decision</th><th>Class</th></tr>
+<tr><td>Q-001</td><td>Payload output format (JSON rows vs 4-sheet xlsx vs flat xlsx vs both)</td><td><span class="tag t-blk">BLOCKER</span></td></tr>
+<tr><td>Q-002</td><td>What the skill writes for delivery (copier already publishes scratch→Dropbox)</td><td><span class="tag t-def">DEFAULTABLE</span></td></tr>
+<tr><td>Q-003</td><td>Read-only API-call mechanism (a read-only POST vs the write-gate)</td><td><span class="tag t-blk">BLOCKER</span></td></tr>
+<tr><td>Q-004</td><td>Update-mode attribute handling (partial vs fetch+merge full)</td><td><span class="tag t-blk">BLOCKER</span></td></tr>
+<tr><td>Q-005</td><td>Validate <code>checks</code> scope (structure only vs all three)</td><td><span class="tag t-def">DEFAULTABLE</span></td></tr>
+<tr><td>Q-006</td><td>Reuse <code>dmac-curation-tools</code> vs build fresh</td><td><span class="tag t-def">DEFAULTABLE</span></td></tr>
+<tr><td>Q-007</td><td>Live E2E target + paid-inference authorization</td><td><span class="tag t-blk">BLOCKER</span></td></tr>
+<tr><td>Q-008</td><td>Dropbox input format the skill consumes</td><td><span class="tag t-later">AFFECTS LATER</span></td></tr>
+</table>
+
+<!-- ===== 8 ===== -->
+<h2 id="s8">8. Local research methods</h2>
+<p>All inspection was <b>read-only</b>; no project file was modified or deleted. Methods: four parallel
+read-only exploration passes (NExtSEEK API surface; dmac in-container skill mechanism; work/BMC upload rules;
+dmac bridge/router/E2E path), each returning <code>path:line</code> citations with verbatim excerpts; plus
+direct git verification — <code>git grep origin/dev 'url_path="validate"'</code> confirmed the validate endpoint
+is on the upstream <code>dev</code> branch, and <code>git branch</code>/<code>git log</code> established that the
+local "primary" NExtSEEK checkout sits on <code>ultraplan/nextseek-api-polish</code> while the integration
+worktree + <code>origin/dev</code> carry validate. The read allowlist
+(<code>assistant/read_safe_endpoints.json</code>) and the existing <code>nextseek</code> bin-tool inventory were
+read directly. Working notes persisted at <code>docs/research/batch_upload_skill_phase1_notes.md</code>.</p>
+
+<!-- ===== 9 ===== -->
+<h2 id="s9">9. Local findings with evidence <span class="src-local">LOCAL-FIXTURE</span></h2>
+<table>
+<tr><th>Property / Finding</th><th>Evidence (path:line, excerpt)</th><th>Freshness</th></tr>
+<tr><td>Read-only validate endpoint exists on dev</td><td><code>NExtSEEK/nextseek_api/batch_upload/views.py:405</code> <code>@action(url_path="validate")</code>; confirmed on <code>origin/dev</code></td><td>current</td></tr>
+<tr><td>Validate stops before INSERT (no DB write)</td><td><code>validation.py</code> runs through TRANSFORM only; <code>ValidationResult</code> <code>job_id:null, summary_path:null</code> (<code>models.py:843-866</code>)</td><td>current</td></tr>
+<tr><td>UID rule (blank=new, populated=update)</td><td><code>InputRowModel</code> normalizes blank UID→None (<code>models.py:129-135</code>); update branch keyed on UID/Name + <code>update_existing</code> (<code>insert.py:172-180</code>)</td><td>current</td></tr>
+<tr><td>UID = first column; blank for new (rule)</td><td><code>dmac-curation-tools/docs/curation-reference.md:716-720</code> (Rule 4.3); <code>DMAC_docs/gitbook/03-uploading.md:38-43</code></td><td>current</td></tr>
+<tr><td>Update via sheet wipes omitted attributes</td><td><code>03-uploading.md:41</code> "All attributes ... must be included. If an attribute is not included ... that metadata will be removed"</td><td>current</td></tr>
+<tr><td>Attributes are DB-defined; never invent</td><td><code>curation-reference.md:703-705</code> (Rule 4.2); validate <code>structure</code> check compares <code>json_metadata</code> keys to <code>prefetch_sample_type_attributes</code> (<code>prefetch.py:211-250</code>)</td><td>current</td></tr>
+<tr><td>Skill install path + discovery</td><td><code>Dockerfile:40</code> COPY plugin; <code>entrypoint.sh:78-88</code> symlink to <code>~/.claude/plugins/local/</code>; <code>Dockerfile:118</code> bin on PATH</td><td>current</td></tr>
+<tr><td>Read allowlist covers <code>sample_types/</code> GET only</td><td><code>assistant/read_safe_endpoints.json</code> — lists <code>sample_types/</code> (GET); not <code>{uid}/</code>, not <code>batch-upload/validate/</code></td><td>current</td></tr>
+<tr><td>Live E2E "via the bridge" harness</td><td><code>tools/e2e/run_router_e2e.py</code> boots uvicorn + WS; asserts route-match + BAML <code>JudgeRouterAnswer</code></td><td>current (1 uncommitted comment edit)</td></tr>
+<tr><td>Dev server target + reachability footgun</td><td><code>.env.dev:15</code> <code>NEXTSEEK_URL=https://nextseek-dev.mit.edu</code>; <code>run_router_e2e.py:222-229</code> "back up 2026-06-25, may need VPN"; <code>_check_ns_target_reachable</code> fails fast</td><td>current</td></tr>
+<tr><td>Post-turn bridge copier is BUILT &amp; live (publishes scratch → delivery dir)</td><td><code>copier.py</code> <code>copy_files()</code>; <code>ws.py:296 dispatch_post_turn_copy</code> fires every turn; committed <code>e612c0d</code>/<code>1f709e7</code>, tested (<code>test_copier.py</code>)</td><td>current (built)</td></tr>
+</table>
+
+<!-- ===== 10 ===== -->
+<h2 id="s10">10. Web research findings</h2>
+<p>This task is almost entirely <b>local-evidence-driven</b> — the contract lives in the NExtSEEK source and the
+BMC docs already in the working tree, which the no-defer rule says to treat as implementation reality. No external
+web source was needed to settle a decision in this round; the GitBook upload guide
+(<code>DMAC_docs/gitbook/03-uploading.md</code>) is the published-doc form of the same rules and is mirrored
+locally. The one web-shaped fact worth confirming at execution time is non-documentary:</p>
+<h3>Dev-server deployment currency <span class="src-inf">INFERENCE</span> — <code>https://nextseek-dev.mit.edu</code> (to verify at execution, may need VPN)</h3>
+<ul>
+  <li>The <code>validate</code> endpoint is on the <code>dev</code> <i>branch</i> source, but whether the
+  <i>running</i> dev server has been redeployed to include it is unverified from a read-only vantage. This is a
+  pre-execution gate (a single live probe), not a planning-time web claim. Flagged in §14.</li>
+</ul>
+
+<!-- ===== 11 ===== -->
+<h2 id="s11">11. Source-quality table</h2>
+<table>
+<tr><th>Claim</th><th>Best evidence</th><th>Confidence</th></tr>
+<tr><td>Validate is read-only and on <code>dev</code></td><td><code>views.py:405</code> + <code>git grep origin/dev</code></td><td><span class="src-local">LOCAL-FIXTURE</span></td></tr>
+<tr><td>UID blank=new / populated=update</td><td><code>models.py:129-135</code>, <code>insert.py:172-180</code></td><td><span class="src-local">LOCAL-FIXTURE</span></td></tr>
+<tr><td>Sheet-update wipes omitted attributes</td><td><code>03-uploading.md:41</code></td><td><span class="src-semi">SEMI-OFFICIAL</span></td></tr>
+<tr><td>UID-column-first / blank-for-new rule</td><td><code>curation-reference.md:716-720</code></td><td><span class="src-semi">SEMI-OFFICIAL</span></td></tr>
+<tr><td>New skill auto-discovered via symlink</td><td><code>entrypoint.sh:78-88</code>, <code>test_image_smoke.py:206-304</code></td><td><span class="src-local">LOCAL-FIXTURE</span></td></tr>
+<tr><td>Bridge copier built; publishes scratch → delivery dir (Dropbox)</td><td><code>copier.py</code>, <code>ws.py:296</code>, <code>test_copier.py</code></td><td><span class="src-local">LOCAL-FIXTURE</span></td></tr>
+<tr><td>Dev SERVER currently serves validate</td><td>not directly probed (read-only vantage)</td><td><span class="src-inf">INFERENCE</span></td></tr>
+</table>
+
+<!-- ===== 12 ===== -->
+<h2 id="s12">12. Current architecture summary</h2>
+<pre>chat UI ──ws──&gt; bridge (src/dmac_assistant/ws.py, /ws/chat)
+                 │  _router_enabled() (ON by default)
+                 │  _dispatch_one_turn -> RouterAgent.route(query)
+                 ├─ container_cc   -> exec_cc_turn -> `claude` in the per-user container
+                 │                     └─ baked `nextseek` plugin  ◀── THE NEW SKILL LIVES HERE
+                 │                          skills/&lt;name&gt;/SKILL.md + bin/ read-only tools
+                 │                          → HTTPS → NExtSEEK  GET sample_types/{uid}/   (attributes)
+                 │                                              POST batch-upload/validate/ (read-only)
+                 │                                              [ start/  ✖ FORBIDDEN ]
+                 ├─ nextseek_query -> runner_ns.py -> NExtSEEK assistant query/async (read-only, NOT skills)
+                 └─ unrelated      -> canned reply
+
+Live E2E "via the bridge": tools/e2e/run_router_e2e.py boots a real bridge, opens /ws/chat,
+sends a user message, asserts route + BAML semantic verdict. NS target = DMAC_E2E_NS_URL
+| NEXTSEEK_URL | localhost(→host.docker.internal). Dev server = https://nextseek-dev.mit.edu.</pre>
+<p><span class="src-inf">INFERENCE</span> The skill is purely additive to <code>container_cc</code>: new
+<code>SKILL.md</code> + new read-only bin tool(s) + a one-line <code>container/CLAUDE.md</code> pointer + a
+route-capability hint so payload-building reliably lands on <code>container_cc</code> (not the read-only
+<code>nextseek_query</code> pipeline, which cannot run a skill). No new route enum is required.</p>
+
+<!-- ===== 13 ===== -->
+<h2 id="s13">13. Data model / interface summary</h2>
+<p><b>Validate request</b> (<code>rows</code> mode): <code>{"project_id": int, "update_existing": bool,
+"checks": "structure,name_check,dag", "rows": [InputRowModel...]}</code>. <b><code>InputRowModel</code></b>
+(<code>batch_upload/models.py:115</code>): <code>{UID?: str|null, SampleType: str, json_metadata: str (JSON
+object), assay_ids: int[], project_id?, study_title?/study_id?/sop_id?}</code>; <code>extra="allow"</code>.
+The UID column must equal <code>json_metadata.UID</code> (validator <code>models.py:227-244</code>).</p>
+<p><b>Validate response</b> <code>ValidationResult</code> (<code>models.py:843-866</code>):
+<code>{valid: bool, summary: str, errors: [{type, message, row, uid}], error_groups: [...],
+totals: {processed, success, skipped, failed, error, ...}, checks_run: [...], checks_skipped: [...]}</code>.
+<code>valid = (no errors) AND (totals.error is None)</code>.</p>
+<p><b>Two payload shapes</b> (both accepted, do not invent a third): the <b>flat <code>InputRowModel</code>
+rows</b> (programmatic) and the <b>4-sheet xlsx workbook</b> <code>Instructions / Samples / Ontology / Assay</code>
+(the human "Sample Sheet" BMC users upload via the NExtSEEK UI; UID is column 0). A flat single-sheet xlsx
+(<code>UID, SampleType, json_metadata, assay_ids, ...</code>) is an auto-detected third spreadsheet form. §18 Q-001
+chooses which the skill emits.</p>
+
+<!-- ===== 14 ===== -->
+<h2 id="s14">14. Risks and uncertainties</h2>
+<table>
+<tr><th>Risk</th><th>Likelihood</th><th>Mitigation</th></tr>
+<tr><td>Dev SERVER hasn't been redeployed with <code>validate</code> (branch has it, deployment unverified)</td><td>M</td><td>Single live probe of <code>POST .../validate/</code> against the dev server as a pre-execution gate (Q-007); fall back to local stack if absent</td></tr>
+<tr><td>Router misclassifies "build me an upload payload" as <code>nextseek_query</code> (read-only pipeline, can't run a skill)</td><td>M</td><td>Add an upload-payload task family to <code>container_cc</code> in <code>route_capabilities.json</code>; add an E2E discriminator that asserts the route</td></tr>
+<tr><td>Silent attribute wipe if an UPDATE payload omits attributes and is later uploaded as a sheet</td><td>M–H</td><td>Q-004: fetch existing + merge to a full attribute set; warn in the skill output</td></tr>
+<tr><td>Read-only <code>POST validate</code> tripped by the "POST = write" safety gate (would demand a confirmation that defeats the seamless flow)</td><td>M</td><td>Q-003: a dedicated read-only tool that classifies validate as non-write</td></tr>
+<tr><td>Skill writes payload to a scratch path the copier does not pick up (e.g. wrong root)</td><td>L</td><td>Q-002: write under <code>/data/scratch/&lt;user&gt;/…</code> exactly where the post-turn copier snapshots; assert publication in E2E</td></tr>
+<tr><td>Paid Bedrock spend on each live E2E iteration</td><td>H</td><td>Q-007: free local dry-run first; a single authorized paid dev run; cost-framed authorization</td></tr>
+<tr><td>Building the full 4-sheet workbook (Instructions+Ontology+Assay) over-scopes a "simple" skill</td><td>M</td><td>Q-001: weigh xlsx-workbook vs flat rows; the skill can validate via JSON rows regardless of the human deliverable</td></tr>
+<tr><td>Skill or tools accidentally exfiltrate creds / regress containment</td><td>L</td><td>Reuse the existing Basic-auth-from-env pattern; no new secrets; tools hardcoded to read-only endpoints</td></tr>
+</table>
+
+<!-- ===== 15 ===== -->
+<h2 id="s15">15. Security / privacy observations</h2>
+<ul>
+  <li><b>No new secrets.</b> The skill reuses the per-session NExtSEEK login already in the container env
+    (<code>NEXTSEEK_USERNAME</code>/<code>NEXTSEEK_PASSWORD</code>), the same Basic-auth pattern as
+    <code>_assistant_client.py</code>. The standing Bedrock-token exfil blocker (OI-3) is unchanged and out of
+    scope here; the skill must not widen it.</li>
+  <li><b>Structural enforcement of "no upload."</b> A read-only-only bin tool that physically cannot target
+    <code>start/</code> makes the forbidden-upload guarantee a property of the tool, not just a prompt
+    instruction (favors Q-003 option A).</li>
+  <li><b>Dropbox is mounted read-only</b> at <code>/data/projects/{name}</code>; the skill must write only to
+    <code>/data/scratch</code>. This intersects directly with Q-002.</li>
+  <li><b>No PII/secrets surfaced in this report.</b> Credential values were not read; only <code>.env</code>
+    keys/placeholders were referenced.</li>
+</ul>
+
+<!-- ===== 16 ===== -->
+<h2 id="s16">16. Implementation implications</h2>
+<ul>
+  <li><b>Additive skill, no new route enum.</b> Author <code>build_context/plugins/nextseek/skills/&lt;name&gt;/SKILL.md</code>
+    + read-only bin tool(s); add a route-capability hint; rebuild <code>dmac-assistant:poc</code>; the symlink
+    discovers it. The route-capabilities edit is config-only.</li>
+  <li><b>The mandatory preliminary attribute fetch</b> maps to <code>GET sample_types/{uid}/</code> (the
+    retrieve, which carries <code>sample_attributes</code>) — note the read allowlist currently lists only the
+    <code>sample_types/</code> <i>list</i>, so Q-003 must account for the retrieve path too.</li>
+  <li><b>project_id resolution</b> is a sub-step, not a question: <code>validate</code> requires the integer
+    SEEK <code>project_id</code>; resolve it from <code>GET projects/</code> by matching the project name (or
+    the mounted dir name) — deterministic, no user decision.</li>
+  <li><b>"Fully wired &amp; LIVE" is the acceptance bar.</b> The plan's final task must be a live bridge E2E whose
+    success condition is non-gameable: a saved transcript with exit 0, the captured
+    <code>route_decided.route == container_cc</code>, a captured <code>validate</code> response with
+    <code>valid</code> + <code>checks_run</code>, and a persisted payload artifact — not "looks correct."</li>
+  <li><b>Do not conflate</b> with <code>nextseek-generate-submission</code> (GEO/SRA publication) — different
+    artifact, different endpoint.</li>
+</ul>
+
+<!-- ===== 17 ===== -->
+<h2 id="s17">17. Backward-compatibility / migration implications</h2>
+<ul>
+  <li>Purely additive — no existing route, tool, or test changes behavior. The only modified shared surfaces are
+    <code>route_capabilities.json</code> (a new task family) and <code>container/CLAUDE.md</code> (a one-line
+    pointer outside the auto-generated NExtSEEK block). No data migration. No format drift: the skill emits one
+    of NExtSEEK's existing accepted payload shapes (Q-001), it does not introduce a new one.</li>
+</ul>
+
+<!-- ===== 18 ===== -->
+<h2 id="s18">18. Decisions to make</h2>
+<p class="small">Choose an option per question (radios), optionally add a write-in or comment.
+Recommended defaults are marked <span class="recbadge">★ recommended</span> and are pre-selected;
+change or clear them as you like. Then go to §19 and export. Nothing here calls a model or the network.
+Note the coupling: <b>Q-001 (format)</b> and <b>Q-004 (update handling)</b> interact.</p>
+<div id="questions"></div>
+
+<!-- ===== 19 ===== -->
+<h2 id="s19">19. Export decision JSON</h2>
+<p>Click <b>Export</b> to download the decision JSON and preview it below. The file includes report
+metadata, research + export timestamps, the question-set version, selected answers, comments,
+write-ins, unanswered questions, recommended defaults, and the evidence references per question.
+Hand that file back to continue scout — a new decision round if open questions remain, otherwise
+Phase 5 (engine selection + plan authoring).</p>
+<div class="bar">
+  <button onclick="doExport()">⬇ Export decision JSON</button>
+  <button class="ghost" onclick="selectAllDefaults()">Reset to recommended defaults</button>
+  <button class="ghost" onclick="clearAll()">Clear all answers</button>
+  <span id="status"></span>
+</div>
+<pre id="preview" class="small">// preview appears here after Export</pre>
+
+<footer>
+  Generated by the <code>scout</code> skill · report:
+  <code>docs/research/nextseek_batch_upload_skill_findings_and_decisions.html</code> · notes:
+  <code>docs/research/batch_upload_skill_phase1_notes.md</code>. This is a decision gate: planning begins only
+  after the exported JSON is returned and approved.
+</footer>
+
+</div>
+
+<script>
+/* ============================================================================
+   EDIT THESE THREE OBJECTS ONLY. The render()/export functions below are the
+   reusable engine — leave them intact.
+   ============================================================================ */
+
+var REPORT_META = {
+  title: "NExtSEEK Batch-Upload Payload-Builder Skill — Findings & Decision Report",
+  project: "dmac_assistant",
+  report_path: "docs/research/nextseek_batch_upload_skill_findings_and_decisions.html",
+  research_timestamp: "2026-06-25",
+  question_set_version: "1.0",
+  export_basename: "nextseek_batch_upload_skill_decisions",
+  round: 1,
+  supersedes: "",
+  corpus: { surfaces_inspected: ["dmac_assistant","NExtSEEK/nextseek_api","work/BMC"],
+            validate_endpoint: "POST /nextseek_api/batch-upload/validate/ (origin/dev)" }
+};
+
+var QUESTIONS = [
+ { id:"Q-001", area:"Payload output format", blocks:"BLOCKER",
+   why:"Determines what the skill builds and hands back, what the user does with it, and how update-mode handling works (Q-004). The validate endpoint accepts more than one shape.",
+   evidence:"validate/start accept flat InputRowModel JSON rows AND a 4-sheet xlsx workbook (Instructions/Samples/Ontology/Assay) AND a flat single-sheet xlsx. BMC users conventionally upload the 4-sheet workbook via the NExtSEEK web UI (curation-reference Rule 4.3; 03-uploading.md). The flat rows are the exact shape the API consumes.",
+   uncertain:"Whether you want a human-inspectable file you then upload via the web UI (xlsx), the exact JSON the validate/start API consumes, or both.",
+   rec:"A",
+   options:[
+     {k:"A", lab:"4-sheet xlsx workbook (Instructions/Samples/Ontology/Assay)", cons:"Canonical NExtSEEK upload artifact; eyeball-able; UID column first; you upload it via the web UI. Heaviest to build; on update it implies the full-attribute path (see Q-004)."},
+     {k:"B", lab:"Flat JSON rows (InputRowModel list)", cons:"Exactly what validate/start consume; compact; supports partial update; least code. NOT directly uploadable via the web UI — you'd POST it or paste into an API tool."},
+     {k:"C", lab:"Flat single-sheet xlsx (UID, SampleType, json_metadata, assay_ids, ...)", cons:"Spreadsheet-inspectable AND maps 1:1 to InputRowModel; simpler than the 4-sheet form. Less conventional than the 4-sheet workbook for the NExtSEEK UI."},
+     {k:"D", lab:"Both — a human-readable workbook AND the JSON the validate endpoint consumed", cons:"Most useful for inspection + reuse, but the most to build and to assert in E2E; mild scope creep vs 'simple'."}
+   ],
+   affects:"The payload-builder task; the validate-call shape; Q-004 (update handling); the delivery artifact (Q-002); the live-E2E assertion." },
+
+ { id:"Q-002", area:"What the skill writes for delivery (copier already publishes scratch→Dropbox)", blocks:"DEFAULTABLE",
+   why:"Delivery is already solved: CC writes only to /data/scratch, and the BUILT post-turn bridge copier (copier.py + ws.py:296 dispatch_post_turn_copy) publishes new/changed scratch files to the user's delivery folder (Dropbox) automatically after every turn. The open choice is only WHAT the skill persists to scratch and how much it echoes inline.",
+   evidence:"copier.py copy_files() copies new/changed scratch files to the configured delivery dir after every turn (ws.py:296, committed e612c0d/1f709e7, test_copier.py); CC cannot write the output mount directly (ro). So a payload (and optionally the validation result) written to /data/scratch is auto-delivered to Dropbox.",
+   uncertain:"Whether the skill persists just the payload, or the payload AND a validation-result file, to scratch — and how much of each to echo in the chat reply.",
+   rec:"B",
+   options:[
+     {k:"A", lab:"Write only the payload to /data/scratch (auto-published) + echo the validate verdict + a short preview inline", cons:"Minimal; user gets the payload file via Dropbox + a verdict in chat. No persisted validation record for later audit / E2E assertion."},
+     {k:"B", lab:"Write BOTH the payload AND a validation-result file (e.g. .json) to /data/scratch (both auto-published) + inline verdict", cons:"Durable inspection record (payload + the validate response) delivered to Dropbox; gives the live E2E a persistable artifact to assert on. Slightly more output logic."},
+     {k:"C", lab:"Inline in the chat reply only (write nothing to scratch)", cons:"Nothing delivered to Dropbox; large payloads truncate; not a reusable file — defeats the built copier."}
+   ],
+   affects:"The skill's output step (what is written under /data/scratch); the live-E2E artifact assertion (a published payload + validation file)." },
+
+ { id:"Q-003", area:"Read-only API-call mechanism (attributes + validate)", blocks:"BLOCKER",
+   why:"The skill must make authenticated read-only calls to sample_types/{uid}/ (GET) and batch-upload/validate/ (POST). validate is a read-only POST that collides with the repo's 'POST = write = gated' model, and the current read allowlist covers only the sample_types list, not the retrieve or validate.",
+   evidence:"nextseek-api-read is allowlist-gated by read_safe_endpoints.json (has sample_types/ GET, not {uid}/, not validate). _assistant_client.py shows the Basic-auth-from-env HTTP pattern. The generic host-only nextseek-api SchemaRAG plugin can call any endpoint with 3-layer write-safety but is NOT baked into the image.",
+   uncertain:"Whether to add purpose-built read-only tools, extend the existing allowlist + reuse nextseek-api-read, or bake in the generic SchemaRAG plugin.",
+   rec:"A",
+   options:[
+     {k:"A", lab:"New dedicated read-only bin tools (e.g. nextseek-sampletype-attrs, nextseek-validate-upload) hardcoded to the two read-only endpoints", cons:"Smallest surface; makes 'forbidden upload' STRUCTURAL (the tool physically can't POST to start/); keeps validate out of the write-gate. A little new code."},
+     {k:"B", lab:"Extend read_safe_endpoints.json (add sample_types/{uid}/ GET + batch-upload/validate/ as read-safe) and call via nextseek-api-read", cons:"Reuses one tool, but reclassifies a POST as 'read-safe', loosening the safety model; future endpoints inherit that precedent."},
+     {k:"C", lab:"Bake the generic nextseek-api SchemaRAG plugin into the image and use it", cons:"Most general and already write-safe, but pulls a whole second plugin + SchemaRAG into the image (heavier; against 'simple')."}
+   ],
+   affects:"Which files are created (new bin tools); the write-safety classification; the container/CLAUDE.md pointer; the image build." },
+
+ { id:"Q-004", area:"Update-mode attribute handling (avoiding a silent wipe)", blocks:"BLOCKER",
+   why:"NExtSEEK docs warn that updating via a Sample/Assay SHEET requires ALL attributes — omitted attributes are REMOVED from the sample. The flat-row API path supports partial 'UID-only' updates. So the safe behavior depends on the chosen format (Q-001) and on whether the skill fetches the sample's current values first.",
+   evidence:"03-uploading.md:41 (full-replacement caveat for sheet updates); wave3_update_mode.xlsx shows a partial UID-only flat-row update; the skill already fetches sample-type attributes and can also fetch the existing sample's current values.",
+   uncertain:"Whether an UPDATE payload includes only the user-specified changed attributes (partial) or fetches the existing sample and merges to a full attribute set before validating.",
+   rec:"A",
+   options:[
+     {k:"A", lab:"Fetch the existing sample + MERGE so the update carries the FULL attribute set", cons:"Eliminates the documented silent-wipe footgun regardless of format (Q-001); safe. Costs extra read calls per updated sample."},
+     {k:"B", lab:"Include only the changed attributes (partial update)", cons:"Minimal; relies on the flat-row partial path. UNSAFE if the payload is later uploaded as a 4-sheet sheet (silent attribute removal)."},
+     {k:"C", lab:"Ask the user per run and warn about the wipe risk when partial", cons:"Most flexible but adds an interaction step to a flow meant to be seamless; user must understand the caveat each time."}
+   ],
+   affects:"The update branch of the payload-builder; number of read calls; coupling with Q-001." },
+
+ { id:"Q-005", area:"Validate checks scope", blocks:"DEFAULTABLE",
+   why:"validate accepts checks ⊆ {structure, name_check, dag} (default structure). name_check flags rows whose Name already exists (accidental duplicate creation); dag flags parent-reference cycles.",
+   evidence:"batch_upload/views.py validate `checks` param + _VALIDATE_ALLOWED_CHECKS; ValidationResult reports checks_run / checks_skipped.",
+   uncertain:"Whether to always run all three for maximum pre-flight safety or just the structural attribute check.",
+   rec:"A",
+   options:[
+     {k:"A", lab:"All three (structure + name_check + dag)", cons:"Most thorough pre-flight; catches duplicate-creation and parent cycles. Marginally more server work; richer result to surface."},
+     {k:"B", lab:"structure + name_check", cons:"Catches attribute errors + accidental dup creation; skips parent-cycle detection (fine if no parent refs)."},
+     {k:"C", lab:"structure only (endpoint default)", cons:"Minimal; only attribute-name validity. Misses dup-creation and parent cycles."}
+   ],
+   affects:"The validate-call step; how complete the E2E assertion is." },
+
+ { id:"Q-006", area:"Reuse dmac-curation-tools vs build fresh", blocks:"DEFAULTABLE",
+   why:"dmac-curation-tools has a complete payload toolkit and the exact UID/parent/attribute rules — but it runs host-side against a direct DB connection and is a separate repo; you asked for a simple, non-curation skill.",
+   evidence:"dmac_curation/{workbook,attributes,uid_propagation,schemas}.py + validate-workbooks/propagate-uids skills run against a DB, not the HTTP API.",
+   uncertain:"Whether to vendor/adapt any of that code or author fresh thin skill logic over the HTTP API and encode the rules in SKILL.md.",
+   rec:"A",
+   options:[
+     {k:"A", lab:"Build fresh — SKILL.md instructions + minimal read-only HTTP tools; cite the rules, don't vendor", cons:"Aligns with 'simple, not curation'; smallest dependency surface. Re-expresses a few rules already encoded in the toolkit."},
+     {k:"B", lab:"Vendor/adapt selected validators (UID regex, attribute-match) from dmac-curation-tools", cons:"Reuses battle-tested rule logic, but imports a host-side, DB-oriented module into the in-container plugin (extra weight, drift risk)."}
+   ],
+   affects:"Dependency surface; what code is written; long-term maintenance." },
+
+ { id:"Q-007", area:"Live E2E target + paid-inference authorization", blocks:"BLOCKER",
+   why:"You require a live E2E via the bridge against the dev server. A live CC turn uses Bedrock (paid); validate itself is free. The dev server may need VPN and may lag the dev branch (deployment of validate is unverified). Paid inference needs explicit per-session authorization (standing rule).",
+   evidence:"run_router_e2e.py boots a real bridge + WS; NS target via DMAC_E2E_NS_URL/NEXTSEEK_URL; dev = nextseek-dev.mit.edu (back up 2026-06-25, may need VPN); standing paid-spend authorization rule.",
+   uncertain:"Whether to run E2E directly against the dev server (paid, VPN, verify deployment first) or do a free/local dry-run first then ONE authorized paid dev-server run.",
+   rec:"A",
+   options:[
+     {k:"A", lab:"Local-stack dry-run first (free; verifies wiring), THEN one authorized paid run against the dev server", cons:"Safest + cheapest path to the same guarantee; the dev run is the real acceptance. Requires the local stack up plus the dev run."},
+     {k:"B", lab:"Dev server only (paid)", cons:"Matches the literal ask; no local rehearsal, so each fix iterates against paid Bedrock + VPN."},
+     {k:"C", lab:"Local stack only for now; defer the dev-server run to a separate authorized session", cons:"Zero cost now, but does NOT satisfy 'live against the dev server' until the follow-up — leaves the headline acceptance open."}
+   ],
+   affects:"The final E2E task; cost gating; the pre-execution dev-server deployment probe." },
+
+ { id:"Q-008", area:"Dropbox input format the skill consumes", blocks:"LATER",
+   why:"The skill builds payloads from user chat OR mounted Dropbox files. How structured those files are shapes the skill's parsing/normalization and its reliability.",
+   evidence:"projects mounted ro at /data/projects/{name}; you said inputs come from chat or the Dropbox dir; attributes are DB-defined and must be matched exactly.",
+   uncertain:"Whether the Dropbox files are reasonably-structured tabular (csv/xlsx, one row per sample) vs arbitrary files the skill must interpret.",
+   rec:"A",
+   options:[
+     {k:"A", lab:"Structured tabular files (csv/xlsx, one row per sample) + chat; skill does light column→attribute normalization", cons:"Simple and reliable; the skill maps known columns to attributes, no heavy extraction. The user prepares a reasonable sheet."},
+     {k:"B", lab:"Arbitrary files (PDFs, messy sheets, READMEs) the skill must interpret into samples", cons:"Powerful but unreliable and closer to 'full curation' — against the stated scope."},
+     {k:"C", lab:"Chat-only inputs for V1; ignore Dropbox file parsing", cons:"Smallest, but drops half the stated input sources (the mounted Dropbox dir)."}
+   ],
+   affects:"The input-ingest step; skill complexity; the E2E fixture." }
+];
+
+var EVIDENCE = {
+ "Q-001":["NExtSEEK/nextseek_api/batch_upload/views.py:160,405","batch_upload/models.py:115 (InputRowModel)","batch_upload/convert.py:40 (4-sheet detection)","dmac-curation-tools/docs/curation-reference.md:716-720","DMAC_docs/gitbook/03-uploading.md:9-23"],
+ "Q-002":["dmac_assistant/.claude/CLAUDE.md (Canonical Mount Contract)","memory project_dropbox_output_is_the_delivery_channel","src/dmac_assistant/ws.py (chat relay)"],
+ "Q-003":["build_context/plugins/nextseek/bin/nextseek-api-read","nextseek_api/assistant/read_safe_endpoints.json","build_context/plugins/nextseek/bin/_assistant_client.py:83-113","build_context/plugins/nextseek-api/ (host-only SchemaRAG plugin)"],
+ "Q-004":["DMAC_docs/gitbook/03-uploading.md:41","NExtSEEK/.../batch_upload/tests/fixtures/wave3_update_mode.xlsx","batch_upload/insert.py:172-180","batch_upload/update.py (bulk_update_samples)"],
+ "Q-005":["NExtSEEK/nextseek_api/batch_upload/views.py (validate checks param, _VALIDATE_ALLOWED_CHECKS)","batch_upload/models.py:843-866 (checks_run/checks_skipped)"],
+ "Q-006":["work/BMC/dmac-curation-tools/src/dmac_curation/{workbook,attributes,uid_propagation,schemas}.py","dmac-curation-tools/.claude/skills/{validate-workbooks,propagate-uids}/SKILL.md"],
+ "Q-007":["tools/e2e/run_router_e2e.py:222-229,280-331","dmac_assistant/.env.dev:15","standing rule: paid-API spend needs per-session authorization"],
+ "Q-008":["dmac_assistant/.claude/CLAUDE.md (mount /data/projects/{name} ro)","NExtSEEK batch_upload/convert.py (csv/xlsx ingest)","dmac-curation-tools/src/dmac_curation/workbook.py (load_attrs/enforce_schema)"]
+};
+
+/* ============================================================================
+   ENGINE — render + export (do not edit below unless intentionally extending)
+   ============================================================================ */
+function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+function tagFor(b){ if(b==="BLOCKER")return '<span class="tag t-blk">BLOCKER</span>';
+  if(b==="LATER")return '<span class="tag t-later">AFFECTS LATER</span>';
+  return '<span class="tag t-def">DEFAULTABLE</span>'; }
+
+function render(){
+  var root=document.getElementById("questions"), html="";
+  QUESTIONS.forEach(function(q){
+    html+='<div class="q" id="card-'+q.id+'">';
+    html+='<h3><span class="qid">'+q.id+'</span> '+esc(q.area)+' '+tagFor(q.blocks)+'</h3>';
+    html+='<div class="meta"><b>Why it matters:</b> '+esc(q.why)+'</div>';
+    html+='<div class="meta"><b>What the evidence says:</b> '+esc(q.evidence)+'</div>';
+    html+='<div class="meta"><b>What is uncertain:</b> '+esc(q.uncertain)+'</div>';
+    q.options.forEach(function(o){
+      var isrec=(o.k===q.rec);
+      html+='<label class="opt'+(isrec?' isrec':'')+'">'+
+        '<input type="radio" name="'+q.id+'" value="'+o.k+'"'+(isrec?' checked':'')+'>'+
+        '<span class="lab">'+o.k+'. '+esc(o.lab)+'</span>'+(isrec?'<span class="recbadge">★ recommended</span>':'')+
+        '<span class="cons">'+esc(o.cons)+'</span></label>';
+    });
+    html+='<label class="opt"><input type="radio" name="'+q.id+'" value="OTHER">'+
+      '<span class="lab">Other / write-in</span></label>';
+    html+='<input class="writein" id="wi-'+q.id+'" placeholder="Write-in answer (used when \'Other\' is selected)…">';
+    html+='<textarea class="cmt" id="cmt-'+q.id+'" rows="2" placeholder="Optional comment for '+q.id+'…"></textarea>';
+    html+='<div class="affect"><b>Affects:</b> '+esc(q.affects)+' &nbsp;·&nbsp; <b>Recommended default:</b> '+(q.rec||"none")+'</div>';
+    html+='</div>';
+  });
+  root.innerHTML=html;
+  QUESTIONS.forEach(function(q){
+    document.getElementsByName(q.id).forEach(function(r){
+      r.addEventListener("change",function(){ syncWI(q.id); });
+    });
+  });
+}
+function isOther(id){var r=document.querySelector('input[name="'+id+'"]:checked');return r&&r.value==="OTHER";}
+function syncWI(id){document.getElementById("wi-"+id).style.display=isOther(id)?"block":"none";}
+
+function selectAllDefaults(){
+  QUESTIONS.forEach(function(q){
+    if(q.rec){ var r=document.querySelector('input[name="'+q.id+'"][value="'+q.rec+'"]'); if(r)r.checked=true; }
+    syncWI(q.id);
+  });
+  setStatus("Reset to recommended defaults.");
+}
+function clearAll(){
+  QUESTIONS.forEach(function(q){
+    document.getElementsByName(q.id).forEach(function(r){r.checked=false;});
+    syncWI(q.id);
+    document.getElementById("cmt-"+q.id).value="";
+  });
+  setStatus("Cleared all answers.");
+}
+function setStatus(m){document.getElementById("status").textContent=m;}
+
+function buildDecision(){
+  var answers={}, comments={}, writeins={}, unanswered=[], defaults={};
+  QUESTIONS.forEach(function(q){
+    defaults[q.id]=q.rec||null;
+    var sel=document.querySelector('input[name="'+q.id+'"]:checked');
+    var cmt=document.getElementById("cmt-"+q.id).value.trim();
+    var wi=document.getElementById("wi-"+q.id).value.trim();
+    if(cmt)comments[q.id]=cmt;
+    if(!sel){ unanswered.push(q.id); }
+    else if(sel.value==="OTHER"){ answers[q.id]="OTHER"; writeins[q.id]= wi || "(write-in selected but left blank)"; }
+    else { answers[q.id]=sel.value; if(wi)writeins[q.id]=wi; }
+  });
+  return {
+    report_metadata: REPORT_META,
+    research_timestamp: REPORT_META.research_timestamp,
+    export_timestamp_utc: new Date().toISOString(),
+    question_set_version: REPORT_META.question_set_version,
+    selected_answers: answers,
+    comments: comments,
+    write_in_answers: writeins,
+    unanswered_questions: unanswered,
+    recommended_defaults: defaults,
+    evidence_references: EVIDENCE
+  };
+}
+function doExport(){
+  var d=buildDecision();
+  var txt=JSON.stringify(d,null,2);
+  document.getElementById("preview").textContent=txt;
+  var fname=(REPORT_META.export_basename||"decisions")+".json";
+  try{
+    var blob=new Blob([txt],{type:"application/json"});
+    var a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download=fname;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){URL.revokeObjectURL(a.href);},1500);
+    var n=Object.keys(d.selected_answers).length, u=d.unanswered_questions.length;
+    setStatus("Exported "+fname+" — "+n+" answered, "+u+" unanswered.");
+  }catch(e){
+    setStatus("Download blocked by browser; copy the JSON from the preview below.");
+  }
+}
+render();
+setStatus("Loaded "+QUESTIONS.length+" questions (defaults pre-selected). Review, then Export.");
+</script>
+</body>
+</html>

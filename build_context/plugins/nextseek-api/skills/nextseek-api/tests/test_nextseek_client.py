@@ -376,7 +376,7 @@ class TestPreflight:
         + join with the base URL to produce the known auth-guarded live route
         ``/nextseek_api/schema/?format=yaml``.
 
-        Live probe (2026-04, dev, demo:demopassword BasicAuth):
+        Live probe (2026-04, dev, demo:<redacted> BasicAuth):
           - ``schema_rag/schema/`` → 404 HTML  (the previous default — broken)
           - ``schema/?format=yaml`` → 200    (current default — correct)
 

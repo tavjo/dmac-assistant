@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<!--
+  scout — NExtSEEK batch-upload payload-builder skill: DECISION ROUND 2.
+  Supersedes nextseek_batch_upload_skill_findings_and_decisions_v1.html.
+  Standalone: no external JS/CSS/fonts/images/network. Light background. Renders from file://.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NExtSEEK Batch-Upload Skill — Decision Round 2</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --panel:#ffffff; --ink:#1d2433; --muted:#5b6577; --line:#e2e6ee;
+    --accent:#2d5bd7; --accent-soft:#eaf0ff; --ok:#1f8a4c; --warn:#b6791f; --bad:#c23b3b;
+    --code:#f0f2f7; --rec:#0f7a44;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto;padding:28px 22px 90px}
+  header.top{border-bottom:2px solid var(--line);padding-bottom:18px;margin-bottom:8px}
+  h1{font-size:25px;margin:0 0 4px}
+  h2{font-size:20px;margin:34px 0 10px;padding-top:10px;border-top:1px solid var(--line)}
+  h3{font-size:16px;margin:20px 0 6px}
+  .sub{color:var(--muted);font-size:13.5px}
+  p{margin:8px 0}
+  code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:13px}
+  pre{background:var(--code);padding:12px 14px;border-radius:8px;overflow:auto;font-size:12.5px;border:1px solid var(--line)}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:var(--accent-soft)}
+  .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.02em;padding:2px 8px;border-radius:999px;color:#fff}
+  .t-blk{background:var(--bad)} .t-later{background:var(--warn)} .t-def{background:var(--ok)}
+  .pill{display:inline-block;font-size:11px;padding:1px 7px;border-radius:5px;background:var(--accent-soft);color:var(--accent);font-weight:600}
+  .callout{background:var(--accent-soft);border:1px solid #cdd9f7;border-left:4px solid var(--accent);padding:10px 14px;border-radius:8px;margin:12px 0}
+  .q{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:16px 0;box-shadow:0 1px 2px rgba(20,30,60,.04)}
+  .q h3{margin-top:0;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .q .qid{font-family:ui-monospace,monospace;background:var(--ink);color:#fff;padding:2px 8px;border-radius:6px;font-size:12.5px}
+  .q .meta{font-size:13px;color:var(--muted);margin:4px 0}
+  .q .meta b{color:var(--ink)}
+  .opt{display:block;border:1px solid var(--line);border-radius:8px;padding:9px 12px;margin:7px 0;cursor:pointer;transition:.08s}
+  .opt:hover{border-color:var(--accent);background:#fafbff}
+  .opt input{margin-right:9px}
+  .opt .lab{font-weight:600}
+  .opt .cons{display:block;color:var(--muted);font-size:12.5px;margin-top:3px;margin-left:23px}
+  .opt.isrec{border-color:#bfe6cf;background:#f3fbf6}
+  .recbadge{color:var(--rec);font-weight:700;font-size:11.5px;margin-left:6px}
+  .cmt{width:100%;margin-top:8px;border:1px solid var(--line);border-radius:8px;padding:8px;font-family:inherit;font-size:13px;resize:vertical}
+  .writein{width:100%;margin-top:6px;border:1px solid var(--line);border-radius:8px;padding:7px;font-size:13px;display:none}
+  .affect{font-size:12.5px;color:var(--muted);margin-top:8px;border-top:1px dashed var(--line);padding-top:7px}
+  .bar{position:sticky;bottom:0;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin-top:22px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;box-shadow:0 -2px 12px rgba(20,30,60,.06)}
+  button{font:inherit;font-weight:600;border:1px solid var(--accent);background:var(--accent);color:#fff;padding:9px 16px;border-radius:8px;cursor:pointer}
+  button.ghost{background:#fff;color:var(--accent)}
+  button:hover{filter:brightness(1.05)}
+  #status{font-size:13px;color:var(--muted)}
+  #preview{margin-top:10px;max-height:340px}
+  .small{font-size:12.5px;color:var(--muted)}
+  footer{margin-top:40px;border-top:1px solid var(--line);padding-top:14px;color:var(--muted);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <h1>NExtSEEK Batch-Upload Payload-Builder Skill — Decision Round 2</h1>
+  <div class="sub">
+    Project: <b>dmac_assistant</b> · Round <b>2</b> · Supersedes
+    <code>nextseek_batch_upload_skill_findings_and_decisions_v1.html</code> · Date <b>2026-06-25</b> ·
+    Standalone (no network/JS/CSS deps).<br>
+    Two of your Round-1 write-ins (formats, unstructured inputs) opened sub-decisions. This round asks
+    <b>only</b> those two — the Round-1 findings (§1–§17 in v1) are unchanged and not reprinted.
+  </div>
+</header>
+
+<div class="callout">
+  <b>How to respond:</b> answer the two questions below (defaults pre-selected), then click
+  <b>Export decision JSON</b> and hand back <code>nextseek_batch_upload_skill_decisions_round2.json</code>.
+  When this round resolves, I move to engine selection + the plan.
+</div>
+
+<h2 id="prior">Decisions already made (Round 1 — locked)</h2>
+<p>Carried forward as authoritative; <b>not</b> re-asked:</p>
+<table>
+<tr><th>ID</th><th>Decision</th><th>Now locked in</th></tr>
+<tr><td>Q-001</td><td><b>Support all three payload formats</b> (write-in: "A + B + C")</td><td>Skill can emit flat JSON rows, flat single-sheet xlsx, AND the 4-sheet workbook. Because a 4-sheet workbook is single-sample-type, multi-type batches get <b>one workbook per type</b>. <i>→ Round-2 Q-101 pins the default emission behavior.</i></td></tr>
+<tr><td>Q-002</td><td><b>Deliver to Dropbox via the built copier</b> (option C + your correction)</td><td>Skill writes payload(s) to <code>/data/scratch</code>; the post-turn bridge copier (<code>copier.py</code> + <code>ws.py:296</code>) publishes them to the user's Dropbox folder. No delivery machinery to build.</td></tr>
+<tr><td>Q-003</td><td><b>Dedicated read-only bin tools</b> (A)</td><td>New purpose-built tools (attribute fetch + validate) that physically cannot call <code>start/</code>; "no upload" is structural, and validate stays out of the write-gate.</td></tr>
+<tr><td>Q-004</td><td><b>Fetch existing + merge to the full attribute set on update</b> (A)</td><td>Update payloads carry the full attribute set (read the existing sample, merge changes) — eliminates the documented silent-wipe.</td></tr>
+<tr><td>Q-005</td><td><b>Run all three validate checks</b> (A)</td><td>Every validate call requests <code>structure,name_check,dag</code> (attribute validity + accidental-duplicate + parent-cycle).</td></tr>
+<tr><td>Q-006</td><td><b>Build fresh; don't vendor curation toolkit</b> (A)</td><td>SKILL.md instructions + minimal read-only HTTP tools; cite the BMC rules, don't import <code>dmac-curation-tools</code>.</td></tr>
+<tr><td>Q-007</td><td><b>Local dry-run first, then one authorized paid dev-server run</b> (A)</td><td>Free local-stack E2E verifies wiring; a single cost-authorized run against <code>nextseek-dev.mit.edu</code> is the real acceptance.</td></tr>
+<tr><td>Q-008</td><td><b>Also ingest unstructured inputs</b> (write-in)</td><td>CC reads a user-supplied protocol/file, extracts the relevant metadata, and fills what's missing/incorrect on existing samples — via a bundled text-extraction tool. <i>→ Round-2 Q-102 pins the tool's scope.</i></td></tr>
+</table>
+
+<h2 id="new">New decisions (Round 2)</h2>
+<p class="small">Choose an option per question (radios), optionally add a write-in or comment. Recommended defaults
+are marked <span class="recbadge">★ recommended</span> and pre-selected. Then export (below). Nothing here calls
+a model or the network.</p>
+<div id="questions"></div>
+
+<h2 id="export">Export decision JSON</h2>
+<p>Click <b>Export</b> to download the decision JSON and preview it below.</p>
+<div class="bar">
+  <button onclick="doExport()">⬇ Export decision JSON</button>
+  <button class="ghost" onclick="selectAllDefaults()">Reset to recommended defaults</button>
+  <button class="ghost" onclick="clearAll()">Clear all answers</button>
+  <span id="status"></span>
+</div>
+<pre id="preview" class="small">// preview appears here after Export</pre>
+
+<footer>
+  Generated by the <code>scout</code> skill · Round 2 ·
+  <code>docs/research/nextseek_batch_upload_skill_findings_and_decisions_v2.html</code>. Planning begins only
+  after this round's exported JSON is returned.
+</footer>
+
+</div>
+
+<script>
+/* EDIT THESE THREE OBJECTS ONLY. */
+var REPORT_META = {
+  title: "NExtSEEK Batch-Upload Payload-Builder Skill — Decision Round 2",
+  project: "dmac_assistant",
+  report_path: "docs/research/nextseek_batch_upload_skill_findings_and_decisions_v2.html",
+  research_timestamp: "2026-06-25",
+  question_set_version: "2.0",
+  export_basename: "nextseek_batch_upload_skill_decisions_round2",
+  round: 2,
+  supersedes: "nextseek_batch_upload_skill_findings_and_decisions_v1.html",
+  corpus: { round1_locked: ["Q-001:all-three-formats","Q-002:dropbox-via-copier","Q-003:dedicated-tools",
+            "Q-004:fetch-merge-full","Q-005:all-checks","Q-006:fresh","Q-007:local-then-paid-dev","Q-008:unstructured-ingest"] }
+};
+
+var QUESTIONS = [
+ { id:"Q-101", area:"Default output-format emission (you chose to support all three)", blocks:"BLOCKER",
+   why:"You want all three shapes available. Since a 4-sheet workbook is single-sample-type (multi-type ⇒ one workbook per type), what the skill emits BY DEFAULT for a given request is a user-visible behavior the repo can't settle. Note: the skill builds flat JSON rows internally to call validate regardless of what it hands back.",
+   evidence:"validate/start accept flat InputRowModel rows (multi-type in one payload), flat single-sheet xlsx (multi-type, one file), and the 4-sheet workbook (single-type → one per type). All three are buildable from the same internal model.",
+   uncertain:"Whether the skill emits all three every time, a default pair with the workbook on request, or the single format your request implies.",
+   rec:"B",
+   options:[
+     {k:"A", lab:"Emit ALL three every request — JSON rows + flat xlsx + per-type 4-sheet workbook(s)", cons:"Maximum optionality; you always have every shape. For a multi-type batch you get several files at once (1 JSON + 1 flat xlsx + N workbooks) — more clutter to sift."},
+     {k:"B", lab:"Default to flat single-sheet xlsx + JSON rows; produce the 4-sheet per-type workbook(s) on request (or automatically when it's a single type)", cons:"Always gives one inspectable file + one API-ready file that both handle multi-type; the canonical NExtSEEK-UI workbook is one ask away. The workbook isn't produced unless wanted."},
+     {k:"C", lab:"Emit the single format your request implies (e.g. 'a workbook' → 4-sheet; 'the upload payload' → flat xlsx/JSON); default to flat xlsx + JSON when unspecified", cons:"Least clutter, most context-dependent; relies on the skill reading your intent, and you get one shape unless you ask for more."}
+   ],
+   affects:"The payload-builder output step; how multi-type batches are split into per-type workbooks; what the live-E2E asserts was written + published." },
+
+ { id:"Q-102", area:"Unstructured-input extraction tool (markitdown-style) scope", blocks:"BLOCKER",
+   why:"You want CC to read a protocol/file and fill missing/incorrect sample metadata. That needs an in-container text-extraction tool so the model can ingest PDFs/docx/etc. Whether this lands in V1 — and which extractor — sizes the plan and the image. (Combined with Q-004=fetch-merge, the skill reads the existing sample + the extracted text, then fills gaps.)",
+   evidence:"Your write-in: provide a markitdown-style tool to extract text from different file formats so the model can ingest it. NB: markitdown/PDF ingestion was previously REMOVED from the NExtSEEK doc-ingest BUILD step for nondeterminism (known-issues/nextseek-doc-ingest-stabilization) — but that was a reproducible-build concern; here it is a runtime aid the model reasons over, so nondeterminism is acceptable.",
+   uncertain:"Whether to bundle the extraction tool in V1 (and use markitdown specifically) or ship structured-input support first and add extraction as a fast-follow.",
+   rec:"A",
+   options:[
+     {k:"A", lab:"Bundle a markitdown-based extraction tool in V1", cons:"Matches your ask; broad format coverage (pdf/docx/pptx/xlsx/html/…). Adds markitdown + its deps to the agent image (size, install surface). The model does the interpretation; the tool only surfaces text."},
+     {k:"B", lab:"Bundle a lighter extractor in V1 (e.g. pdfminer + python-docx) instead of markitdown", cons:"Fewer image deps and a smaller install, but narrower format coverage and you maintain the format handling yourself."},
+     {k:"C", lab:"V1 = structured files (csv/xlsx) + chat only; add unstructured-file extraction as a fast-follow", cons:"Smallest V1, ships sooner; but the protocol-file workflow you described isn't available until the follow-up."}
+   ],
+   affects:"The input-ingest step; the agent image build (extra deps); skill complexity; the existing-attribute fetch+merge update flow." }
+];
+
+var EVIDENCE = {
+ "Q-101":["NExtSEEK/nextseek_api/batch_upload/convert.py:40 (4-sheet detection, single-type)","batch_upload/models.py:115 (InputRowModel — SampleType per row → multi-type flat)","DMAC_docs/gitbook/03-uploading.md:9-23 (4-sheet workbook layout)","Round-1 Q-001 write-in"],
+ "Q-102":["Round-1 Q-008 write-in (markitdown-style extraction)","dmac_assistant docs/known-issues nextseek-doc-ingest-stabilization (prior markitdown removal — build-determinism context)","Round-1 Q-004=A (fetch existing + merge full attributes)"]
+};
+
+/* ENGINE — render + export (unchanged from the template). */
+function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+function tagFor(b){ if(b==="BLOCKER")return '<span class="tag t-blk">BLOCKER</span>';
+  if(b==="LATER")return '<span class="tag t-later">AFFECTS LATER</span>';
+  return '<span class="tag t-def">DEFAULTABLE</span>'; }
+
+function render(){
+  var root=document.getElementById("questions"), html="";
+  QUESTIONS.forEach(function(q){
+    html+='<div class="q" id="card-'+q.id+'">';
+    html+='<h3><span class="qid">'+q.id+'</span> '+esc(q.area)+' '+tagFor(q.blocks)+'</h3>';
+    html+='<div class="meta"><b>Why it matters:</b> '+esc(q.why)+'</div>';
+    html+='<div class="meta"><b>What the evidence says:</b> '+esc(q.evidence)+'</div>';
+    html+='<div class="meta"><b>What is uncertain:</b> '+esc(q.uncertain)+'</div>';
+    q.options.forEach(function(o){
+      var isrec=(o.k===q.rec);
+      html+='<label class="opt'+(isrec?' isrec':'')+'">'+
+        '<input type="radio" name="'+q.id+'" value="'+o.k+'"'+(isrec?' checked':'')+'>'+
+        '<span class="lab">'+o.k+'. '+esc(o.lab)+'</span>'+(isrec?'<span class="recbadge">★ recommended</span>':'')+
+        '<span class="cons">'+esc(o.cons)+'</span></label>';
+    });
+    html+='<label class="opt"><input type="radio" name="'+q.id+'" value="OTHER">'+
+      '<span class="lab">Other / write-in</span></label>';
+    html+='<input class="writein" id="wi-'+q.id+'" placeholder="Write-in answer (used when \'Other\' is selected)…">';
+    html+='<textarea class="cmt" id="cmt-'+q.id+'" rows="2" placeholder="Optional comment for '+q.id+'…"></textarea>';
+    html+='<div class="affect"><b>Affects:</b> '+esc(q.affects)+' &nbsp;·&nbsp; <b>Recommended default:</b> '+(q.rec||"none")+'</div>';
+    html+='</div>';
+  });
+  root.innerHTML=html;
+  QUESTIONS.forEach(function(q){
+    document.getElementsByName(q.id).forEach(function(r){
+      r.addEventListener("change",function(){ syncWI(q.id); });
+    });
+  });
+}
+function isOther(id){var r=document.querySelector('input[name="'+id+'"]:checked');return r&&r.value==="OTHER";}
+function syncWI(id){document.getElementById("wi-"+id).style.display=isOther(id)?"block":"none";}
+
+function selectAllDefaults(){
+  QUESTIONS.forEach(function(q){
+    if(q.rec){ var r=document.querySelector('input[name="'+q.id+'"][value="'+q.rec+'"]'); if(r)r.checked=true; }
+    syncWI(q.id);
+  });
+  setStatus("Reset to recommended defaults.");
+}
+function clearAll(){
+  QUESTIONS.forEach(function(q){
+    document.getElementsByName(q.id).forEach(function(r){r.checked=false;});
+    syncWI(q.id);
+    document.getElementById("cmt-"+q.id).value="";
+  });
+  setStatus("Cleared all answers.");
+}
+function setStatus(m){document.getElementById("status").textContent=m;}
+
+function buildDecision(){
+  var answers={}, comments={}, writeins={}, unanswered=[], defaults={};
+  QUESTIONS.forEach(function(q){
+    defaults[q.id]=q.rec||null;
+    var sel=document.querySelector('input[name="'+q.id+'"]:checked');
+    var cmt=document.getElementById("cmt-"+q.id).value.trim();
+    var wi=document.getElementById("wi-"+q.id).value.trim();
+    if(cmt)comments[q.id]=cmt;
+    if(!sel){ unanswered.push(q.id); }
+    else if(sel.value==="OTHER"){ answers[q.id]="OTHER"; writeins[q.id]= wi || "(write-in selected but left blank)"; }
+    else { answers[q.id]=sel.value; if(wi)writeins[q.id]=wi; }
+  });
+  return {
+    report_metadata: REPORT_META,
+    research_timestamp: REPORT_META.research_timestamp,
+    export_timestamp_utc: new Date().toISOString(),
+    question_set_version: REPORT_META.question_set_version,
+    selected_answers: answers,
+    comments: comments,
+    write_in_answers: writeins,
+    unanswered_questions: unanswered,
+    recommended_defaults: defaults,
+    evidence_references: EVIDENCE
+  };
+}
+function doExport(){
+  var d=buildDecision();
+  var txt=JSON.stringify(d,null,2);
+  document.getElementById("preview").textContent=txt;
+  var fname=(REPORT_META.export_basename||"decisions")+".json";
+  try{
+    var blob=new Blob([txt],{type:"application/json"});
+    var a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download=fname;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){URL.revokeObjectURL(a.href);},1500);
+    var n=Object.keys(d.selected_answers).length, u=d.unanswered_questions.length;
+    setStatus("Exported "+fname+" — "+n+" answered, "+u+" unanswered.");
+  }catch(e){
+    setStatus("Download blocked by browser; copy the JSON from the preview below.");
+  }
+}
+render();
+setStatus("Loaded "+QUESTIONS.length+" questions (defaults pre-selected). Review, then Export.");
+</script>
+</body>
+</html>
