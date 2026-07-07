@@ -91,6 +91,16 @@ def _utc_now() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
+def apply_cap_to_child_env(child_env: dict, cap_usd: float) -> dict:
+    """PREVENTION, not just detection: make Claude Code itself halt the turn at the policy cap
+    via its own ``--max-budget-usd`` (else the container default $10 bounds the spend, 2x the $5
+    cap). The forwarded value is clamp_cap-bounded so NO caller can loosen the policy ceiling.
+    Module-level and NOT under ``# pragma: no cover`` — this line is load-bearing and must stay
+    unit-testable (fix LOW-2 / re-vet round 3)."""
+    child_env["DMAC_CC_MAX_BUDGET_USD"] = f"{clamp_cap(cap_usd):.2f}"
+    return child_env
+
+
 def _check_bedrock_proxy(network: str = _PROXY_NETWORK, alias: str = _PROXY_ALIAS) -> str | None:
     """Return an error string if the T10 dependency is unmet, else None.
 
@@ -194,9 +204,8 @@ async def _async_main(*, cap_usd: float, query: str, evidence_root: pathlib.Path
         catalog_file=REPO_ROOT / "vendor" / "chat_nextseek" / "agent_model_catalog.json",
         ns_stderr_dir=out_dir / "ns-stderr",
     )
-    # PREVENTION, not just detection: make Claude Code itself halt the turn at the policy cap via
-    # its own --max-budget-usd (else the container default $10 bounds the spend, 2x the $5 cap).
-    child_env["DMAC_CC_MAX_BUDGET_USD"] = f"{cap_usd:.2f}"
+    # PREVENTION, not just detection — the covered module-level helper forwards the clamped cap.
+    apply_cap_to_child_env(child_env, cap_usd)
     proc = _launch_bridge(
         port=port, child_env=child_env,
         stdout_log=out_dir / "bridge.stdout.log", stderr_log=out_dir / "bridge.stderr.log",

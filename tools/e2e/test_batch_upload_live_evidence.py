@@ -261,7 +261,12 @@ def test_invocation_full_turn_forgery_rejected():
         "uv run nextseek-validate-upload --project-id 1",
         'eval "nextseek-validate-upload --project-id 1"',
         "echo 1 | xargs nextseek-validate-upload",
-        "if true; then nextseek-validate-upload --project-id 1; fi",
+        # NOTE (round-3 D2): "if true; then <shim>; fi" (single-line) moved to the conservative-
+        # miss pin below — shell keywords are no longer wrapper-stripped because they made
+        # NON-executing input detect. The multi-line if-block form still detects (D1 tests).
+        # Real wrapper strip stays pinned (the keyword removal must not orphan this line):
+        "env nextseek-validate-upload --project-id 1",
+        "nohup nextseek-validate-upload --project-id 1",
         "FOO=bar nextseek-validate-upload --project-id 1",
     ],
 )
@@ -269,6 +274,17 @@ def test_invocation_real_forms_detected(command):
     assert "nextseek-validate-upload" in [
         i.shim for i in ev.extract_tool_invocations([_bash(command)])
     ]
+
+
+def test_invocation_single_line_if_then_is_conservative_miss():
+    # Pins the ONE expectation round-3 D2 changed: `then` was previously in _SIMPLE_WRAPPERS, so
+    # this form detected — but the same strip made "echo x ; then <shim>" (a bash syntax error
+    # that executes NOTHING) a false POSITIVE. Dropping the keywords trades that forgery vector
+    # for a SAFE conservative miss on the single-line if-form; the multi-line form (shim on its
+    # own line) still detects — see test_invocation_multiline_command_detected.
+    assert ev.extract_tool_invocations(
+        [_bash("if true; then nextseek-validate-upload --project-id 1; fi")]
+    ) == []
 
 
 def test_invocation_substitution_is_conservative_miss():
@@ -291,6 +307,119 @@ def test_invocation_recursion_bounded():
 def test_invocation_xargs_with_flag():
     invs = ev.extract_tool_invocations([_bash("echo x | xargs -I{} nextseek-validate-upload")])
     assert "nextseek-validate-upload" in [i.shim for i in invs]
+
+
+# --- D1 (round-3 HIGH-1): a newline is a command separator like `;` — multi-line Bash blocks
+# (the way a real CC agent actually writes them) MUST detect, else a genuine paid turn is
+# scored RED and $5 is wasted.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo step7\nnextseek-validate-upload --project-id 1",
+        "cd /data/scratch\nnextseek-validate-upload --project-id 1",
+        # multi-line if-block: the shim on its own line detects via the newline split even
+        # though the single-line `if ...; then <shim>; fi` form is a conservative miss (D2).
+        "if true; then\nnextseek-validate-upload --project-id 1\nfi",
+        # CRLF line endings behave like newlines (the \r is consumed with the break).
+        "echo step7\r\nnextseek-validate-upload --project-id 1",
+        # a comment line ends at the newline, and an apostrophe INSIDE a comment carries no
+        # quoting power — the shim on the next real line must still detect.
+        "# Let's validate the workbook\nnextseek-validate-upload --project-id 1",
+    ],
+)
+def test_invocation_multiline_command_detected(command):
+    assert "nextseek-validate-upload" in [
+        i.shim for i in ev.extract_tool_invocations([_bash(command)])
+    ]
+
+
+def test_invocation_multiline_all_six_shims_one_per_line():
+    command = "\n".join(f"{shim} --project-id 1" for shim in ev.BATCH_UPLOAD_SHIMS)
+    invs = ev.extract_tool_invocations([_bash(command)])
+    assert sorted({i.shim for i in invs}) == sorted(ev.BATCH_UPLOAD_SHIMS)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # a newline INSIDE a quoted string must NOT split — no forgery re-opening (D1 CRITICAL
+        # constraint): the shim here is quoted TEXT, not a command.
+        'echo "a\nnextseek-validate-upload"',
+        "echo 'a\nnextseek-validate-upload --project-id 1'",
+        # heredoc BODY lines do not execute — they must never be exposed as command heads
+        # (pins the module's documented non-executing-context protection under line-splitting).
+        "cat <<EOF\nnextseek-validate-upload --project-id 1\nEOF",
+    ],
+)
+def test_invocation_quoted_newline_and_heredoc_not_split(command):
+    assert ev.extract_tool_invocations([_bash(command)]) == []
+
+
+# --- D2 (round-3 MEDIUM-1): shell keywords / bare `uv` must not strip to a forged head ---
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # real bash: `then`/`do`/`else` outside their construct is a syntax error — nothing runs
+        "echo done ; then nextseek-validate-upload --project-id 1",
+        "echo done ; do nextseek-validate-upload --project-id 1",
+        "echo done ; else nextseek-validate-upload --project-id 1",
+        "then nextseek-validate-upload --project-id 1",
+        # bare `uv <shim>` (no `run`) errors — only `uv run <shim>` executes the shim
+        "uv nextseek-validate-upload --project-id 1",
+    ],
+)
+def test_invocation_keyword_and_uv_without_run_not_counted(command):
+    assert ev.extract_tool_invocations([_bash(command)]) == []
+
+
+# --- D3 (round-3 MEDIUM-2): pin the previously-untested claimed features ---
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "(nextseek-validate-upload --p 1)",  # glued subshell — bash needs no space after `(`
+        "(nextseek-validate-upload)",  # one-token glued subshell (trailing `)` on the head)
+        "( nextseek-validate-upload --p 1 )",  # spaced subshell (standalone `(` token strip)
+        "{ nextseek-validate-upload --p 1; }",  # brace group
+        "timeout -k5 60 nextseek-validate-upload --p 1",  # flag skip + duration skip
+        "uv run -q nextseek-validate-upload --p 1",  # uv run with a flag
+    ],
+)
+def test_invocation_subshell_timeout_uv_run_forms_detected(command):
+    assert "nextseek-validate-upload" in [
+        i.shim for i in ev.extract_tool_invocations([_bash(command)])
+    ]
+
+
+def test_invocation_timeout_flag_with_separate_value_is_conservative_miss():
+    # `timeout -k 5 60 <shim>` DOES run the shim in real bash, but the detector's flag skip
+    # cannot know `-k` takes a SEPARATE value, so `5` is consumed as the duration and `60`
+    # becomes the head — a documented SAFE false-negative, pinned so it stays intentional
+    # (the glued `-k5` form above detects).
+    assert ev.extract_tool_invocations(
+        [_bash("timeout -k 5 60 nextseek-validate-upload --p 1")]
+    ) == []
+
+
+def test_invocation_arithmetic_double_paren_not_counted():
+    # `((...))` is bash arithmetic — no command word executes; only single-`(` subshells strip.
+    assert ev.extract_tool_invocations([_bash("((nextseek-validate-upload))")]) == []
+
+
+def test_invocation_recursion_cap_via_eval_chain():
+    # _MAX_RECURSION nested evals (depth reaches the cap) still detect; one more stops — the
+    # cap line itself, not just "does not hang".
+    detected = "eval " * ev._MAX_RECURSION + "nextseek-validate-upload --p 1"
+    capped = "eval " * (ev._MAX_RECURSION + 1) + "nextseek-validate-upload --p 1"
+    assert [i.shim for i in ev.extract_tool_invocations([_bash(detected)])] == [
+        "nextseek-validate-upload"
+    ]
+    assert ev.extract_tool_invocations([_bash(capped)]) == []
 
 
 def test_extract_cost_terminal_frame_wins():
@@ -660,6 +789,15 @@ def test_verify_rejects_fresh_session_violation(tmp_path):
     assert any("fresh-session violation" in p for p in result["problems"])
 
 
+def test_verify_rejects_aborted_on_budget_bundle(tmp_path):
+    # D3(b) round 3: a reserved-only bundle (the driver's pre-call abort path) must never verify
+    # ok — the run spent nothing and proved nothing.
+    transcript = _write_bundle(tmp_path, _good_frames(), meta_extra={"reserved_only": True})
+    result = vr.verify(transcript)
+    assert result["ok"] is False
+    assert any("run aborted on budget" in p for p in result["problems"])
+
+
 def test_clamp_cap_tightens_only():
     assert vr.clamp_cap(1000.0) == vr.POLICY_CAP_USD  # cannot loosen
     assert vr.clamp_cap(1.0) == 1.0  # may tighten
@@ -703,3 +841,20 @@ def test_invocation_non_string_frame_id():
 def test_invocation_bare_assignment_segment():
     # A segment that is only a VAR=val assignment (no command word) yields no invocation.
     assert ev.extract_tool_invocations([_bash("FOO=bar")]) == []
+
+
+# ---------------------------------------------------------------------------
+# Driver cap forwarding (D4 round 3)
+
+
+def test_apply_cap_to_child_env_sets_clamped_formatted_value():
+    # The load-bearing DMAC_CC_MAX_BUDGET_USD forward must be clamp_cap-bounded and covered
+    # OUTSIDE the pragma-no-cover live path (LOW-2): a requested $1000 yields the $5.00 policy
+    # ceiling; a tighter request passes through formatted to 2 decimals.
+    from tools.e2e.run_batch_upload_live_e2e import apply_cap_to_child_env
+
+    env: dict = {}
+    assert apply_cap_to_child_env(env, 1000.0) is env  # mutates and returns the same mapping
+    assert env["DMAC_CC_MAX_BUDGET_USD"] == "5.00"
+    assert apply_cap_to_child_env({}, 1.25)["DMAC_CC_MAX_BUDGET_USD"] == "1.25"
+    assert apply_cap_to_child_env({}, vr.POLICY_CAP_USD)["DMAC_CC_MAX_BUDGET_USD"] == "5.00"

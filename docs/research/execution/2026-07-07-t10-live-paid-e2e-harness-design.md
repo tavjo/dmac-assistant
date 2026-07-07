@@ -44,6 +44,10 @@ reusing the proven `tools/e2e/run_router_e2e.py` orchestration.
    (abort-before-exceed) then `record` from `session_ended.total_cost_usd`; writes the evidence
    bundle. Live-orchestration functions carry `# pragma: no cover` (plan's closed set only).
    `--paid` gate + `--cap 5.00` + host/stack preflight; refuses to spend without `--paid`.
+   Residual cap caveat: `--max-budget-usd` is a turn-boundary check, so a multi-turn session can
+   overshoot the cap by up to one turn's cost, and the pre-call reserve (projected 0.50 vs the
+   5.00 cap) never refuses in practice — prevention is CC's own flag; the verifier's cap-check is
+   post-hoc detection.
 3. `tools/e2e/verify_batch_upload_live.py` — **$0 committed verifier.** Recomputes the verdict + cost
    from the persisted transcript ONLY, confirms the summary matches, enforces "markdown is never
    proof" (bundle must carry the JSON transcript + ledger, not only prose), exits non-zero on any

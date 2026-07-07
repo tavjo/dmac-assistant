@@ -80,9 +80,10 @@ COST_SOURCE_NONE = "unavailable"
 _LEX_PUNCTUATION = ";|&"
 _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Wrapper heads that simply delegate to a following command word (strip to reach the real head).
-_SIMPLE_WRAPPERS = frozenset(
-    {"env", "nohup", "sudo", "exec", "time", "then", "do", "else", "stdbuf", "nice"}
-)
+# Shell KEYWORDS (then/do/else) are deliberately NOT wrappers: a bare `then <shim>` is a bash
+# syntax error — nothing executes — so stripping them forged invocations from non-executing
+# input (fix MEDIUM-1 / re-vet round 3).
+_SIMPLE_WRAPPERS = frozenset({"env", "nohup", "sudo", "exec", "time", "stdbuf", "nice"})
 # A combined short-flag ending in c (bash -lc / sh -ec) — the NEXT token is the inner command.
 _INNER_C_FLAG = re.compile(r"^-[A-Za-z]*c$")
 _MAX_RECURSION = 4
@@ -228,11 +229,21 @@ def _lex(command: str) -> list[str] | None:
 
 def _effective_tokens(seg: list[str]) -> list[str]:
     """Strip leading subshell/brace openers, ``VAR=val`` assignments, and wrapper prefixes
-    (env/nohup/sudo/exec/time/then/do/else/stdbuf/nice, ``timeout <dur>``, ``uv run``) to reach the
-    real command word + its args."""
+    (env/nohup/sudo/exec/time/stdbuf/nice, ``timeout <dur>``, ``uv run``) to reach the real
+    command word + its args. ``uv`` strips ONLY when followed by ``run`` — a bare
+    ``uv <shim>`` errors and executes nothing (fix MEDIUM-1 / re-vet round 3)."""
     toks = list(seg)
     while toks and toks[0] in {"(", "{"}:
         toks = toks[1:]
+    # A GLUED subshell opener: bash runs `(cmd ...)` as a subshell with no space required after
+    # `(`. `((...))` is arithmetic (no command word executes) so it is deliberately NOT stripped;
+    # exactly ONE trailing `)` is dropped so a one-token `(shim)` still basename-matches while a
+    # malformed `(shim))` (bash syntax error) stays a miss.
+    if toks and toks[0].startswith("(") and not toks[0].startswith("(("):
+        head = toks[0][1:]
+        if head.endswith(")"):
+            head = head[:-1]
+        toks[0] = head
     i = 0
     while i < len(toks):
         tok = toks[i]
@@ -247,10 +258,8 @@ def _effective_tokens(seg: list[str]) -> list[str]:
                 i += 1
             if i < len(toks):  # the DURATION argument
                 i += 1
-        elif base == "uv":
-            i += 1
-            if i < len(toks) and toks[i] == "run":
-                i += 1
+        elif base == "uv" and i + 1 < len(toks) and toks[i + 1] == "run":
+            i += 2
             while i < len(toks) and toks[i].startswith("-"):
                 i += 1
         else:
@@ -281,33 +290,115 @@ def _heads_from_tokens(toks: list[str], shims: set[str], depth: int) -> list[str
     return []
 
 
+def _split_logical_lines(command: str) -> list[str]:
+    """Split ``command`` on UNQUOTED, UNESCAPED newlines — in bash a newline separates commands
+    exactly like ``;`` (fix HIGH-1 / re-vet round 3: multi-line Bash blocks previously collapsed
+    into ONE segment and only the first word was classified, so a genuine multi-line turn was
+    scored RED).
+
+    Quote/comment/escape awareness so NO forgery vector re-opens:
+    * a newline inside a quoted string does NOT split (``echo "a\\n<shim>"`` stays one argument);
+    * a backslash-escaped newline is a line continuation, not a separator;
+    * ``#`` at a word start opens a comment through end-of-line (quote chars inside a comment
+      carry no quoting power, so an apostrophe in a comment cannot mask later real lines);
+    * after an unquoted ``<<`` the REMAINDER is left unsplit: heredoc bodies do not execute, so
+      their lines must never be exposed as command positions — the tail degrades to the old
+      single-segment lexing (a safe false-negative for any post-heredoc line);
+    * a lone ``\\r`` is NOT a separator (bash treats it as an ordinary word char — splitting on
+      it would forge invocations); the ``\\r`` of a CRLF pair is consumed with the split.
+    """
+    lines: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    escaped = False
+    in_comment = False
+    frozen = False  # unquoted << seen — stop splitting so heredoc bodies never become heads
+    prev = ""  # previous unquoted, unescaped char (word-start detection for `#` and `<<`)
+    for ch in command:
+        if frozen:
+            buf.append(ch)
+            continue
+        if in_comment:
+            if ch == "\n":
+                in_comment = False
+                lines.append("".join(buf))
+                buf = []
+                prev = ""
+            else:
+                buf.append(ch)
+            continue
+        if escaped:
+            buf.append(ch)
+            escaped = False
+            prev = ""
+            continue
+        if ch == "\\" and quote != "'":
+            buf.append(ch)
+            escaped = True
+            prev = ""
+            continue
+        if quote is not None:
+            if ch == quote:
+                quote = None
+                prev = ch
+            buf.append(ch)
+            continue
+        if ch == "\n":
+            if buf and buf[-1] == "\r":  # CRLF: the \r belongs to the break, not the line
+                buf.pop()
+            lines.append("".join(buf))
+            buf = []
+            prev = ""
+            continue
+        if ch in "'\"":
+            quote = ch
+            buf.append(ch)
+            prev = ""
+            continue
+        if ch == "#" and (prev == "" or prev in " \t;|&("):
+            in_comment = True
+            buf.append(ch)
+            continue
+        if ch == "<" and prev == "<":
+            frozen = True
+        buf.append(ch)
+        prev = ch
+    lines.append("".join(buf))
+    return lines
+
+
 def _command_heads(command: str, shims: set[str], depth: int = 0) -> list[str]:
     """Return every shim basename genuinely INVOKED as a command word in ``command``.
 
-    Segmentation is on LEXED operator tokens only, so an operator inside a quoted literal never
-    splits, and a shim appearing in a single-quoted string, a ``#`` comment, an escaped
+    The command is first split into logical lines on unquoted, unescaped newlines (a bash newline
+    separates commands exactly like ``;`` — fix HIGH-1 / re-vet round 3); each line is then
+    segmented on LEXED operator tokens only, so an operator or newline inside a quoted literal
+    never splits, and a shim appearing in a single-quoted string, a ``#`` comment, an escaped
     ``\\$(...)``, a heredoc, or a ``print('shim')`` is NOT counted (it does not execute). Handles
     env/wrapper prefixes, ``timeout``/``uv run``, ``bash -c``/``eval`` inner commands, and
     ``xargs`` — all recursively. basename-exact, so ``nextseek-api`` never matches
-    ``nextseek-api-write``. Conservative: a genuine ``$(shim)`` substitution is NOT detected (a
-    safe false-negative — a real turn calls the shim directly per SKILL.md), because detecting it
-    would re-open the forgery vector."""
+    ``nextseek-api-write``. A line that fails to lex (unbalanced quote) contributes nothing —
+    conservative: bash executes the complete prior commands but nothing from the malformed one.
+    Conservative: a genuine ``$(shim)`` substitution is NOT detected (a safe false-negative — a
+    real turn calls the shim directly per SKILL.md), because detecting it would re-open the
+    forgery vector."""
     if depth > _MAX_RECURSION:
         return []
-    tokens = _lex(command)
-    if tokens is None:
-        return []
     found: list[str] = []
-    segment: list[str] = []
-    for tok in tokens:
-        if tok and set(tok) <= set(_LEX_PUNCTUATION):  # an operator run (&&, ||, ;, |, &, ...)
-            if segment:
-                found.extend(_heads_from_tokens(_effective_tokens(segment), shims, depth))
-                segment = []
-        else:
-            segment.append(tok)
-    if segment:
-        found.extend(_heads_from_tokens(_effective_tokens(segment), shims, depth))
+    for line in _split_logical_lines(command):
+        tokens = _lex(line)
+        if tokens is None:
+            continue
+        segment: list[str] = []
+        for tok in tokens:
+            if tok and set(tok) <= set(_LEX_PUNCTUATION):  # an operator run (&&, ||, ;, ...)
+                if segment:
+                    found.extend(_heads_from_tokens(_effective_tokens(segment), shims, depth))
+                    segment = []
+            else:
+                segment.append(tok)
+        if segment:
+            found.extend(_heads_from_tokens(_effective_tokens(segment), shims, depth))
     return found
 
 
