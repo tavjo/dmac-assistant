@@ -192,6 +192,11 @@ def _run(tmp_path, client, rows, *extra):
     )
 
 
+def _last_gate(capsys):
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip().startswith("{")]
+    return json.loads(lines[-1])
+
+
 def _artifact(tmp_path):
     return next((tmp_path / "scratch").glob("payload_flat.xlsx"))
 
@@ -218,21 +223,25 @@ def test_gate_a_content_bad_reaches_validate_then_refuses(tmp_path):
     assert any(call[0] == "validate_file" for call in client.calls)
 
 
-def test_gate_a2_valid_false(tmp_path):
+def test_gate_a2_valid_false(tmp_path, capsys):
     rc = _run(tmp_path, StubClient(validate={**_valid(1), "valid": False}), [_create_row()])
     assert rc != 0
+    assert _last_gate(capsys)["gate"] == "server_valid"
 
 
-def test_gate_b_missing_checks(tmp_path):
+def test_gate_b_missing_checks(tmp_path, capsys):
     rc = _run(tmp_path, StubClient(validate={**_valid(1), "checks_run": ["structure"]}), [_create_row()])
     assert rc != 0
+    assert _last_gate(capsys)["gate"] == "checks_run"
 
 
-def test_gate_c_totals_mismatch(tmp_path):
+def test_gate_c_totals_mismatch(tmp_path, capsys):
     rc = _run(tmp_path, StubClient(validate=_valid(0)), [_create_row()])
     assert rc != 0
+    assert _last_gate(capsys)["gate"] == "processed"
     rc_missing = _run(tmp_path, StubClient(validate={k: v for k, v in _valid(1).items() if k != "totals"}), [_create_row()])
     assert rc_missing != 0
+    assert _last_gate(capsys)["gate"] == "processed"
 
 
 def test_gate_d_staged_hash_equals_promoted(tmp_path):
@@ -244,40 +253,42 @@ def test_gate_d_staged_hash_equals_promoted(tmp_path):
     assert runner.SCRATCH_ROOT not in client.validated_path.parents
 
 
-def test_gate_e_no_scratch_on_failure(tmp_path):
+def test_gate_e_no_scratch_on_failure(tmp_path, capsys):
     rc = _run(tmp_path, StubClient(validate={**_valid(1), "valid": False}), [_create_row()])
     assert rc != 0
+    assert _last_gate(capsys)["gate"] == "server_valid"
     assert not list((tmp_path / "scratch").glob("*.xlsx"))
 
 
-def test_gate_e2_validate_file_mode(tmp_path):
+def test_gate_e2_validate_file_mode(tmp_path, capsys):
     client = StubClient(validate=_valid(1))
     assert _run(tmp_path, client, [_create_row()]) == 0
     call = next(call for call in client.calls if call[0] == "validate_file")
     assert call[1].name == "payload_flat.xlsx"
     assert call[3] == "structure,name_check,dag"
-    with pytest.raises(runner.GateError, match="staging"):
-        runner.main(
-            [
-                "build-payload",
-                "--rows", str(_rows_file(tmp_path, [_create_row()])),
-                "--schema", str(_schema_file(tmp_path)),
-                "--id-to-title", str(_titles_file(tmp_path)),
-                "--out", "/data/scratch/out",
-            ]
-        )
+    rc = runner.main(
+        [
+            "build-payload",
+            "--rows", str(_rows_file(tmp_path, [_create_row()])),
+            "--schema", str(_schema_file(tmp_path)),
+            "--id-to-title", str(_titles_file(tmp_path)),
+            "--out", "/data/scratch/out",
+        ]
+    )
+    assert rc != 0
+    assert _last_gate(capsys)["gate"] == "staging"
 
 
-def test_gate_f_absent_project_id(tmp_path):
+def test_gate_f_absent_project_id(tmp_path, capsys):
     rows = _rows_file(tmp_path, [_create_row()])
     rc = runner.main(["build-validate", "--rows", str(rows), "--out", str(tmp_path / "scratch")], transport=StubClient())
     assert rc != 0
+    assert _last_gate(capsys)["gate"] == "project_id"
     assert _run(tmp_path, StubClient(validate=_valid(1)), [_create_row()]) == 0
-    assert _run(tmp_path, StubClient(validate=_valid(1)), [_create_row(attributes={"Scientist": "Curator"})]) != 0
     assert _run(tmp_path, StubClient(validate=_valid(1)), [_update_row(attributes={"Treatment": "drug"})]) == 0
 
 
-def test_gate_f2_unverified_project_id(tmp_path):
+def test_gate_f2_unverified_project_id(tmp_path, capsys):
     rows = _rows_file(tmp_path, [_create_row()])
     confirm = _confirm_file(tmp_path, confirmed=False)
     rc = runner.main(
@@ -285,7 +296,8 @@ def test_gate_f2_unverified_project_id(tmp_path):
         transport=StubClient(),
     )
     assert rc != 0
-    assert runner.main(
+    assert _last_gate(capsys)["gate"] == "project_unconfirmed"
+    rc_empty_schema = runner.main(
         [
             "build-validate",
             "--rows", str(rows),
@@ -294,8 +306,10 @@ def test_gate_f2_unverified_project_id(tmp_path):
             "--out", str(tmp_path / "scratch2"),
         ],
         transport=StubClient(schema={"sample_type": "TIS", "attributes": []}),
-    ) != 0
-    assert runner.main(
+    )
+    assert rc_empty_schema != 0
+    assert _last_gate(capsys)["gate"] == "schema"
+    rc_weak_schema = runner.main(
         [
             "build-validate",
             "--rows", str(rows),
@@ -304,7 +318,32 @@ def test_gate_f2_unverified_project_id(tmp_path):
             "--out", str(tmp_path / "scratch3"),
         ],
         transport=StubClient(schema={"sample_type": "TIS", "attributes": [{"title": "Name"}]}),
-    ) != 0
+    )
+    assert rc_weak_schema != 0
+    assert _last_gate(capsys)["gate"] == "schema"
+
+
+def test_gate_f3_create_required_uses_schema_metadata_not_review_columns(tmp_path):
+    artifact = tmp_path / "payload_flat.xlsx"
+    _write_artifact(
+        artifact,
+        [
+            {
+                "UID": "",
+                "SampleType": "TIS",
+                "json_metadata": {"Scientist": "Curator"},
+                "REVIEW_ONLY__Name": "sample",
+                "assay_ids": [],
+            }
+        ],
+    )
+    with pytest.raises(runner.GateError, match="required_missing"):
+        runner._artifact_gate(
+            artifact=artifact,
+            validation=_valid(1),
+            manifest={},
+            sample_type_attributes=SCHEMA,
+        )
 
 
 def test_gate_g_project_confirmation_token(tmp_path):
@@ -349,9 +388,10 @@ def test_gate_k_confirm_clear_assays_scoped(tmp_path):
         runner._artifact_gate(artifact=artifact, validation=_valid(1), manifest=manifest, confirm_clear_assays={"other"})
 
 
-def test_gate_l_retrieve_failure_refused(tmp_path):
+def test_gate_l_retrieve_failure_refused(tmp_path, capsys):
     rc = _run(tmp_path, StubClient(search_rows=[]), [_update_row(assay_ids=[9])])
     assert rc != 0
+    assert _last_gate(capsys)["gate"] == "manifest"
 
 
 def test_gate_m_manifest_schema(tmp_path):
@@ -383,9 +423,10 @@ def test_gate_n_metadata_only_carries_forward(tmp_path):
     assert 351 in orjson.loads(row["assay_ids"])
 
 
-def test_gate_o_degraded_manifest_refused_zero_assay_passes(tmp_path):
+def test_gate_o_degraded_manifest_refused_zero_assay_passes(tmp_path, capsys):
     degraded = StubClient(search_rows=[{"json_metadata": {"UID": UID}, "id": 1, "numeric_seek_id": 1}])
     assert _run(tmp_path, degraded, [_update_row(assay_ids=[9])]) != 0
+    assert _last_gate(capsys)["gate"] == "manifest"
     zero_row = _fixture("advanced_search_zero_assay.json")["rows"][0]
     zero_row = {
         **zero_row,
@@ -421,9 +462,10 @@ def test_gate_q2_carry_both(tmp_path):
     assert orjson.loads(row["assay_titles"]).count(TITLE) == 2
 
 
-def test_gate_r_truncation(tmp_path):
+def test_gate_r_truncation(tmp_path, capsys):
     long = StubClient(search_rows=[{"json_metadata": {"UID": UID}, "id": 1, "numeric_seek_id": 1, "assays": "x" * 900, "assay_titles": []}])
     assert _run(tmp_path, long, [_update_row(assay_ids=[9])]) != 0
+    assert _last_gate(capsys)["gate"] == "manifest"
     short = StubClient(search_rows=[{"json_metadata": {"UID": UID}, "id": 1, "numeric_seek_id": 1, "assays": "", "assay_titles": []}])
     assert _run(tmp_path, short, [_update_row(assay_ids=[9])]) == 0
 
@@ -451,6 +493,8 @@ def test_attrs_extract_and_resolution_commands(tmp_path, capsys, monkeypatch):
     assert runner.main(["project-resolve", "--project-id", "1", "--confirmed", "--out", str(out)], transport=StubClient()) == 0
     assert runner.main(["assay-resolve", "--project-id", "1", "--title", "Solo"], transport=StubClient()) == 0
     assert runner.main(["sample-search", "--uid", UID], transport=StubClient()) == 0
+    assert runner.main(["assay-resolve", "--project-id", "1", "--title", TITLE], transport=StubClient()) != 0
+    assert _last_gate(capsys)["gate"] == "runner_error"
 
 
 def test_build_payload_staging_command(tmp_path):
@@ -522,20 +566,23 @@ def test_defensive_branches_and_helpers(tmp_path, capsys, monkeypatch):
 
     bad_addition = _run(tmp_path, StubClient(), [_create_row(assay_titles=["Missing"])])
     assert bad_addition != 0
+    assert _last_gate(capsys)["gate"] == "runner_error"
 
 
 def _write_artifact(path, rows):
     records = []
     for row in rows:
-        records.append(
-            {
-                "UID": row.get("UID", ""),
-                "SampleType": "TIS",
-                "json_metadata": orjson.dumps(row["json_metadata"]).decode(),
-                "assay_ids": orjson.dumps(row.get("assay_ids", [])).decode(),
-                "assay_titles": "[]",
-            }
-        )
+        record = {
+            "UID": row.get("UID", ""),
+            "SampleType": row.get("SampleType", "TIS"),
+            "json_metadata": orjson.dumps(row["json_metadata"]).decode(),
+            "assay_ids": orjson.dumps(row.get("assay_ids", [])).decode(),
+            "assay_titles": "[]",
+        }
+        for key, value in row.items():
+            if key not in record and key not in {"json_metadata", "assay_ids"}:
+                record[key] = value
+        records.append(record)
     pl.DataFrame(records).write_excel(
         workbook=str(path),
         worksheet="Samples",

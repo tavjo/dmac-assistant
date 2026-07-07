@@ -194,9 +194,11 @@ def _artifact_gate(
     artifact: pathlib.Path,
     validation: dict[str, Any],
     manifest: dict[str, dict[str, Any]],
+    sample_type_attributes: list[dict[str, Any]] | None = None,
     confirm_clear_assays: set[str] | None = None,
 ) -> None:
     confirm_clear_assays = confirm_clear_assays or set()
+    schema = _schema_map(sample_type_attributes or [])
     rows = _read_rows_from_xlsx(artifact)
     if not validation.get("valid"):
         raise GateError("server_valid")
@@ -217,6 +219,12 @@ def _artifact_gate(
                     raise GateError("present_blank", key)
         elif not real_attrs:
             raise GateError("required_missing")
+        else:
+            for title, attr in schema.get(str(row.get("SampleType") or ""), {}).items():
+                if title == "UID":
+                    continue
+                if (bool(attr.get("required")) or bool(attr.get("is_title"))) and _blank(metadata.get(title)):
+                    raise GateError("required_missing", title)
         if uid and uid not in manifest:
             raise GateError("manifest")
         if uid and uid in manifest:
@@ -246,6 +254,20 @@ def _promote(staged: pathlib.Path, output_dir: pathlib.Path) -> pathlib.Path:
 
 def _sha256(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _schema_map(sample_type_attributes: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, Any]]]:
+    out: dict[str, dict[str, dict[str, Any]]] = {}
+    for item in sample_type_attributes:
+        sample_type = str(item.get("sample_type") or item.get("SampleType") or "")
+        attrs = item.get("attributes") or item.get("sample_attributes") or []
+        if sample_type and isinstance(attrs, list):
+            out[sample_type] = {
+                str(attr.get("title")): attr
+                for attr in attrs
+                if isinstance(attr, dict) and attr.get("title")
+            }
+    return out
 
 
 def _cmd_attrs(argv: list[str], *, transport=None) -> int:
@@ -365,6 +387,7 @@ def _cmd_build_validate(argv: list[str], *, transport=None) -> int:
                 artifact=artifact,
                 validation=validation,
                 manifest=manifest,
+                sample_type_attributes=schema,
                 confirm_clear_assays=set(args.confirm_clear_assays),
             )
             promoted = _promote(artifact, pathlib.Path(args.out))
@@ -406,7 +429,14 @@ def main(argv: list[str], *, transport=None) -> int:
     if handler is None:
         sys.stderr.write(f"nextseek-error: unknown or missing subcommand: {subcmd!r}\n")
         return 2
-    return handler(argv[1:], transport=transport)
+    try:
+        return handler(argv[1:], transport=transport)
+    except GateError as exc:
+        _emit_gate(exc)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - command helpers fail closed.
+        _emit_gate(GateError("runner_error", type(exc).__name__))
+        return 1
 
 
 if __name__ == "__main__":
