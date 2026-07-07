@@ -119,25 +119,51 @@ def cost_guard_violations(source: str, function_name: str = "record_bedrock_resu
     target = next(
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == function_name
     )
-    int_names: set[str] = set()
+    literal_names: set[str] = set()
     errors: list[str] = []
     for node in ast.walk(target):
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, int):
+        if isinstance(node, ast.Assign) and _literal_numeric_flow(node.value, literal_names):
             for name in node.targets:
                 if isinstance(name, ast.Name):
-                    int_names.add(name.id)
+                    literal_names.add(name.id)
         if isinstance(node, ast.Call) and isinstance(getattr(node.func, "attr", ""), str) and node.func.attr == "record":
             for keyword in node.keywords:
                 if keyword.arg in {"in_tokens", "out_tokens"}:
                     if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, int):
                         errors.append(f"direct literal for {keyword.arg}")
-                    if isinstance(keyword.value, ast.Name) and keyword.value.id in int_names:
+                    if _literal_numeric_flow(keyword.value, literal_names):
                         errors.append(f"literal-derived name for {keyword.arg}")
+                if keyword.arg in {"actual_usd", "total_cost_usd"} and _literal_numeric_flow(keyword.value, literal_names):
+                    errors.append(f"literal-derived cost for {keyword.arg}")
         if isinstance(node, ast.Dict):
-            for value in node.values:
-                if isinstance(value, ast.Constant) and isinstance(value.value, int):
-                    errors.append("direct literal in usage dict")
+            literal_keys = {
+                key.value
+                for key in node.keys
+                if isinstance(key, ast.Constant) and key.value in {"input_tokens", "output_tokens", "actual_usd", "total_cost_usd"}
+            }
+            if literal_keys:
+                for value in node.values:
+                    if _literal_numeric_flow(value, literal_names):
+                        errors.append("literal-derived value in usage/cost dict")
     return errors
+
+
+def _literal_numeric_flow(node: ast.AST, literal_names: set[str]) -> bool:
+    if isinstance(node, ast.Constant) and isinstance(node.value, int | float):
+        return True
+    if isinstance(node, ast.Name):
+        return node.id in literal_names
+    if isinstance(node, ast.Subscript):
+        return _literal_numeric_flow(node.value, literal_names)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        return _literal_numeric_flow(node.operand, literal_names)
+    if isinstance(node, ast.BinOp):
+        return _literal_numeric_flow(node.left, literal_names) or _literal_numeric_flow(node.right, literal_names)
+    if isinstance(node, ast.Tuple | ast.List | ast.Set):
+        return any(_literal_numeric_flow(elt, literal_names) for elt in node.elts)
+    if isinstance(node, ast.Dict):
+        return any(_literal_numeric_flow(value, literal_names) for value in node.values)
+    return False
 
 
 def workbook_rows(path: pathlib.Path) -> list[dict[str, Any]]:

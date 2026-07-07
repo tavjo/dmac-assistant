@@ -37,21 +37,37 @@ def test_c8_regression_refuses_empty_local(tmp_path):
         "UID": "D.IMG-230913ENG-1757-PUB",
         "Treatment": "drug",
     }
-    assert {306, 351} <= set(orjson.loads(update_row["assay_ids"]))
+    assert set(orjson.loads(update_row["assay_ids"])) == {252, 306, 351}
 
 
 def test_bedrock_cost_exact():
     ledger = SpendLedger()
-    frame = {
-        "result": {
-            "model": "claude-opus-4-8 (Bedrock, via proxy)",
-            "usage": {"input_tokens": 1234, "output_tokens": 56},
-            "total_cost_usd": 0.123456,
+    frames = [
+        {
+            "result": {
+                "model": "claude-opus-4-8 (Bedrock, via proxy)",
+                "usage": {"input_tokens": 1234, "output_tokens": 56},
+                "total_cost_usd": 0.123456,
+            }
+        },
+        {
+            "result": {
+                "model": "claude-sonnet-4-7 (Bedrock, via proxy)",
+                "usage": {"input_tokens": 222, "output_tokens": 33},
+                "total_cost_usd": 0.010011,
+            }
+        },
+    ]
+    captured = [harness.record_bedrock_result(frame, ledger) for frame in frames]
+    assert captured == [
+        {
+            "model": frame["result"]["model"],
+            "usage": frame["result"]["usage"],
+            "total_cost_usd": frame["result"]["total_cost_usd"],
         }
-    }
-    captured = harness.record_bedrock_result(frame, ledger)
-    assert captured == frame["result"] | {"usage": frame["result"]["usage"]}
-    assert ledger.running_usd == 0.123456
+        for frame in frames
+    ]
+    assert ledger.running_usd == 0.133467
 
 
 def test_gemini_cost_distinct_source():
@@ -99,5 +115,24 @@ def record_bedrock_result(frame, ledger):
 def record_bedrock_result(frame, ledger):
     ledger.record("bedrock", model="m", in_tokens=1500, out_tokens=0, actual_usd=1.0)
 """
+    tuple_tokens = """
+def record_bedrock_result(frame, ledger):
+    estimates = (1500, 0)
+    ledger.record("bedrock", model="m", in_tokens=estimates[0], out_tokens=estimates[1], actual_usd=1.0)
+"""
+    named_usage = """
+def record_bedrock_result(frame, ledger):
+    usage = {"input_tokens": 1500, "output_tokens": 0}
+    ledger.record("bedrock", model="m", in_tokens=usage["input_tokens"], out_tokens=usage["output_tokens"], actual_usd=1.0)
+"""
+    hardcoded_total = """
+def record_bedrock_result(frame, ledger):
+    usage = frame["result"]["usage"]
+    ledger.record("bedrock", model="m", in_tokens=usage["input_tokens"], out_tokens=usage["output_tokens"], actual_usd=0.5)
+    return {"total_cost_usd": 0.5}
+"""
     assert harness.cost_guard_violations(bad)
     assert harness.cost_guard_violations(direct)
+    assert harness.cost_guard_violations(tuple_tokens)
+    assert harness.cost_guard_violations(named_usage)
+    assert harness.cost_guard_violations(hardcoded_total)

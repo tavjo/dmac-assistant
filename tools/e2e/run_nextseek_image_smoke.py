@@ -14,7 +14,6 @@ import pathlib
 import subprocess
 import tarfile
 import tempfile
-from typing import Any
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -53,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     for shim, subcmd in NEW_SHIMS.items():
         _assert_dispatch(args.image, shim, subcmd)
-    _plugin_validate_or_fallback(args.image)
+    plugin_validate = _plugin_validate_or_fallback(args.image)
     _docker(args.image, _compile_modules_script())
     actual = actual_manifest(args.image)
     if actual != expected:
@@ -64,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
             "image plugin manifest mismatch\n"
             f"missing={missing[:10]}\nextra={extra[:10]}\nchanged={changed[:10]}"
         )
-    print(json.dumps({"image": args.image, "plugin_validate": "passed_or_fallback", "files": len(actual)}, sort_keys=True))
+    print(json.dumps({"image": args.image, "plugin_validate": plugin_validate, "files": len(actual)}, sort_keys=True))
     return 0
 
 
@@ -117,12 +116,13 @@ def _assert_dispatch(image: str, shim: str, expected: str) -> None:
     _docker(image, script)
 
 
-def _plugin_validate_or_fallback(image: str) -> None:
+def _plugin_validate_or_fallback(image: str) -> str:
     script = (
-        "if command -v claude >/dev/null 2>&1 && claude plugin validate >/tmp/plugin-validate 2>&1; then "
-        "cat /tmp/plugin-validate; "
+        "if command -v claude >/dev/null 2>&1; then "
+        f"if claude plugin validate {IMAGE_PLUGIN_ROOT} >/tmp/plugin-validate 2>&1; then "
+        "cat /tmp/plugin-validate; echo plugin_validate_status=passed; "
+        "else cat /tmp/plugin-validate; exit 1; fi; "
         "else "
-        "echo plugin_validate_unavailable; "
         "python - <<'PY'\n"
         "import json, pathlib\n"
         "p=pathlib.Path('/app/plugins/nextseek/.claude-plugin/plugin.json')\n"
@@ -130,9 +130,14 @@ def _plugin_validate_or_fallback(image: str) -> None:
         "text=json.dumps(data)\n"
         "assert 'skills/nextseek-batch-upload/SKILL.md' in text or pathlib.Path('/app/plugins/nextseek/skills/nextseek-batch-upload/SKILL.md').exists()\n"
         "PY\n"
+        "echo plugin_validate_status=unavailable_fallback; "
         "fi"
     )
-    _docker(image, script)
+    stdout = _docker_output(image, script)
+    for line in reversed(stdout.splitlines()):
+        if line.startswith("plugin_validate_status="):
+            return line.split("=", 1)[1]
+    raise RuntimeError("plugin validation status marker missing")
 
 
 def _compile_modules_script() -> str:
@@ -149,6 +154,17 @@ def _compile_modules_script() -> str:
 
 def _docker(image: str, script: str) -> None:
     subprocess.run(["docker", "run", "--rm", image, "sh", "-c", script], check=True)
+
+
+def _docker_output(image: str, script: str) -> str:
+    completed = subprocess.run(
+        ["docker", "run", "--rm", image, "sh", "-c", script],
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    print(completed.stdout, end="")
+    return completed.stdout
 
 
 def _rel(path: str) -> str:
