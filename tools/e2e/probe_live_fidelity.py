@@ -19,10 +19,13 @@ from urllib.parse import urlparse
 import httpx
 from dotenv import load_dotenv
 
-from tools.e2e.verify_live_fidelity import DEV_HOST, REPO_ROOT
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 BIN_DIR = REPO_ROOT / "build_context" / "plugins" / "nextseek" / "bin"
 FIXTURE_DIR = REPO_ROOT / "docs" / "research" / "fixtures" / "ns"
+DEV_HOST = "nextseek-dev.mit.edu"
 
 
 class Recorder:
