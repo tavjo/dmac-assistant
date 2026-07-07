@@ -52,10 +52,11 @@ class Recorder:
 class RecordingTransport(httpx.BaseTransport):
     def __init__(self, recorder: Recorder) -> None:
         self.recorder = recorder
+        self.counts: dict[str, int] = {}
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         response = self.recorder.client.send(request)
-        name = _name_for_request(request)
+        name = self._unique_name(_name_for_request(request))
         self.recorder.calls.append(
             _record_call(
                 name,
@@ -64,6 +65,12 @@ class RecordingTransport(httpx.BaseTransport):
             )
         )
         return response
+
+    def _unique_name(self, name: str) -> str:
+        if name == "delivered_workbook_validate":
+            return name
+        self.counts[name] = self.counts.get(name, 0) + 1
+        return f"{name}_{self.counts[name]:03d}"
 
 
 def probe(env_file: pathlib.Path, evidence_root: pathlib.Path) -> pathlib.Path:
