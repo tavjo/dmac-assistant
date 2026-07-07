@@ -323,33 +323,12 @@ def test_gate_f2_unverified_project_id(tmp_path, capsys):
     assert _last_gate(capsys)["gate"] == "schema"
 
 
-def test_gate_f3_create_required_uses_schema_metadata_not_review_columns(tmp_path):
-    artifact = tmp_path / "payload_flat.xlsx"
-    _write_artifact(
-        artifact,
-        [
-            {
-                "UID": "",
-                "SampleType": "TIS",
-                "json_metadata": {"Scientist": "Curator"},
-                "REVIEW_ONLY__Name": "sample",
-                "assay_ids": [],
-            }
-        ],
-    )
-    with pytest.raises(runner.GateError, match="required_missing"):
-        runner._artifact_gate(
-            artifact=artifact,
-            validation=_valid(1),
-            manifest={},
-            sample_type_attributes=SCHEMA,
-        )
-
-
 def test_gate_g_project_confirmation_token(tmp_path):
     assert runner._read_confirmation(_confirm_file(tmp_path), 1)["confirmed"] is True
     with pytest.raises(runner.GateError):
         runner._read_confirmation(_confirm_file(tmp_path, project_id=2), 1)
+    with pytest.raises(runner.GateError, match="project_unconfirmed"):
+        runner._read_confirmation(None, 1)
 
 
 def test_gate_h_confirmed_project_accessible(tmp_path):
@@ -360,6 +339,9 @@ def test_gate_h_confirmed_project_accessible(tmp_path):
     assert client.resolve_assay_title("Solo", title_map, project_ids) == 400
     with pytest.raises(ValueError):
         client.resolve_assay_title(TITLE, title_map, project_ids)
+    client.project_assays = lambda project_id: {351}
+    title_map, project_ids, _ = runner._assay_maps(client, 1)
+    assert client.resolve_assay_title(TITLE, title_map, project_ids) == 351
 
 
 def test_gate_j_assay_subset_refused(tmp_path):
@@ -386,6 +368,25 @@ def test_gate_k_confirm_clear_assays_scoped(tmp_path):
     runner._artifact_gate(artifact=artifact, validation=_valid(1), manifest=manifest, confirm_clear_assays={UID})
     with pytest.raises(runner.GateError):
         runner._artifact_gate(artifact=artifact, validation=_valid(1), manifest=manifest, confirm_clear_assays={"other"})
+    _write_artifact(
+        artifact,
+        [
+            {
+                "UID": "",
+                "SampleType": "TIS",
+                "json_metadata": {"Scientist": "Curator"},
+                "REVIEW_ONLY__Name": "sample",
+                "assay_ids": [],
+            }
+        ],
+    )
+    with pytest.raises(runner.GateError, match="required_missing"):
+        runner._artifact_gate(
+            artifact=artifact,
+            validation=_valid(1),
+            manifest={},
+            sample_type_attributes=SCHEMA,
+        )
 
 
 def test_gate_l_retrieve_failure_refused(tmp_path, capsys):
@@ -494,7 +495,8 @@ def test_attrs_extract_and_resolution_commands(tmp_path, capsys, monkeypatch):
     assert runner.main(["assay-resolve", "--project-id", "1", "--title", "Solo"], transport=StubClient()) == 0
     assert runner.main(["sample-search", "--uid", UID], transport=StubClient()) == 0
     assert runner.main(["assay-resolve", "--project-id", "1", "--title", TITLE], transport=StubClient()) != 0
-    assert _last_gate(capsys)["gate"] == "runner_error"
+    gate = _last_gate(capsys)
+    assert gate == {"gate": "assay_resolution", "detail": TITLE}
 
 
 def test_build_payload_staging_command(tmp_path):
@@ -566,7 +568,7 @@ def test_defensive_branches_and_helpers(tmp_path, capsys, monkeypatch):
 
     bad_addition = _run(tmp_path, StubClient(), [_create_row(assay_titles=["Missing"])])
     assert bad_addition != 0
-    assert _last_gate(capsys)["gate"] == "runner_error"
+    assert _last_gate(capsys)["gate"] == "assay_resolution"
 
 
 def _write_artifact(path, rows):

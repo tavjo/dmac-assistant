@@ -118,7 +118,10 @@ def _resolve_additions(
         copy = dict(row)
         ids = {int(item) for item in copy.get("assay_ids") or []}
         for title in copy.get("assay_titles") or []:
-            ids.add(client.resolve_assay_title(str(title), title_map, project_ids))
+            try:
+                ids.add(client.resolve_assay_title(str(title), title_map, project_ids))
+            except ValueError as exc:
+                raise GateError("assay_resolution", str(title)) from exc
         copy["assay_ids"] = sorted(ids)
         out.append(copy)
     return out
@@ -317,7 +320,12 @@ def _cmd_assay_resolve(argv: list[str], *, transport=None) -> int:
     args = parser.parse_args(argv)
     client = _client(transport)
     title_map, project_ids, _ = _assay_maps(client, args.project_id)
-    result = {title: client.resolve_assay_title(title, title_map, project_ids) for title in args.title}
+    result = {}
+    for title in args.title:
+        try:
+            result[title] = client.resolve_assay_title(title, title_map, project_ids)
+        except ValueError as exc:
+            raise GateError("assay_resolution", title) from exc
     print(json.dumps(result, sort_keys=True))
     return 0
 
