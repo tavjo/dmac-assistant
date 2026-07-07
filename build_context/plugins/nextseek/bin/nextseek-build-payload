@@ -5,29 +5,28 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/_nextseek_common.sh"
 
-ROWS=""; FMT=""; OUT="${NEXTSEEK_OUTPUTS_DIR}"; MERGE=""; KNOWN=""
+ROWS=""; SCHEMA=""; CURRENT=""; TITLES=""; OUT="${NEXTSEEK_OUTPUTS_DIR}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --rows) ROWS="$2"; shift 2 ;;
-    --format) FMT="$2"; shift 2 ;;
-    --merge-existing) MERGE="$2"; shift 2 ;;
-    --known-attrs) KNOWN="$2"; shift 2 ;;
+    --schema) SCHEMA="$2"; shift 2 ;;
+    --resolved-current) CURRENT="$2"; shift 2 ;;
+    --id-to-title) TITLES="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --confirmed-write|--start|--upload)
       nextseek_die 3 "$1 is forbidden: this tool builds payload files only and cannot upload" ;;
     --help)
-      echo "Usage: nextseek-build-payload --rows <file.json> [--format workbook|flat_xlsx|json]"
-      echo "       [--merge-existing <file.json>] [--known-attrs <file.json>] [--out <dir>]"
+      echo "Usage: nextseek-build-payload --rows <file.json> --schema <schema.json> --id-to-title <map.json>"
+      echo "       [--resolved-current <current.json>] [--out <dir>]"
       echo ""
-      echo "Build a NExtSEEK batch-upload payload workbook from a JSON rows file."
-      echo "Prints written file path(s) to stdout."
+      echo "Build a staged flat NExtSEEK batch-upload payload from resolved inputs."
       exit 0 ;;
     *) nextseek_die 3 "unknown arg: $1" ;;
   esac
 done
 [ -n "$ROWS" ] || nextseek_die 3 "--rows is required"
-set -- build-payload --rows "$ROWS" --out "$OUT"
-if [ -n "$FMT" ]; then set -- "$@" --format "$FMT"; fi
-if [ -n "$MERGE" ]; then set -- "$@" --merge-existing "$MERGE"; fi
-if [ -n "$KNOWN" ]; then set -- "$@" --known-attrs "$KNOWN"; fi
+[ -n "$SCHEMA" ] || nextseek_die 3 "--schema is required"
+[ -n "$TITLES" ] || nextseek_die 3 "--id-to-title is required"
+set -- build-payload --rows "$ROWS" --schema "$SCHEMA" --id-to-title "$TITLES" --out "$OUT"
+if [ -n "$CURRENT" ]; then set -- "$@" --resolved-current "$CURRENT"; fi
 exec python "$SCRIPT_DIR/_batch_upload_runner.py" "$@"

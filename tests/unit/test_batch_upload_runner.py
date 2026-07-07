@@ -27,6 +27,7 @@ SCHEMA = [
         ],
     }
 ]
+FIXTURES = pathlib.Path("tests/unit/fixtures/ns")
 
 
 class StubClient:
@@ -89,6 +90,8 @@ class StubClient:
         resolved = set()
         for title in titles:
             candidates = [item for item in title_map.get(title, []) if item in project_assay_ids]
+            if not candidates:
+                raise ValueError("not accessible")
             if len(candidates) == 1:
                 resolved.add(candidates[0])
             else:
@@ -153,6 +156,10 @@ def _current_file(tmp_path, mapping=None):
     path = tmp_path / "current.json"
     path.write_text(json.dumps(mapping or {UID: [351]}))
     return path
+
+
+def _fixture(name):
+    return json.loads((FIXTURES / name).read_text())
 
 
 def _create_row(**extra):
@@ -224,6 +231,8 @@ def test_gate_b_missing_checks(tmp_path):
 def test_gate_c_totals_mismatch(tmp_path):
     rc = _run(tmp_path, StubClient(validate=_valid(0)), [_create_row()])
     assert rc != 0
+    rc_missing = _run(tmp_path, StubClient(validate={k: v for k, v in _valid(1).items() if k != "totals"}), [_create_row()])
+    assert rc_missing != 0
 
 
 def test_gate_d_staged_hash_equals_promoted(tmp_path):
@@ -247,12 +256,25 @@ def test_gate_e2_validate_file_mode(tmp_path):
     call = next(call for call in client.calls if call[0] == "validate_file")
     assert call[1].name == "payload_flat.xlsx"
     assert call[3] == "structure,name_check,dag"
+    with pytest.raises(runner.GateError, match="staging"):
+        runner.main(
+            [
+                "build-payload",
+                "--rows", str(_rows_file(tmp_path, [_create_row()])),
+                "--schema", str(_schema_file(tmp_path)),
+                "--id-to-title", str(_titles_file(tmp_path)),
+                "--out", "/data/scratch/out",
+            ]
+        )
 
 
 def test_gate_f_absent_project_id(tmp_path):
     rows = _rows_file(tmp_path, [_create_row()])
     rc = runner.main(["build-validate", "--rows", str(rows), "--out", str(tmp_path / "scratch")], transport=StubClient())
     assert rc != 0
+    assert _run(tmp_path, StubClient(validate=_valid(1)), [_create_row()]) == 0
+    assert _run(tmp_path, StubClient(validate=_valid(1)), [_create_row(attributes={"Scientist": "Curator"})]) != 0
+    assert _run(tmp_path, StubClient(validate=_valid(1)), [_update_row(attributes={"Treatment": "drug"})]) == 0
 
 
 def test_gate_f2_unverified_project_id(tmp_path):
@@ -263,6 +285,26 @@ def test_gate_f2_unverified_project_id(tmp_path):
         transport=StubClient(),
     )
     assert rc != 0
+    assert runner.main(
+        [
+            "build-validate",
+            "--rows", str(rows),
+            "--project-id", "1",
+            "--project-confirmation", str(_confirm_file(tmp_path)),
+            "--out", str(tmp_path / "scratch2"),
+        ],
+        transport=StubClient(schema={"sample_type": "TIS", "attributes": []}),
+    ) != 0
+    assert runner.main(
+        [
+            "build-validate",
+            "--rows", str(rows),
+            "--project-id", "1",
+            "--project-confirmation", str(_confirm_file(tmp_path)),
+            "--out", str(tmp_path / "scratch3"),
+        ],
+        transport=StubClient(schema={"sample_type": "TIS", "attributes": [{"title": "Name"}]}),
+    ) != 0
 
 
 def test_gate_g_project_confirmation_token(tmp_path):
@@ -274,6 +316,11 @@ def test_gate_g_project_confirmation_token(tmp_path):
 def test_gate_h_confirmed_project_accessible(tmp_path):
     with pytest.raises(runner.GateError):
         runner._read_confirmation(_confirm_file(tmp_path, accessible=(2,)), 1)
+    client = StubClient()
+    title_map, project_ids, _ = runner._assay_maps(client, 1)
+    assert client.resolve_assay_title("Solo", title_map, project_ids) == 400
+    with pytest.raises(ValueError):
+        client.resolve_assay_title(TITLE, title_map, project_ids)
 
 
 def test_gate_j_assay_subset_refused(tmp_path):
@@ -281,6 +328,8 @@ def test_gate_j_assay_subset_refused(tmp_path):
     _write_artifact(artifact, [{"UID": UID, "json_metadata": {"UID": UID, "Treatment": "drug"}, "assay_ids": [9]}])
     with pytest.raises(runner.GateError, match="assay_superset"):
         runner._artifact_gate(artifact=artifact, validation=_valid(1), manifest={UID: {"retrieve_status": "verified", "current_assay_ids": [351]}})
+    with pytest.raises(runner.GateError, match="manifest"):
+        runner._artifact_gate(artifact=artifact, validation=_valid(1), manifest={})
     runner._artifact_gate(artifact=artifact, validation=_valid(1), manifest={UID: {"retrieve_status": "verified", "current_assay_ids": [351]}}, confirm_clear_assays={UID})
 
 
@@ -302,6 +351,21 @@ def test_gate_m_manifest_schema(tmp_path):
     manifest = runner._resolve_manifest([_update_row(assay_ids=[9])], StubClient(), {TITLE: [351, 260]}, {351, 260})
     assert manifest[UID]["retrieve_status"] == "verified"
     assert manifest[UID]["current_assay_ids"] == [351]
+    comma = StubClient(
+        search_rows=[
+            {
+                "json_metadata": {"UID": UID},
+                "id": 324503,
+                "numeric_seek_id": 324503,
+                "assays": "Alpha, with comma",
+                "assay_titles": ["Alpha, with comma"],
+            }
+        ]
+    )
+    manifest = runner._resolve_manifest([_update_row(assay_ids=[9])], comma, {"Alpha, with comma": [400]}, {400})
+    assert manifest[UID]["current_assay_ids"] == [400]
+    degraded = runner._resolve_manifest([_update_row(assay_ids=[9])], comma, {}, set())
+    assert degraded[UID]["retrieve_status"] == "degraded"
 
 
 def test_gate_n_metadata_only_carries_forward(tmp_path):
@@ -315,8 +379,15 @@ def test_gate_n_metadata_only_carries_forward(tmp_path):
 def test_gate_o_degraded_manifest_refused_zero_assay_passes(tmp_path):
     degraded = StubClient(search_rows=[{"json_metadata": {"UID": UID}, "id": 1, "numeric_seek_id": 1}])
     assert _run(tmp_path, degraded, [_update_row(assay_ids=[9])]) != 0
-    zero = StubClient(search_rows=[{"json_metadata": {"UID": UID}, "id": 1, "numeric_seek_id": 1, "assays": "", "assay_titles": []}])
-    assert _run(tmp_path, zero, [_update_row(assay_ids=[9])]) == 0
+    zero_row = _fixture("advanced_search_zero_assay.json")["rows"][0]
+    zero_row = {
+        **zero_row,
+        "numeric_seek_id": zero_row["id"],
+        "assay_titles": [],
+    }
+    zero_uid = zero_row["json_metadata"]["UID"]
+    zero = StubClient(search_rows=[zero_row])
+    assert _run(tmp_path, zero, [_update_row(UID=zero_uid, assay_ids=[9])]) == 0
 
 
 def test_gate_p_shrink_without_confirm_refused(tmp_path):
@@ -335,7 +406,8 @@ def test_gate_q_path2_resolves_351_not_260(tmp_path):
 
 
 def test_gate_q2_carry_both(tmp_path):
-    client = StubClient(samples={351: {"324503"}, 260: {"324503"}}, validate=_valid(1))
+    both = {int(key): set(value) for key, value in _fixture("assay_samples_both.json")["assay_samples"].items()}
+    client = StubClient(samples=both, validate=_valid(1))
     assert _run(tmp_path, client, [_update_row()]) == 0
     row = _sheet(_artifact(tmp_path))[0]
     assert set(orjson.loads(row["assay_ids"])) >= {351, 260}
@@ -441,16 +513,8 @@ def test_defensive_branches_and_helpers(tmp_path, capsys, monkeypatch):
     current = _current_file(tmp_path, {UID: [351, 260]})
     assert runner._load_current(str(current)) == {UID: {351, 260}}
 
-    with pytest.raises(runner.GateError, match="staging"):
-        runner.main(
-            [
-                "build-payload",
-                "--rows", str(_rows_file(tmp_path, [_create_row()])),
-                "--schema", str(_schema_file(tmp_path)),
-                "--id-to-title", str(_titles_file(tmp_path)),
-                "--out", "/data/scratch/out",
-            ]
-        )
+    bad_addition = _run(tmp_path, StubClient(), [_create_row(assay_titles=["Missing"])])
+    assert bad_addition != 0
 
 
 def _write_artifact(path, rows):

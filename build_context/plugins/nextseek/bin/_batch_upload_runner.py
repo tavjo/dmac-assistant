@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import pathlib
+import os
 import shutil
 import sys
 import tempfile
@@ -202,7 +203,7 @@ def _artifact_gate(
     if set(validation.get("checks_run") or []) < REQUIRED_CHECKS:
         raise GateError("checks_run")
     processed = ((validation.get("totals") or {}).get("processed"))
-    if processed is not None and int(processed) != len(rows):
+    if processed is None or int(processed) != len(rows):
         raise GateError("processed")
 
     for row in rows:
@@ -216,6 +217,8 @@ def _artifact_gate(
                     raise GateError("present_blank", key)
         elif not real_attrs:
             raise GateError("required_missing")
+        if uid and assay_ids and uid not in manifest:
+            raise GateError("manifest")
         if uid and uid in manifest:
             entry = manifest[uid]
             if entry.get("retrieve_status") != "verified":
@@ -233,9 +236,11 @@ def _promote(staged: pathlib.Path, output_dir: pathlib.Path) -> pathlib.Path:
         raise GateError("staging")
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / staged.name
-    shutil.copy2(staged, target)
-    if _sha256(staged) != _sha256(target):
+    tmp_target = output_dir / f".{staged.name}.tmp"
+    shutil.copy2(staged, tmp_target)
+    if _sha256(staged) != _sha256(tmp_target):
         raise GateError("promote_hash")
+    os.replace(tmp_target, target)
     return target
 
 
@@ -367,6 +372,9 @@ def _cmd_build_validate(argv: list[str], *, transport=None) -> int:
             return 0
     except GateError as exc:
         _emit_gate(exc)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - CLI must fail closed with a marker.
+        _emit_gate(GateError("runner_error", type(exc).__name__))
         return 1
 
 
