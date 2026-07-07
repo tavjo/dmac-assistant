@@ -1,9 +1,9 @@
 """Hermetic ($0, socket-disabled) tests for the T10 live-paid evidence logic + verifier.
 
-Run:
+Run (dotted --cov module form — the slash/path form reports 0% under the repo tools/ layout):
     env UV_CACHE_DIR=/tmp/uv-cache uv run pytest tools/e2e/test_batch_upload_live_evidence.py \
       --override-ini "addopts=--disable-socket -q" \
-      --cov=tools/e2e/batch_upload_live_evidence --cov=tools/e2e/verify_batch_upload_live \
+      --cov=tools.e2e.batch_upload_live_evidence --cov=tools.e2e.verify_batch_upload_live \
       --cov-report=term-missing --cov-fail-under=95
 """
 from __future__ import annotations
@@ -199,17 +199,100 @@ def test_invocation_non_string_command_ignored():
     assert ev.extract_tool_invocations([frame]) == []
 
 
-def test_invocation_unbalanced_quotes_skipped():
-    # shlex raises on the bad segment; the good one still counts.
+def test_invocation_unparseable_command_yields_nothing():
+    # An unbalanced quote is a shell syntax error — nothing executes, so we conservatively
+    # detect no invocation (a false-negative is safe; a false-positive is not).
     invs = ev.extract_tool_invocations(
         [_bash('nextseek-validate-upload --x "unterminated ; nextseek-build-payload --out /tmp/x')]
     )
-    assert [i.shim for i in invs] == ["nextseek-build-payload"]
+    assert invs == []
 
 
 def test_invocation_env_prefix_head():
     invs = ev.extract_tool_invocations([_bash("FOO=bar nextseek-validate-upload --project-id 1")])
     assert [i.shim for i in invs] == ["nextseek-validate-upload"]
+
+
+# --- C1: operator inside a quoted literal must NOT forge an invocation ---
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'echo "step1 && nextseek-validate-upload && step3"',
+        "printf '%s' 'hello|nextseek-validate-upload|world'",
+        'echo "note; nextseek-validate-upload; done"',
+        'python -c "print(\'nextseek-validate-upload\')"',
+    ],
+)
+def test_invocation_quoted_operator_not_counted(command):
+    assert ev.extract_tool_invocations([_bash(command)]) == []
+
+
+def test_invocation_full_turn_forgery_rejected():
+    # A turn whose only Bash frame narrates the shim inside a quoted echo must NOT pass.
+    frames = [
+        _route(),
+        _bash('echo "step1 && nextseek-validate-upload && step3"'),
+        _reply("I would run the validate step."),
+        _ended(cost=0.2),
+    ]
+    row = ev.evaluate_turn(query="q", frames=frames, is_error=False)
+    assert row.validate_invoked is False
+    assert row.passed is False
+
+
+# --- M3: legitimate real-invocation forms must be detected ---
+
+
+def test_invocation_bash_c_inner():
+    invs = ev.extract_tool_invocations([_bash('bash -c "nextseek-validate-upload --project-id 1"')])
+    assert "nextseek-validate-upload" in [i.shim for i in invs]
+
+
+def test_invocation_command_substitution():
+    invs = ev.extract_tool_invocations([_bash("RESULT=$(nextseek-validate-upload --project-id 1)")])
+    assert "nextseek-validate-upload" in [i.shim for i in invs]
+
+
+def test_invocation_backtick_substitution():
+    invs = ev.extract_tool_invocations([_bash("X=`nextseek-build-payload --out /tmp/x`")])
+    assert "nextseek-build-payload" in [i.shim for i in invs]
+
+
+def test_invocation_xargs():
+    invs = ev.extract_tool_invocations([_bash("echo 1 | xargs nextseek-validate-upload")])
+    assert "nextseek-validate-upload" in [i.shim for i in invs]
+
+
+def test_extract_cost_terminal_frame_wins():
+    # A decoy cheap result frame before the real one must not mask the true cost (M2).
+    frames = [
+        {"type": "session_ended", "session_id": "decoy", "total_cost_usd": 0.001},
+        {"type": "session_ended", "session_id": "real", "total_cost_usd": 7.0},
+    ]
+    c = ev.extract_cost(frames)
+    assert c.cost_usd == pytest.approx(7.0)
+    assert ev.session_id_of(frames) == "real"
+
+
+def test_extract_cost_negative_authoritative_is_flagged():
+    # A negative total_cost_usd is recorded as authoritative (not routed to the estimate), then the
+    # verdict layer flags cost <= 0 (L2).
+    c = ev.extract_cost([_ended(cost=-1.0)])
+    assert c.cost_usd == -1.0 and c.cost_source == ev.COST_SOURCE_AUTHORITATIVE
+    row = ev.evaluate_turn(query="q", frames=_good_frames(cost=-1.0), is_error=False)
+    assert row.passed is False and any("<= 0" in p for p in row.problems)
+
+
+def test_build_summary_over_cap_fails_all_pass():
+    row = ev.evaluate_turn(query="q", frames=_good_frames(), is_error=False)
+    s = ev.build_summary(row, ledger_total_usd=6.0, cap_usd=5.0, aborted_on_budget=False)
+    assert s["within_cap"] is False and s["all_pass"] is False  # H3: within_cap folds into all_pass
+
+
+# ---------------------------------------------------------------------------
+# Verifier (bundle-level)
 
 
 # ---------------------------------------------------------------------------
@@ -326,28 +409,107 @@ def test_build_summary_fresh_violation_fails():
 
 
 # ---------------------------------------------------------------------------
+# Evidence bundle writer
+
+
+def test_render_summary_txt_has_cost_and_reproduce():
+    row = ev.evaluate_turn(query="q", frames=_good_frames(), is_error=False)
+    summary = ev.build_summary(row, ledger_total_usd=0.3, cap_usd=5.0, aborted_on_budget=False)
+    txt = ev.render_summary_txt(summary, reproduce_cmd="uv run python x.py --paid", evidence_dir_name="20260707T000000Z")
+    assert "total_cost_usd:" in txt and "--- reproduce ---" in txt
+    assert "uv run python x.py --paid" in txt
+    assert "claude_code_result" in txt
+
+
+def test_render_summary_txt_lists_problems():
+    row = ev.evaluate_turn(query="q", frames=_good_frames(cost=0.0), is_error=False)
+    summary = ev.build_summary(row, ledger_total_usd=0.0, cap_usd=5.0, aborted_on_budget=False)
+    txt = ev.render_summary_txt(summary, reproduce_cmd="cmd", evidence_dir_name="d")
+    assert "PROBLEMS (hard failures):" in txt and "<= 0" in txt
+
+
+def test_render_summary_txt_lists_review_notes():
+    frames = [_route(), _bash("nextseek-validate-upload --project-id 1"), _reply("ok"), _ended(cost=0.2)]
+    row = ev.evaluate_turn(query="q", frames=frames, is_error=False)
+    summary = ev.build_summary(row, ledger_total_usd=0.2, cap_usd=5.0, aborted_on_budget=False)
+    txt = ev.render_summary_txt(summary, reproduce_cmd="cmd", evidence_dir_name="d")
+    assert "REVIEW NOTES (green-but-flagged):" in txt
+
+
+def test_write_evidence_bundle_ok(tmp_path):
+    out = tmp_path / "20260707T010203Z"
+    summary = ev.write_evidence_bundle(
+        out,
+        query="prepare a batch upload",
+        frames=_good_frames(),
+        cap_usd=5.0,
+        ledger_total_usd=0.3,
+        transport_error=None,
+        aborted_on_budget=False,
+        reproduce_cmd="uv run python run.py --paid",
+    )
+    assert summary["all_pass"] is True
+    assert (out / "live_e2e_transcript.json").exists()
+    assert (out / "per_turn_summary.json").exists()
+    assert (out / "SUMMARY.txt").exists()
+    # The written transcript is re-verifiable once a ledger is present.
+    (out / "ledger.jsonl").write_text(
+        json.dumps({"op": "cc_turn", "model": "opus", "projected_usd": 0.5,
+                    "actual_usd": 0.3, "status": "settled"}) + "\n",
+        encoding="utf-8",
+    )
+    result = vr.verify(out / "live_e2e_transcript.json")
+    assert result["ok"] is True, result["problems"]
+
+
+def test_write_evidence_bundle_transport_error_fails(tmp_path):
+    out = tmp_path / "err"
+    summary = ev.write_evidence_bundle(
+        out,
+        query="q",
+        frames=[_route(), *_all_shims_bash(), _reply("x"), _ended(cost=0.2)],
+        cap_usd=5.0,
+        ledger_total_usd=0.2,
+        transport_error="timeout",
+        aborted_on_budget=False,
+        reproduce_cmd="cmd",
+    )
+    assert summary["all_pass"] is False
+    assert summary["turn"]["is_error"] is True
+
+
+def test_write_evidence_bundle_aborted(tmp_path):
+    out = tmp_path / "ab"
+    summary = ev.write_evidence_bundle(
+        out, query="q", frames=_good_frames(), cap_usd=5.0, ledger_total_usd=0.0,
+        transport_error=None, aborted_on_budget=True, reproduce_cmd="cmd",
+        extra_meta={"reserved_only": True},
+    )
+    assert summary["all_pass"] is False and summary["aborted_on_budget"] is True
+    meta = json.loads((out / "live_e2e_transcript.json").read_text())["meta"]
+    assert meta["reserved_only"] is True
+
+
+# ---------------------------------------------------------------------------
 # Verifier (bundle-level)
 
 
-def _write_bundle(tmp_path, frames, *, cap=5.0, ledger_cost=0.3, summary_overrides=None):
+def _write_bundle(tmp_path, frames, *, cap=5.0, ledger_cost=0.3, ledger_status="settled",
+                  summary_overrides=None, meta_extra=None):
     bundle = tmp_path / "20260707T000000Z"
-    bundle.mkdir()
+    bundle.mkdir(exist_ok=True)
     transcript = bundle / "live_e2e_transcript.json"
-    transcript.write_text(
-        json.dumps({"meta": {"query": "prepare a batch upload", "cap_usd": cap}, "frames": frames}),
-        encoding="utf-8",
-    )
-    (bundle / "ledger.jsonl").write_text(
-        json.dumps(
-            {"op": "cc_turn", "model": "opus", "projected_usd": 0.5,
-             "actual_usd": ledger_cost, "status": "settled"}
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    meta = {"query": "prepare a batch upload", "cap_usd": cap}
+    if meta_extra:
+        meta.update(meta_extra)
+    transcript.write_text(json.dumps({"meta": meta, "frames": frames}), encoding="utf-8")
+    entry = {"op": "cc_turn", "model": "opus", "projected_usd": 0.5, "status": ledger_status}
+    entry["actual_usd"] = ledger_cost if ledger_status == "settled" else None
+    (bundle / "ledger.jsonl").write_text(json.dumps(entry) + "\n", encoding="utf-8")
     row = ev.evaluate_turn(query="prepare a batch upload", frames=frames,
                            is_error=ev.detect_error(frames))
-    summary = ev.build_summary(row, ledger_total_usd=ledger_cost, cap_usd=cap,
+    settled_total = ledger_cost if ledger_status == "settled" else 0.0
+    summary = ev.build_summary(row, ledger_total_usd=settled_total, cap_usd=cap,
                                aborted_on_budget=False)
     if summary_overrides:
         summary = {**summary, **summary_overrides}
@@ -414,10 +576,50 @@ def test_verify_tampered_cost(tmp_path):
 
 
 def test_verify_over_cap(tmp_path):
-    transcript = _write_bundle(tmp_path, _good_frames(), cap=0.1, ledger_cost=0.3)
+    # A real spend above the POLICY cap fails, regardless of what the bundle declares.
+    transcript = _write_bundle(tmp_path, _good_frames(cost=9.0), cap=5.0, ledger_cost=9.0)
     result = vr.verify(transcript)
     assert result["ok"] is False
-    assert any("exceeds cap" in p for p in result["problems"])
+    assert any("exceeds policy cap" in p for p in result["problems"])
+
+
+def test_verify_ignores_self_declared_meta_cap(tmp_path):
+    # H1: a bundle that declares a looser cap than policy is a red flag; the verifier does not
+    # adopt meta.cap_usd as its ceiling.
+    transcript = _write_bundle(tmp_path, _good_frames(cost=0.3), cap=1000.0, ledger_cost=0.3)
+    result = vr.verify(transcript)
+    assert result["ok"] is False
+    assert any("declares cap" in p and "policy" in p for p in result["problems"])
+    assert result["policy_cap_usd"] == vr.POLICY_CAP_USD
+
+
+def test_verify_ledger_understates_authoritative_cost(tmp_path):
+    # H2/M1: the driver-written ledger says $0.01 but the turn's own result frame says $7 — the
+    # verifier reconciles the two and cap-checks the REAL spend.
+    transcript = _write_bundle(tmp_path, _good_frames(cost=7.0), cap=5.0, ledger_cost=0.01)
+    result = vr.verify(transcript)
+    assert result["ok"] is False
+    assert any("authoritative transcript cost" in p for p in result["problems"])
+    assert any("exceeds policy cap" in p for p in result["problems"])
+
+
+def test_verify_reserved_only_ledger_flagged(tmp_path):
+    # M1: a crash between reserve and record leaves a reserved-only ledger recording $0 for a paid
+    # turn — the transcript's authoritative $0.3 no longer reconciles.
+    transcript = _write_bundle(tmp_path, _good_frames(cost=0.3), ledger_status="reserved")
+    result = vr.verify(transcript)
+    assert result["ok"] is False
+    assert any("authoritative transcript cost" in p for p in result["problems"])
+
+
+def test_verify_multiple_session_ended_flagged(tmp_path):
+    # M2: a decoy result frame before the real one.
+    frames = [_route(), *_all_shims_bash(), _reply("done"),
+              _ended(session_id="decoy", cost=0.001), _ended(session_id="real", cost=0.3)]
+    transcript = _write_bundle(tmp_path, frames, ledger_cost=0.3)
+    result = vr.verify(transcript)
+    assert result["ok"] is False
+    assert any("session_ended frames" in p for p in result["problems"])
 
 
 def test_verify_main_exit_codes(tmp_path, capsys):

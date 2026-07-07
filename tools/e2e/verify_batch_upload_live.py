@@ -28,16 +28,23 @@ from tools.e2e.batch_upload_live_evidence import (  # noqa: E402
     detect_error,
     evaluate_turn,
     extract_cost,
+    session_ended_frames,
 )
 
 _COST_TOL = 1e-9
+# The POLICY cap is enforced HERE as a constant — the verifier must NOT let the artifact under
+# test set its own ceiling via meta.cap_usd (fix H1). An operator may only TIGHTEN it via --cap.
+POLICY_CAP_USD = 5.00
+_RECONCILE_TOL = 1e-6
 
 
 def _load(path: pathlib.Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def verify(transcript_path: pathlib.Path) -> dict[str, Any]:
+def verify(
+    transcript_path: pathlib.Path, *, policy_cap_usd: float = POLICY_CAP_USD
+) -> dict[str, Any]:
     problems: list[str] = []
     bundle = transcript_path.parent
 
@@ -49,7 +56,13 @@ def verify(transcript_path: pathlib.Path) -> dict[str, Any]:
         return {"ok": False, "problems": ["transcript has no 'frames' list"]}
     meta = data.get("meta") or {}
     query = meta.get("query", "")
-    cap_usd = float(meta.get("cap_usd", 5.00))
+    # The cap is the VERIFIER's policy constant, NOT the artifact's self-declared meta.cap_usd
+    # (fix H1). A bundle that declares a looser cap than policy is itself a red flag.
+    declared_cap = meta.get("cap_usd")
+    if isinstance(declared_cap, (int, float)) and float(declared_cap) > policy_cap_usd:
+        problems.append(
+            f"bundle declares cap ${float(declared_cap):.2f} > policy cap ${policy_cap_usd:.2f}"
+        )
 
     # "Markdown is never proof": the bundle must carry machine-readable JSON evidence.
     ledger_path = bundle / "ledger.jsonl"
@@ -62,41 +75,62 @@ def verify(transcript_path: pathlib.Path) -> dict[str, Any]:
     if not json_evidence:
         problems.append("bundle carries no .json/.jsonl evidence — prose is not proof")
 
-    # Recompute the verdict from the transcript alone.
+    # A decoy cheap result frame before the real one would mask the true cost (M2).
+    if len(session_ended_frames(frames)) > 1:
+        problems.append(
+            f"transcript carries {len(session_ended_frames(frames))} session_ended frames "
+            "(expected exactly one terminal result)"
+        )
+
+    # Recompute the verdict + AUTHORITATIVE cost from the transcript alone.
     is_error = detect_error(frames)
     row = evaluate_turn(query=query, frames=frames, is_error=is_error)
     cost = extract_cost(frames)
+    authoritative_cost = cost.cost_usd
 
-    # Ledger total from the persisted ledger (settled actual_usd sum), else the recomputed cost.
-    ledger_total = cost.cost_usd
-    if ledger_path.exists():
-        settled = 0.0
+    # Ledger total from the persisted ledger (settled actual_usd sum).
+    ledger_total = 0.0
+    ledger_present = ledger_path.exists()
+    if ledger_present:
         for line in ledger_path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             entry = json.loads(line)
             if entry.get("status") == "settled" and entry.get("actual_usd") is not None:
-                settled += float(entry["actual_usd"])
-        ledger_total = settled
+                ledger_total += float(entry["actual_usd"])
 
+    # Reconcile the driver-written ledger against the turn's own authoritative cost — a ledger
+    # that understates a real spend (or a reserved-only/crashed ledger recording $0 for a paid
+    # turn) is caught here (fix H2 + M1).
+    if ledger_present and abs(ledger_total - authoritative_cost) > _RECONCILE_TOL:
+        problems.append(
+            f"ledger total ${ledger_total:.6f} != authoritative transcript cost "
+            f"${authoritative_cost:.6f} (cost_source={cost.cost_source})"
+        )
+
+    # Cap-check the REAL spend (the larger of the authoritative figure and the ledger) against
+    # the policy cap — not the artifact's self-declared cap (fix H2).
+    real_spend = max(ledger_total, authoritative_cost)
+    if real_spend > policy_cap_usd:
+        problems.append(
+            f"spend ${real_spend:.6f} exceeds policy cap ${policy_cap_usd:.2f}"
+        )
+
+    aborted = bool(meta.get("reserved_only"))
     recomputed = build_summary(
-        row, ledger_total_usd=ledger_total, cap_usd=cap_usd, aborted_on_budget=False
+        row, ledger_total_usd=ledger_total, cap_usd=policy_cap_usd, aborted_on_budget=aborted
     )
 
     if not row.passed:
         problems.extend(f"verdict: {p}" for p in row.problems)
-    if not recomputed["within_cap"]:
-        problems.append(
-            f"ledger total ${ledger_total:.6f} exceeds cap ${cap_usd:.2f}"
-        )
 
     # Tamper detection: the persisted summary must agree with the recompute.
     if summary_path.exists():
         persisted = _load(summary_path)
         p_turn = persisted.get("turn", {})
-        if abs(float(p_turn.get("cost_usd", -1)) - cost.cost_usd) > _COST_TOL:
+        if abs(float(p_turn.get("cost_usd", -1)) - authoritative_cost) > _COST_TOL:
             problems.append(
-                f"persisted cost_usd={p_turn.get('cost_usd')} != recomputed {cost.cost_usd}"
+                f"persisted cost_usd={p_turn.get('cost_usd')} != recomputed {authoritative_cost}"
             )
         if bool(persisted.get("all_pass")) != bool(recomputed["all_pass"]):
             problems.append(
@@ -116,14 +150,21 @@ def verify(transcript_path: pathlib.Path) -> dict[str, Any]:
         "recomputed": recomputed,
         "cost_source": cost.cost_source,
         "ledger_total_usd": ledger_total,
+        "authoritative_cost_usd": authoritative_cost,
+        "policy_cap_usd": policy_cap_usd,
     }
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("transcript", type=pathlib.Path)
+    parser.add_argument(
+        "--cap", type=float, default=POLICY_CAP_USD,
+        help=f"Policy spend cap in USD to enforce (default {POLICY_CAP_USD}; may only tighten).",
+    )
     args = parser.parse_args(argv)
-    result = verify(args.transcript)
+    cap = min(args.cap, POLICY_CAP_USD)  # an operator may tighten, never loosen, the policy cap
+    result = verify(args.transcript, policy_cap_usd=cap)
     print(json.dumps(result, sort_keys=True))
     return 0 if result["ok"] else 1
 

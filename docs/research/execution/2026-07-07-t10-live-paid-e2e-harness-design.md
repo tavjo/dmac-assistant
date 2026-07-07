@@ -63,10 +63,11 @@ committed: point `--evidence-root` at a tracked path.)
 ## Reproduce command (persisted in SUMMARY.txt)
 
 ```
-# $0 hermetic self-tests:
+# $0 hermetic self-tests (NOTE: dotted --cov module form — the slash/path form reports 0% under
+# the repo's tools/ layout, per the CLAUDE.md tools-coverage gotcha):
 env UV_CACHE_DIR=/tmp/uv-cache uv run pytest tools/e2e/test_batch_upload_live_evidence.py \
   --override-ini "addopts=--disable-socket -q" \
-  --cov=tools/e2e/batch_upload_live_evidence --cov=tools/e2e/verify_batch_upload_live \
+  --cov=tools.e2e.batch_upload_live_evidence --cov=tools.e2e.verify_batch_upload_live \
   --cov-report=term-missing --cov-fail-under=95
 # PAID live run (explicit per-session owner paid-API authorization + $5 cap):
 uv run python tools/e2e/run_batch_upload_live_e2e.py --paid --cap 5.00

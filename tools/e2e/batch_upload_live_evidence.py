@@ -17,10 +17,23 @@ The WS frame contract this consumes (emitted by ``src/dmac_assistant/ws.py``):
   tool_use       {type, tool, input, id}          # tool=="Bash", input.command names a shim
   assistant_message {type, content}
   session_ended  {type, session_id, usage, total_cost_usd}   # total_cost_usd = CC authoritative
+
+SCOPE CAVEATS (honest limits of what the WS surface can prove — documented, not bugs):
+* ``tool_use`` frames are the agent's tool-call REQUESTS; the bridge emits no paired
+  ``tool_result``/exit-status frame, so a shim that was auto-mode-denied or exited non-zero still
+  counts as "invoked" (M4). Deep artifact correctness — that the delivered workbook actually
+  VALIDATES ``valid==true`` — is the merge gate T9.5's job (assert (iv)), not T10's; T10 green means
+  "a real paid turn routed container_cc and genuinely ran the batch-upload deliverable path", the
+  paid superset "see it work", NOT a second correctness oracle (M6).
+* Fresh-session over the WS is presence-only for a single turn (M5); the driver GUARANTEES freshness
+  structurally by opening a new ``/ws/chat`` connection with no session id and never passing
+  ``--resume``. The presence check is a backstop, not the guarantee.
 """
 from __future__ import annotations
 
+import json
 import os
+import pathlib
 import re
 import shlex
 from dataclasses import dataclass, field
@@ -59,8 +72,16 @@ COST_SOURCE_AUTHORITATIVE = "claude_code_result"
 COST_SOURCE_ESTIMATE = "usage_estimate_on_timeout"
 COST_SOURCE_NONE = "unavailable"
 
-# Control operators that separate a shell command into independently-headed segments.
-_SEGMENT_SPLIT = re.compile(r"&&|\|\||[;|&]")
+# Shell operator tokens that separate a command line into independently-headed segments.
+# Matched against LEXED tokens (never a raw string split) so an operator INSIDE a quoted
+# literal — e.g. echo "a && nextseek-validate-upload" — is NOT a separator (fix C1).
+_OPERATOR_TOKENS = frozenset({"&&", "||", ";", ";;", "|", "|&", "&", "(", ")", "<", ">", ">>"})
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Wrapper heads that delegate to a following command word (strip to find the real head).
+_WRAPPER_HEADS = frozenset({"env", "nohup", "time", "exec", "sudo", "stdbuf", "nice"})
+# Command-substitution inners: $(...) and `...` — their contents are separate commands.
+_CMD_SUBST = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
+_MAX_RECURSION = 4
 
 
 # ---------------------------------------------------------------------------
@@ -75,11 +96,16 @@ class CostResult:
     has_result_frame: bool
 
 
+def session_ended_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [frame for frame in frames if frame.get("type") == "session_ended"]
+
+
 def _session_ended(frames: list[dict[str, Any]]) -> dict[str, Any] | None:
-    for frame in frames:
-        if frame.get("type") == "session_ended":
-            return frame
-    return None
+    # The TERMINAL session_ended is authoritative — a decoy cheap result frame emitted
+    # before the real one must not mask the true cost/session id (fix M2). The verifier
+    # additionally flags a transcript carrying more than one (see session_ended_frames).
+    ended = session_ended_frames(frames)
+    return ended[-1] if ended else None
 
 
 def estimate_cost_from_usage(usage: dict[str, Any]) -> float:
@@ -184,32 +210,96 @@ class Invocation:
     frame_id: str | None
 
 
-def _segment_heads(command: str) -> list[list[str]]:
-    """Split a shell command into control-operator segments, each shlex-tokenized.
+def _lex(command: str) -> list[str] | None:
+    """Shell-aware lex: quotes are honored, operators become their own tokens. Returns None on a
+    lexer error (unbalanced quote), so operators inside quotes are NEVER treated as separators."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        return list(lexer)
+    except ValueError:
+        return None
 
-    A shim counts as invoked only when it is the COMMAND WORD (first token) of a segment — so
-    ``command -v nextseek-validate-upload`` (head ``command``) and ``echo nextseek-...`` (head
-    ``echo``) do not count, and ``nextseek-api`` never matches ``nextseek-api-write``.
+
+def _strip_wrappers(tokens: list[str]) -> list[str]:
+    """Drop leading ``VAR=val`` assignments and wrapper heads (env/nohup/sudo/...) to reach the
+    real command word."""
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if _ENV_ASSIGN.match(tok) and "/" not in tok.split("=", 1)[0]:
+            i += 1
+            continue
+        if os.path.basename(tok) in _WRAPPER_HEADS:
+            i += 1
+            continue
+        break
+    return tokens[i:]
+
+
+def _command_heads(command: str, shims: set[str], depth: int = 0) -> list[str]:
+    """Return every shim basename that is genuinely INVOKED as a command word in ``command``.
+
+    Handles: control-operator segmentation on LEXED tokens (so quoted operators do not split),
+    env/wrapper prefixes, ``bash -c "<inner>"`` / ``sh -c`` string args, ``xargs <shim>``, and
+    ``$(...)`` / backtick command substitutions — all recursively. ``command -v``/``which``/
+    ``echo`` heads and mere quoted mentions do NOT count. basename-exact, so ``nextseek-api``
+    never matches ``nextseek-api-write``.
     """
+    if depth > _MAX_RECURSION:
+        return []
+    found: list[str] = []
+    # Recurse into command substitutions first (their contents are separate commands).
+    for m in _CMD_SUBST.finditer(command):
+        inner = m.group(1) or m.group(2) or ""
+        if inner:
+            found.extend(_command_heads(inner, shims, depth + 1))
+
+    tokens = _lex(command)
+    if tokens is None:
+        return found
+
+    segment: list[str] = []
     segments: list[list[str]] = []
-    for raw in _SEGMENT_SPLIT.split(command):
-        raw = raw.strip()
-        if not raw:
+    for tok in tokens:
+        if tok in _OPERATOR_TOKENS or (tok and set(tok) <= set("&|;()<>")):
+            if segment:
+                segments.append(segment)
+                segment = []
+        else:
+            segment.append(tok)
+    if segment:
+        segments.append(segment)
+
+    for seg in segments:
+        head = _strip_wrappers(seg)
+        if not head:
             continue
-        try:
-            tokens = shlex.split(raw)
-        except ValueError:
+        base = os.path.basename(head[0])
+        if base in shims:
+            found.append(base)
             continue
-        # Skip leading ``env VAR=val`` prefixes and ``VAR=val`` assignments to find the head.
-        head_tokens = [t for t in tokens if "=" not in t.split(" ")[0] or "/" in t]
-        segments.append(head_tokens or tokens)
-    return segments
+        # bash -c "<inner>" / sh -c "<inner>": the inner string is a real command.
+        if base in {"bash", "sh"} and "-c" in head:
+            idx = head.index("-c")
+            if idx + 1 < len(head):
+                found.extend(_command_heads(head[idx + 1], shims, depth + 1))
+        # xargs [flags] <shim> ...: the first non-flag token after xargs is the command word.
+        elif base == "xargs":
+            for tok in head[1:]:
+                if tok.startswith("-"):
+                    continue
+                if os.path.basename(tok) in shims:
+                    found.append(os.path.basename(tok))
+                break
+    return found
 
 
 def extract_tool_invocations(
     frames: list[dict[str, Any]], shims: tuple[str, ...] = BATCH_UPLOAD_SHIMS
 ) -> list[Invocation]:
-    """Parse tool_use Bash frames into shim invocations (basename-exact, head-position-only)."""
+    """Parse tool_use Bash frames into genuine shim invocations (basename-exact, execution-position
+    only; robust against quoted-operator forgery and command substitutions)."""
     shim_set = set(shims)
     found: list[Invocation] = []
     for frame in frames:
@@ -218,18 +308,9 @@ def extract_tool_invocations(
         command = (frame.get("input") or {}).get("command")
         if not isinstance(command, str):
             continue
-        for tokens in _segment_heads(command):
-            if not tokens:
-                continue
-            head = tokens[0]
-            if os.path.basename(head) in shim_set:
-                found.append(
-                    Invocation(
-                        shim=os.path.basename(head),
-                        command_excerpt=command[:500],
-                        frame_id=frame.get("id") if isinstance(frame.get("id"), str) else None,
-                    )
-                )
+        fid = frame.get("id") if isinstance(frame.get("id"), str) else None
+        for shim in _command_heads(command, shim_set):
+            found.append(Invocation(shim=shim, command_excerpt=command[:500], frame_id=fid))
     return found
 
 
@@ -346,8 +427,11 @@ def build_summary(
 ) -> dict[str, Any]:
     """Top-level per-turn summary (step7d ``per_op_summary`` analog)."""
     fresh_violations = assert_fresh_sessions([row.cc_session_id])
+    within_cap = ledger_total_usd <= cap_usd
     return {
-        "all_pass": row.passed and not aborted_on_budget and not fresh_violations,
+        "all_pass": (
+            row.passed and within_cap and not aborted_on_budget and not fresh_violations
+        ),
         "aborted_on_budget": aborted_on_budget,
         "fresh_session_violations": fresh_violations,
         "total_cost_usd": ledger_total_usd,
@@ -357,3 +441,86 @@ def build_summary(
         "expected_route": row.expected_route,
         "turn": row.to_dict(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Evidence bundle (kept here, covered, so the driver's only uncovered surface is the
+# closed set of live-orchestration functions the plan permits to carry ``# pragma: no cover``)
+
+
+def render_summary_txt(
+    summary: dict[str, Any], *, reproduce_cmd: str, evidence_dir_name: str
+) -> str:
+    turn = summary["turn"]
+    lines = [
+        "T10 LIVE PAID batch-upload E2E — SUMMARY",
+        f"bundle: evidence/batch-upload-e2e/{evidence_dir_name}/",
+        "",
+        f"all_pass:            {summary['all_pass']}",
+        f"route:               {turn['route']} (expected {turn['expected_route']})",
+        f"validate_invoked:    {turn['validate_invoked']}",
+        f"invoked_shims:       {', '.join(turn['invoked_shims']) or '(none)'}",
+        f"is_error:            {turn['is_error']}",
+        f"needs_review:        {turn['needs_review']}",
+        f"aborted_on_budget:   {summary['aborted_on_budget']}",
+        f"fresh_violations:    {summary['fresh_session_violations'] or 'none'}",
+        "",
+        "--- cost ---",
+        f"total_cost_usd:      {summary['total_cost_usd']:.6f}",
+        f"cost_source:         {turn['cost_source']}",
+        f"cap_usd:             {summary['cap_usd']:.2f}",
+        f"within_cap:          {summary['within_cap']}",
+        f"rate_table_version:  {summary['rate_table_version']}",
+        "",
+    ]
+    if turn["problems"]:
+        lines.append("PROBLEMS (hard failures):")
+        lines += [f"  - {p}" for p in turn["problems"]]
+    if turn["review_notes"]:
+        lines.append("REVIEW NOTES (green-but-flagged):")
+        lines += [f"  - {n}" for n in turn["review_notes"]]
+    lines += ["", "--- reproduce ---", reproduce_cmd, ""]
+    return "\n".join(lines)
+
+
+def write_evidence_bundle(
+    out_dir: pathlib.Path,
+    *,
+    query: str,
+    frames: list[dict[str, Any]],
+    cap_usd: float,
+    ledger_total_usd: float,
+    transport_error: str | None,
+    aborted_on_budget: bool,
+    reproduce_cmd: str,
+    extra_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Write the full evidence bundle and return the summary.
+
+    Files: ``live_e2e_transcript.json`` (all WS frames + meta), ``per_turn_summary.json`` (the
+    verdict), ``SUMMARY.txt`` (human-readable + reproduce command). The ledger JSONL is written
+    separately by the driver via ``SpendLedger.save``.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    is_error = bool(transport_error) or detect_error(frames)
+    row = evaluate_turn(query=query, frames=frames, is_error=is_error)
+    summary = build_summary(
+        row,
+        ledger_total_usd=ledger_total_usd,
+        cap_usd=cap_usd,
+        aborted_on_budget=aborted_on_budget,
+    )
+    meta = {"query": query, "cap_usd": cap_usd, "transport_error": transport_error}
+    if extra_meta:
+        meta.update(extra_meta)
+    (out_dir / "live_e2e_transcript.json").write_text(
+        json.dumps({"meta": meta, "frames": frames}, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    (out_dir / "per_turn_summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    (out_dir / "SUMMARY.txt").write_text(
+        render_summary_txt(summary, reproduce_cmd=reproduce_cmd, evidence_dir_name=out_dir.name),
+        encoding="utf-8",
+    )
+    return summary
