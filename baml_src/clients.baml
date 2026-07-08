@@ -20,3 +20,14 @@ client<llm> GCPReasoner {
     api_key env.GCP_API_KEY
   }
 }
+
+// Step 1c: cheap flash-tier Gemini for host-side session summarization.
+// Off the Opus-only Bedrock proxy; uses the GCP_API_KEY already in the bridge env.
+client<llm> GCPFlash {
+  provider google-ai
+  retry_policy Exponential
+  options {
+    model "gemini-3.5-flash"
+    api_key env.GCP_API_KEY
+  }
+}
