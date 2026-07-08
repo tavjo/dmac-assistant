@@ -220,10 +220,11 @@ def _agent_nextseek_url() -> str:
     server, an in-network DNS name) is passed through unchanged.
 
     FOOTGUN (root-caused 2026-06-11): with `DMAC_E2E_NS_URL` UNSET this falls back to
-    `.env`'s `NEXTSEEK_URL`, which is the dev server — if that is down (it was on
-    2026-06-11), every NS-route POST transport-fails and surfaces as
-    `ns_query_complete_with_error`, masquerading as a NExtSEEK pipeline failure. To
-    target the local stack, export `DMAC_E2E_NS_URL=http://localhost:8000`.
+    `.env`'s `NEXTSEEK_URL`, which is the dev server — if that target is unreachable
+    (it was down for maintenance through mid-June 2026; back up 2026-06-25, though it
+    may still need VPN from a given machine), every NS-route POST transport-fails and
+    surfaces as `ns_query_complete_with_error`, masquerading as a NExtSEEK pipeline
+    failure. To target the local stack, export `DMAC_E2E_NS_URL=http://localhost:8000`.
     `_check_ns_target_reachable` now fails the run fast and loud when the resolved
     target is unreachable instead of letting it look like a pipeline error.
     """
