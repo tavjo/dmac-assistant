@@ -1,5 +1,5 @@
 {
-  "fetched_at": "2026-04-23T15:51:35.942966+00:00",
+  "fetched_at": "2026-05-07T20:58:19.029933+00:00",
   "node_labels": [
     "Sample",
     "SampleType",
@@ -17,6 +17,7 @@
       "uuid",
       "type",
       "id",
+      "parent_title_hashes",
       "parent_titles",
       "Protocol",
       "Checksum_PrimaryData",
@@ -36,7 +37,68 @@
       "Media supplement ",
       "Catalog#",
       "Source",
-      "Link_Catalog#"
+      "Link_Catalog#",
+      "Software",
+      "Instrument",
+      "Detector",
+      "Mode",
+      "Ionization",
+      "Path_PrimaryData",
+      "Crystal",
+      "ConcentrationRange",
+      "Solvent",
+      "Link_QualityControlFile",
+      "MeasurementType",
+      "MeasurementWavelengthUnits",
+      "Plate_Vendor",
+      "Publish_uri",
+      "MeasurementWavelength",
+      "PlateDesign",
+      "Checksum_PrimaryType",
+      "SampleCreationDate",
+      "LocationType",
+      "GPSUnits",
+      "Description",
+      "GPS",
+      "Checksum_TertiaryType",
+      "Link_SecondaryData",
+      "Checksum_SecondaryType",
+      "Checksum_SecondaryData",
+      "Checksum_TertiaryData",
+      "Link_TertiaryData",
+      "File_TertiaryData",
+      "File_SecondaryData",
+      "SMILES",
+      "ProductNumber",
+      "CASNumber",
+      "ReferenceCompound",
+      "SpaceGroup",
+      "StorageTempMax",
+      "ConcUnits",
+      "TemperatureUnits",
+      "Reference",
+      "Formula",
+      "Manufacturer",
+      "VolumeUnits",
+      "Temperature",
+      "MDLNumber",
+      "Form",
+      "CrystalSystem",
+      "IUPAC Name",
+      "CrystalSize",
+      "StorageTempUnits",
+      "Lab",
+      "Volume",
+      "Lot#",
+      "Vendor",
+      "Concentration",
+      "StorageTempMin",
+      "RepositoryLink",
+      "Repository",
+      "AdditionalData_Link",
+      "AdditionalData",
+      "TrainingDatasets",
+      "ValidationDatasets"
     ],
     "SampleType": [
       "title",
@@ -101,10 +163,79 @@
       "Checksum_PrimaryData": [
         "String"
       ],
-      "Catalog#": [
+      "SampleCreationDate": [
         "String"
       ],
-      "Parent": [
+      "TrainingDatasets": [
+        "String"
+      ],
+      "SpaceGroup": [
+        "String"
+      ],
+      "VolumeUnits": [
+        "String"
+      ],
+      "Detector": [
+        "String"
+      ],
+      "SMILES": [
+        "String"
+      ],
+      "Instrument": [
+        "String"
+      ],
+      "MeasurementWavelengthUnits": [
+        "String"
+      ],
+      "Software": [
+        "String"
+      ],
+      "Publish_uri": [
+        "String"
+      ],
+      "GPSUnits": [
+        "String"
+      ],
+      "Form": [
+        "String"
+      ],
+      "CrystalSize": [
+        "String"
+      ],
+      "Lot#": [
+        "String"
+      ],
+      "Link_QualityControlFile": [
+        "String"
+      ],
+      "Description": [
+        "String"
+      ],
+      "StorageTempMin": [
+        "String"
+      ],
+      "Crystal": [
+        "String"
+      ],
+      "Checksum_SecondaryData": [
+        "String"
+      ],
+      "File_SecondaryData": [
+        "String"
+      ],
+      "Lab": [
+        "String"
+      ],
+      "ReferenceCompound": [
+        "String"
+      ],
+      "Concentration": [
+        "String"
+      ],
+      "MeasurementWavelength": [
+        "String"
+      ],
+      "Ionization": [
         "String"
       ],
       "Name": [
@@ -116,17 +247,74 @@
       "Scientist": [
         "String"
       ],
-      "UID": [
+      "Link_TertiaryData": [
         "String"
       ],
       "Protocol": [
         "String"
       ],
+      "LocationType": [
+        "String"
+      ],
       "Notes": [
         "String"
       ],
-      "File_PrimaryData": [
+      "Plate_Vendor": [
         "String"
+      ],
+      "CrystalSystem": [
+        "String"
+      ],
+      "TemperatureUnits": [
+        "String"
+      ],
+      "Source": [
+        "String"
+      ],
+      "Temperature": [
+        "String"
+      ],
+      "Volume": [
+        "String"
+      ],
+      "PlateDesign": [
+        "String"
+      ],
+      "ValidationDatasets": [
+        "String"
+      ],
+      "MediaSupplements": [
+        "String"
+      ],
+      "IUPAC Name": [
+        "String"
+      ],
+      "Solvent": [
+        "String"
+      ],
+      "Catalog#": [
+        "String"
+      ],
+      "MDLNumber": [
+        "String"
+      ],
+      "Checksum_SecondaryType": [
+        "String"
+      ],
+      "AdditionalData_Link": [
+        "String"
+      ],
+      "AdditionalData": [
+        "String"
+      ],
+      "GPS": [
+        "String"
+      ],
+      "Reference": [
+        "String"
+      ],
+      "parent_title_hashes": [
+        "StringArray"
       ],
       "parent_titles": [
         "StringArray"
@@ -134,13 +322,16 @@
       "Type": [
         "String"
       ],
-      "CultureFormat": [
+      "StorageTempUnits": [
+        "String"
+      ],
+      "Vendor": [
+        "String"
+      ],
+      "File_TertiaryData": [
         "String"
       ],
       "MediaBase": [
-        "String"
-      ],
-      "Source": [
         "String"
       ],
       "Link_PrimaryData": [
@@ -149,13 +340,70 @@
       "Media supplement ": [
         "String"
       ],
-      "Link_Catalog#": [
+      "Path_PrimaryData": [
         "String"
       ],
       "ExposureTime": [
         "String"
       ],
-      "MediaSupplements": [
+      "Mode": [
+        "String"
+      ],
+      "Checksum_PrimaryType": [
+        "String"
+      ],
+      "StorageTempMax": [
+        "String"
+      ],
+      "Checksum_TertiaryData": [
+        "String"
+      ],
+      "Link_SecondaryData": [
+        "String"
+      ],
+      "Parent": [
+        "String"
+      ],
+      "ConcUnits": [
+        "String"
+      ],
+      "Formula": [
+        "String"
+      ],
+      "MeasurementType": [
+        "String"
+      ],
+      "ProductNumber": [
+        "String"
+      ],
+      "UID": [
+        "String"
+      ],
+      "Manufacturer": [
+        "String"
+      ],
+      "ConcentrationRange": [
+        "String"
+      ],
+      "File_PrimaryData": [
+        "String"
+      ],
+      "Checksum_TertiaryType": [
+        "String"
+      ],
+      "CultureFormat": [
+        "String"
+      ],
+      "RepositoryLink": [
+        "String"
+      ],
+      "Repository": [
+        "String"
+      ],
+      "Link_Catalog#": [
+        "String"
+      ],
+      "CASNumber": [
         "String"
       ]
     }
@@ -168,7 +416,8 @@
       "child_id",
       "parent_id",
       "internal_assay_id",
-      "internal_assay_title"
+      "internal_assay_title",
+      "assay_id"
     ],
     "IN_STUDY": [],
     "IN_INVESTIGATION": []
@@ -184,14 +433,17 @@
       "parent_id": [
         "Long"
       ],
-      "protocol_id": [
-        "Long"
-      ],
-      "internal_assay_id": [
+      "assay_id": [
         "Long"
       ],
       "protocol_title": [
         "String"
+      ],
+      "internal_assay_id": [
+        "Long"
+      ],
+      "protocol_id": [
+        "Long"
       ]
     }
   },
@@ -235,7 +487,6 @@
       "Excision of mutagenic replication-blocking lesions suppresses cancer but promotes cytotoxicity and lethality in nitrosamine-exposed mice",
       "Fc-engineered antibodies leverage neutrophils to drive control of Mycobacterium tuberculosis",
       "Fc-engineered monoclonal antibodies drive antibody-dependent enhancement of Mycobacterium tuberculosis",
-      "GBM",
       "High-dose intravenous BCG vaccination induces enhanced immune signaling in the airways",
       "Human cartilage model of the precocious osteoarthritis-inducing COL2A1 p.R719C reveals pathology-driving matrix defects and a failure of the ER proteostasis network to recognize the defective procollagen-II",
       "Humoral correlates of protection against Mycobacterium tuberculosis following intravenous Bacille Calmette-Gu\u00e9rin vaccination in rhesus macaques",
@@ -273,7 +524,6 @@
       "Youth Dictates Susceptibility to DNA Damage-Induced Genotoxicity, Mutagenesis, and Tumorigenesis from N-Nitrosamine Exposure in Mice"
     ],
     "investigation_titles": [
-      "BreakThroughCancer",
       "CSBC",
       "Griffith",
       "Impact",
@@ -299,7 +549,6 @@
       "Chromatin Sequencing Analysis",
       "Comet Chip",
       "Comet Chip Analysis",
-      "Copy Number Variation Analysis",
       "Crystallography",
       "Cytokine Luminex - Data Linked",
       "DNA Extraction",
@@ -330,7 +579,6 @@
       "Immunohistochemistry",
       "Library Prep",
       "Library Prep - Metadata",
-      "Long Read Sequencing",
       "Luminex",
       "Luminex Analysis",
       "MVN Imaging Analysis - Data Linked",
@@ -355,7 +603,6 @@
       "Patient Visit",
       "Patient Visit - Metadata",
       "Proteomics Analysis - Data Linked",
-      "Proximity Extension Assay",
       "RNA Extraction",
       "RNA Extraction - Metadata",
       "RaDR - Data Linked",
@@ -367,8 +614,6 @@
       "Single Cell Clustering Analysis",
       "Single Cell Expression Matrix Analysis",
       "Single Cell Sequencing",
-      "Spatial Proteomics",
-      "Spatial Transcriptomics Analysis",
       "Spectroscopy",
       "Spectroscopy Analysis",
       "SureQuant Analysis",
