@@ -36,26 +36,80 @@ uploads) neither carries nor gates on it. §9 step 7 corrected to drop "+ `updat
 The new-sample-row rule refuses a blank non-UID required attribute (no unverifiable "explicit-blank"
 exception; optional attributes may be blank).
 
-**Revision R5 (2026-07-01, owner-directed + verified live):** assay resolution is a **2-call
-project-scoped title↔id map** (`GET /projects/{id}/` + `GET /assays/`), superseding the R2 per-assay
-`GET /assays/{id}/` fetches (§7.6). **Assay updates are SET/REPLACE** (server `smart_merge_assay_assets`
-deletes omitted assays), so update rows must **carry forward the sample's current assay set ∪
-additions** (§7.10); current assays come from the `advanced_search` `assays` titles field (§12). A
-blank `assay_ids` on an update **wipes** all the sample's assays, so the gate guards it (§10).
+**Revision R5 (2026-07-01, owner-directed + verified live; assay-resolution mechanics superseded by
+R8):** assay resolution uses **ONE accessible-assays `title → [IDs]` map from `GET /assays/`** with
+**`GET /projects/{id}/` as the collision tie-break set** (see R8 and §7.6), superseding the R2
+per-assay `GET /assays/{id}/` fetches (§7.6). **Assay updates are SET/REPLACE** (server
+`smart_merge_assay_assets` deletes omitted assays), so update rows must **carry forward the sample's
+current assay set ∪ additions** (§7.10); current assays come from the `advanced_search` `assays`
+titles field (§12). A blank `assay_ids` on an update **wipes** all the sample's assays, so the gate
+guards it (§10).
 
-**Revision R6 (2026-07-01, from re-vet):** the §10 assay guard upgraded from "blank → refuse" to
-**"delivered `assay_ids` ⊇ the verified current set → else refuse"** (per-UID current-assay
-manifest, §7.10) — catches an incomplete non-blank set (under-retrieval / comma-split / unresolved
-title), not just a blank one. Current-assay preservation resolves against the **FULL `/assays/`
-map** (not project-scoped); `assays` titles are parsed by **longest-match** (comma-safe);
+**Revision R6 (2026-07-01, from re-vet; assay-map mechanics superseded by R8; guarantee-scope
+corrected 2026-07-02):** the §10 assay guard upgraded from "blank → refuse" to
+**"delivered `assay_ids` ⊇ the resolved current set → else refuse"** (per-UID current-assay manifest,
+§7.10). **Scope of the guarantee (corrected):** the ⊇ check catches a delivered set that is
+**incomplete relative to the RESOLVED current set** — a payload-builder under-population, a comma-split
+error, or an unresolved title (all of which make the delivered set diverge from the manifest). It does
+**NOT** catch a shared under-count where the retrieved `assays` TITLE string itself omits a genuine
+current assay (GROUP_CONCAT truncation, or a current assay whose title is absent from the accessible
+`/assays/` map): the manifest-current set and the delivered set both derive from the SAME `resolve()`
+over the SAME title string, so the ⊇ check is structurally blind to a shortfall common to both. That
+residual is covered by (i) a runtime **fail-closed truncation guard** (§10 — refuse any assay-touching
+row whose raw `assays` string length is within a safety margin of the GROUP_CONCAT ceiling) and (ii)
+the pre-merge live-fidelity confirmation (§14) that positively checks
+`resolve(assays) == the sample's authoritative DB assay-link ID set` for a duplicate-title sample. The
+guard is **not** a claim of DB-link-set completeness. Current-assay preservation resolves against the
+**ONE accessible-assays `title → [IDs]` map from `GET /assays/`** with `GET /projects/{id}/` as the
+collision tie-break (R8 and §7.10); `assays` titles are parsed by **longest-match** (comma-safe);
 metadata-only updates also carry forward the current set.
 
 **Revision R7 (2026-07-01, from re-vet):** the §10 assay guard **fails closed on manifest
 incompleteness** (a missing/empty/degraded per-UID current-assay entry REFUSES before the ⊇ check —
 `⊇ ∅` is vacuous); retrieve-failure fatality broadened to **any update row** (metadata-only
 included), a null `assays` field is a retrieve failure not a zero-assay sample; `--confirm-clear-assays`
-is **per-UID scoped** (never a global disable) and must be tested. Current-assay preservation uses
-the FULL `/assays/` map (a T2/DD-04 citation of the project-scoped map was a bug, corrected).
+is **per-UID scoped** (never a global disable) and must be tested. Current-assay preservation uses the
+**ONE accessible-assays `title → [IDs]` map from `GET /assays/`** with `GET /projects/{id}/` as the
+collision tie-break (clarified/superseded in R8; the earlier "FULL `/assays/` map vs project-scoped
+map" framing is retired).
+
+**Revision R8 (2026-07-01, owner-confirmed + live-verified on nextseek-dev.mit.edu; propagated from
+the build plan's assay-model correction, NOT a new design choice):** the assay-resolution model is
+**ONE accessible-assays `title → [IDs]` map from `GET /assays/`** (list items are
+`{id, type:"assays", attributes:{title}, links}` only, with **NO project/study id**, verified live)
+that resolves **BOTH** the curator's NEW-addition titles **AND** each sample's CURRENT assay titles
+(from the `advanced_search` `assays` string, §12). Assay titles are **NOT unique across studies within
+a project** (verified live: 48 duplicate titles on dev, e.g. "Comet Chip Analysis - Data Attached" →
+assay 351 [study 34] + 260 [study 36], both project 1), so a title may map to MULTIPLE IDs.
+**`GET /projects/{id}/` (`relationships.assays.data[].id`) is the collision TIE-BREAK set**, applied
+ONLY when a title maps to >1 ID. A **NEW-addition** title still ambiguous (0 or >1 candidates) after
+the tie-break **FAILS CLOSED** (ask/refuse; the reverse map does not apply because the new assay is
+not yet linked to the sample). A **CURRENT** (carry-forward) title still ambiguous instead triggers a
+**two-path TARGETED reverse-map fallback**: **Path 1** resolves via the map + tie-break and collects
+the ambiguous titles together with their candidate IDs; **Path 2** (only on ambiguity) fetches the
+samples relationship (`GET /assays/{id}/` → `relationships.samples.data[]`) for **ONLY** the ambiguous
+candidate IDs (deduped across ambiguous titles; **NEVER** all project assays, **NEVER** per-sample) and
+keeps the candidate ID(s) whose sample list **contains** the sample (present in more than one means the
+sample genuinely has both, carry both forward). Fail-closed for a current title is the last resort
+only: a retrieve failure, a candidate samples-list that cannot be fetched, or the sample in none of its
+candidate lists. This **supersedes** the R5 "2-call project-scoped title↔id map" and the R6/R7 "FULL
+`/assays/` map" framing (the old "project-scoped map vs FULL map" split no longer exists). Publishing
+creates new official assays under a new study, so the same title now maps to >1 SAME-project ID and the
+project tie-break cannot disambiguate; Path 2's samples-list membership is what recovers the sample's
+actual current assay (general/comprehensive published-study duplication handling is DEFERRED to V2).
+**Scaling invariant (absolute):** NO per-sample/per-UID API call anywhere in the production resolution
+path; `GET /samples/{uid}/` is FORBIDDEN in every non-T9.5 code path; total assay-resolution cost is
+`GET /assays/` (paginated once) + `GET /projects/{id}/`
+(once) + Path 2's per-ambiguous-candidate-ID samples fetches (ONLY on ambiguity, ONLY the ambiguous
+candidate IDs) = O(1) in the number of samples. §7.6, §7.10, §8, §9 (steps 4–5), and §12 below are
+written to this model.
+**Owner-approved carve-out (2026-07-02), T9.5 keystone probe ONLY:** the pre-merge live-fidelity probe
+(§12 / build-plan T9.5) MAY call `GET /samples/{uid}/` → `relationships.assays.data[]` for the SINGLE
+probed sample to obtain the authoritative DB assay-link set as an INDEPENDENT source of truth (without it
+the probe's `resolve(titles) == DB-link-set` assert is a tautology). This is a one-shot, O(1),
+owner-gated, pre-merge read on ONE sample, NOT the production resolver, which stays bulk `advanced_search`
+only. The absolute invariant above is otherwise unchanged: `GET /samples/{uid}/` remains FORBIDDEN in
+every path except this single keystone probe.
 
 ## 0. Provenance — where the requirements come from
 
@@ -71,8 +125,9 @@ This spec is grounded only in primary sources, not paraphrase:
   curation skill."*
 - The owner's **decisions this session** (brainstorming dialogue, 2026-06-30), recorded in §2–§7.
 - The **live OpenAPI spec** pulled from the running stack (`GET /nextseek_api/schema/?format=yaml`).
-- The **NExtSEEK batch-upload server code** (integration worktree
-  `work/BMC/nextseek-worktrees/dmac-integration/nextseek_api/batch_upload/`).
+- The **NExtSEEK batch-upload server code**
+  `work/BMC/NExtSEEK/nextseek_api/batch_upload/` (the live dev spec remains authoritative for
+  contract questions per the standing memory; the on-disk tree is corroborating only).
 - The **canonical curation model docs** named by BMC `CLAUDE.md` "Required reading before any
   curation work": `DMAC_docs/assay_association_model.md`, `curation_conceptual_flow.md`,
   `curation_operational_flow.md`, and the realized LinVo flat example
@@ -169,7 +224,7 @@ From `DMAC_docs/assay_association_model.md` (canonical):
   uniform-per-type** (uniform assignment fabricates provenance).
 
 **The skill's relationship to this model:** it builds each row's `assay_ids` from the assay
-**titles the curator supplies for that row** (resolved to study-scoped IDs, §6/§9). It trusts the
+**titles the curator supplies for that row** (resolved to assay IDs via the §7.6/§9 map). It trusts the
 curator's per-instance associations and does **not** compute the union or enforce the
 both-endpoints rule (boundary B-1, §1).
 
@@ -214,7 +269,7 @@ re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.writ
   in the list of UIDs as the filter search text.")*
 - **§7.2 Missing values:** **ask the curator, then hard-gate (create-vs-update aware, §10).** After
   fetching the attribute schema, the model identifies the **non-UID** `required` attributes it has no
-  value for and asks the curator (or for explicit-blank confirmation) before building; a
+  value for and asks the curator before building; a
   deterministic gate then refuses any empty sheet, any create row missing a non-UID required
   attribute, and any update row with a present-but-blank attribute. `UID` is blank by design on
   create; omitted attributes on an update are server-preserved (not required). *(Owner-confirmed;
@@ -231,14 +286,21 @@ re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.writ
   (§7.6). *(Owner directive, revised 2026-06-30: "ask user directly for project name... model does
   lookup first to pull all projects user has access to, asks the user to confirm which one should be
   used to filter assays by.")*
-- **§7.6 Assays (R5, verified live):** resolve assay titles ↔ IDs via a **project-scoped map built
-  from 2 GET calls** — `GET /projects/{id}/` (`relationships.assays.data[].id` = the project's assay
-  IDs) + `GET /assays/` (`{id, title}` for all accessible assays) — keeping only the project's
-  assays. This **supersedes** the per-assay `GET /assays/{id}/` study-disambiguation (N calls → 2
-  calls, scales). The same map converts (a) the curator's provided assay titles → IDs and (b) each
-  sample's CURRENT assay titles (from `advanced_search`, §12) → IDs. *(Owner directive: query
-  `GET /projects/{id}/` for the project's assay IDs + one `GET /assays/` for the id:title map;
-  advanced_search returns assay associations as titles.)*
+- **§7.6 Assays (R5/R8, verified live):** resolve assay titles ↔ IDs via **ONE accessible-assays
+  `title → [IDs]` map from `GET /assays/`** (`{id, title}` for all accessible assays; list items carry
+  **NO project/study id**), with **`GET /projects/{id}/`** (`relationships.assays.data[].id` = the
+  confirmed project's assay IDs) as the **collision TIE-BREAK** set applied ONLY when a title maps to
+  >1 ID. This **supersedes** the per-assay `GET /assays/{id}/` study-disambiguation (N calls → O(1),
+  scales). The one map resolves (a) the curator's NEW-addition assay titles → IDs (still ambiguous
+  after the tie-break, i.e. 0 or >1 candidates → **FAIL CLOSED**, ask/refuse) and (b) each sample's
+  CURRENT assay titles (from `advanced_search`, §12) → IDs, where residual ambiguity instead triggers
+  the two-path targeted reverse-map fallback (§7.10, R8): **Path 2** fetches `GET /assays/{id}/` →
+  `relationships.samples.data[]` for ONLY the ambiguous candidate IDs and resolves by samples-list
+  membership. **NO per-sample `GET /samples/{uid}/` call** in this production resolution path (O(N),
+  forbidden; the single T9.5 keystone-probe carve-out noted under the Scaling invariant above is the sole
+  exception, and is not part of Path 2). *(Owner directive,
+  corrected R8: one `GET /assays/` map + `GET /projects/{id}/` tie-break; advanced_search returns
+  assay associations as titles.)*
 - **§7.7 Output:** flat `InputRowModel` sheet (not the 4-sheet workbook). *(Owner-confirmed
   rethink of the earlier Q-101 default.)*
 - **§7.8 Divergence handling:** `json_metadata` authoritative; materialized columns review-only;
@@ -257,9 +319,26 @@ re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.writ
   `assay_ids`) are **in V1 scope**. **Deterministic safety (R6):** during build the skill persists a
   per-UID **current-assay manifest** (a gate-readable sidecar, NOT shipped in the sheet); the §10
   superset-guard verifies the delivered `assay_ids ⊇ manifest-current` (unless a per-UID clear
-  opt-in). **Preservation resolves current titles→IDs against the FULL `GET /assays/` id↔title map,
-  not the project-scoped one** (a sample may already carry an assay outside the project's list; keep
-  what it has; the project-scoped map is only for the curator's NEW additions, §7.6). **Comma-in-title:**
+  opt-in). **The ⊇ guarantee is scoped to resolution-completeness relative to the retrieved titles,
+  NOT to DB-link truth** (R6): manifest-current and delivered `assay_ids` derive from the same
+  `resolve()` over the same `assays` string, so the ⊇ check is blind to a shortfall common to both
+  (a title the string omits via GROUP_CONCAT truncation or an out-of-map title). That residual is
+  covered by a **runtime fail-closed truncation guard** — refuse any assay-touching row whose raw
+  `assays` string length is within a safety margin of the GROUP_CONCAT ceiling (observed dev max = 387
+  chars / 9 titles vs a ~1024 ceiling; refuse at >= 900 chars) — plus the §14 pre-merge live-fidelity
+  confirmation. **Carry-both-forward (materialization rule):** when a single CURRENT title resolves to
+  MULTIPLE same-project IDs (the sample is in more than one candidate's sample list, e.g.
+  "Comet Chip Analysis - Data Attached" → {351, 260}), the row carries `assay_ids=[351,260]` AND a
+  PARALLEL `assay_titles` list (the title materialized **once per resolved ID**, so
+  `len(assay_titles) == len(assay_ids)` always holds and the server's length-consistency validator
+  `models.py` does not reject a legitimate multi-membership update). **Preservation resolves each
+  sample's current titles→IDs through the SAME ONE
+  accessible-assays `title → [IDs]` map (§7.6/R8); on a same-project duplicate title the project
+  tie-break cannot disambiguate, so the two-path targeted reverse-map fallback resolves it: Path 2
+  fetches `GET /assays/{id}/` → `relationships.samples.data[]` for ONLY the ambiguous candidate IDs
+  and keeps the candidate whose sample list contains the sample (NEVER all project assays, NEVER
+  per-sample); a current title still unresolvable after Path 2 fails closed (§10/§11).**
+  **Comma-in-title:**
   parse the `assays` titles by **longest-match membership** against the known assay title set, not
   `str.split(",")`; fail closed (refuse/ask) on an unresolvable token. **A metadata-only update
   still carries the current assay set forward** (the server diffs assays on every update row).
@@ -268,13 +347,18 @@ re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.writ
 ## 8. Components (and what changes vs. the broken build)
 
 - **`_batch_upload_client.py`** — read-only HTTP client (HTTP Basic via `NEXTSEEK_USERNAME`/
-  `NEXTSEEK_PASSWORD`; **`orjson` for all parse/serialize**, not stdlib `json`). Methods:
+  `NEXTSEEK_PASSWORD`, falling back to the legacy `API_USER`/`API_PASS` only when the NEXTSEEK_* pair
+  is unset — owner-decided precedence 2026-07-02, both pairs set in the container env today;
+  **`orjson` for all parse/serialize**, not stdlib `json`). Methods:
   `list_projects()` (`GET /projects/`, returns `{id, title}` per project);
-  `project_assays(id)` (`GET /projects/{id}/`, `relationships.assays.data[].id` = the project's
-  assay IDs); `current_person()` (`GET /people/current/`);
+  `project_assays(id)` (`GET /projects/{id}/`, `relationships.assays.data[].id` = the confirmed
+  project's assay IDs, the collision TIE-BREAK set); `current_person()` (`GET /people/current/`);
   `sample_type_attributes(uid)` (`GET /sample_types/{uid}/`, full attribute objects);
-  `list_assays()` (`GET /assays/`, `{id, title}`) — combined with `project_assays` into the
-  **project-scoped title↔id map** (§7.6; **replaces** the per-assay `assay_study` single-fetch);
+  `list_assays()` (`GET /assays/`, `{id, title}`, list items carry NO project/study id) — builds the
+  **ONE accessible-assays `title → [IDs]` map** (§7.6/R8; **replaces** the per-assay `assay_study`
+  single-fetch); `assay_samples(candidate_ids)` (`GET /assays/{id}/` → `relationships.samples.data[]`,
+  the **Path-2** reverse-map, called ONLY with ambiguous current-title candidate IDs, never all project
+  assays, never per-sample, to resolve a current title by samples-list membership, §7.10/R8);
   **`search_samples_by_uid(uids)` (new): `POST /samples/advanced_search/` with
   `{filter_searchText: uids, searchText_logic: "OR", filter_matchType: "EXACT"}` (no `attribute`),
   paged at `page_size <= 1000`, client-side filtered by `json_metadata.UID`; returns per sample the
@@ -309,16 +393,17 @@ re-materializes the columns.** Excel writing uses `xlsxwriter` (via `polars.writ
 3. **Fetch the exact attribute schema** per sample type: `GET /sample_types/{uid}/` → full attribute
    objects (`title`, `required`, `is_title`, `base_type`). Persist the **structured** objects (not
    titles-only).
-4. **Build the project-scoped assay title↔id map (R5):** `GET /projects/{id}/`
-   (`relationships.assays.data[].id`) + `GET /assays/` (`{id, title}`), keep only the project's
-   assays → a `{title: id}` (and `{id: title}`) map. Resolve the curator's assay titles → IDs via
-   this map; never guess an `assay_id`. (2 GET calls; supersedes per-assay fetches.)
+4. **Build the ONE accessible-assays `title → [IDs]` map (R5/R8):** `GET /assays/` (`{id, title}`, NO
+   project/study id) → a `title → [IDs]` map; `GET /projects/{id}/` (`relationships.assays.data[].id`)
+   is the collision TIE-BREAK set applied only when a title maps to >1 ID. Resolve the curator's
+   NEW-addition assay titles → IDs via this map (still ambiguous after the tie-break → ask/refuse, fail
+   closed); never guess an `assay_id`. (O(1) calls; supersedes per-assay fetches.)
 5. **For updates, retrieve existing state (read-only):** call `search_samples_by_uid()`
    (advanced_search by the UID list, §8), client-side filtered to the requested UIDs. Two uses:
    (a) **visibility** — show current attribute values + the resulting overlay; (b) **assay
-   carry-forward (LOAD-BEARING, §7.10)** — each row's `assays` titles → IDs (via the §7.6 map) are
-   the sample's current assay set, which the update row must carry forward (∪ additions) or the
-   server WIPES it. For (a) `json_metadata` is partial-safe so a retrieve failure is non-fatal
+   carry-forward (LOAD-BEARING, §7.10)** — each row's `assays` titles → IDs (via the §7.6 map, with the
+   Path-2 reverse-map fallback for same-project duplicate titles, R8) are the sample's current assay
+   set, which the update row must carry forward (∪ additions) or the server WIPES it. For (a) `json_metadata` is partial-safe so a retrieve failure is non-fatal
    (§11); for (b) a retrieve failure means the skill must NOT emit a blank-assay update (it would
    wipe) — refuse or ask (§10/§11).
 6. **Populate values** from the curator's info into the **exact DB attribute names** (the only keys
@@ -362,11 +447,18 @@ parameter, not a sheet field, so it is not part of this gate:
   per-UID current-assay manifest MUST have a **fresh, retrieve-verified entry**; a missing, empty
   (unless the retrieve *positively confirmed* zero assays), or retrieve-degraded entry **FAILS CLOSED
   (REFUSE) BEFORE the superset check** — because `delivered ⊇ ∅` is vacuously true, so
-  manifest-completeness is verified first. Given a verified entry, the delivered `assay_ids` must be
-  a **superset of the manifest-current set**, else REFUSE (the server SET/REPLACE deletes the
-  missing ones). The only shrink path is an explicit **per-UID** `--confirm-clear-assays <UID…>`
-  opt-in (no default; scoped to the named UIDs, never a global guard-disable). This catches a blank
-  OR incomplete set AND a soft retrieve gap, **and**
+  manifest-completeness is verified first. **Truncation guard (fail-closed, before the superset
+  check):** refuse any assay-touching row whose raw `assays` title string length is within a safety
+  margin of the GROUP_CONCAT ceiling (concrete conservative threshold: refuse at raw length
+  >= 900 chars; observed dev max = 387 chars / 9 titles vs a ~1024 ceiling), because a truncated title
+  string silently under-resolves the current set and the ⊇ check cannot see it. Given a verified,
+  non-truncated entry, the delivered `assay_ids` must be a **superset of the manifest-current set**,
+  else REFUSE (the server SET/REPLACE deletes the missing ones). The only shrink path is an explicit
+  **per-UID** `--confirm-clear-assays <UID…>` opt-in (no default; scoped to the named UIDs, never a
+  global guard-disable). This catches a blank OR delivered-vs-resolved-incomplete set AND a soft
+  retrieve gap AND a truncation-suspect row; it does NOT catch a title genuinely absent from the
+  retrieved string below the truncation threshold (a documented low-likelihood residual on the dev
+  evidence, covered by the §14 pre-merge live-fidelity confirmation), **and**
 - `totals.processed == produced row count`, **and**
 - `checks_run` contains `structure`, `name_check`, `dag`.
 
@@ -394,8 +486,9 @@ STOP and report on failure. The guarantee lives in the skill, not only in a test
 
 ## 12. API contract (verified against the deployed dev OpenAPI spec, 2026-06-30)
 
-All calls use **HTTP Basic** (`NEXTSEEK_USERNAME`/`NEXTSEEK_PASSWORD`), the only scheme accepted
-across every endpoint in this flow. Parse/serialize with **`orjson`**.
+All calls use **HTTP Basic** (`NEXTSEEK_USERNAME`/`NEXTSEEK_PASSWORD`, with `API_USER`/`API_PASS` as
+the legacy fallback when the NEXTSEEK_* pair is unset — owner-decided precedence 2026-07-02), the only
+scheme accepted across every endpoint in this flow. Parse/serialize with **`orjson`**.
 
 - `POST /nextseek_api/batch-upload/validate/` — synchronous, **side-effect-free** (runs TRANSFORM,
   stops before INSERT). Two input modes: `application/json` body `BatchUploadStartRequest` (`rows[]`)
@@ -417,10 +510,22 @@ across every endpoint in this flow. Parse/serialize with **`orjson`**.
   (default 100, max 1000). Response `SampleAdvancedSearchResult` `{total, rows[]}`; each
   `SampleAdvancedSearchRow` (additionalProperties; real fields verified live) carries `json_metadata`
   (the full attribute object — use it, **not** the HTML `attributeValue`/`uid`/`idlink` fields);
-  `title` and `uuid` = the clean UID string (also `json_metadata.UID`); and **`assays` = a
+  `title` and `uuid` = the clean UID string (also `json_metadata.UID`); a **top-level numeric SEEK
+  `id`** = the sample's numeric SEEK row id, DISTINCT from the `json_metadata.UID`/`uuid`/`title` UID
+  strings, used as the Path-2 samples-list membership JOIN KEY (build-plan DD-13). *(VERIFIED live
+  against nextseek-dev 2026-07-02 — evidence
+  `evidence/batch-upload-path2-probe/20260702/advanced_search_row_shape.json`: the row for
+  `D.IMG-230913ENG-1757-PUB` carried top-level `id`=324503. It is an **INT**, whereas the assay
+  `relationships.samples.data[].id` values are **STRINGS** (JSON:API resource ids), so the Path-2
+  membership join MUST normalize both sides to the same type (`str==str` or int==int), NEVER `int==str`
+  — an `int == str` compare is always False, so the sample matches no candidate and the SET/REPLACE
+  update silently wipes the sample's assays (build-plan DD-13 / T1 / T3 gate). Owner-resolved
+  2026-07-02; W0 re-captures it as a belt-and-suspenders build-time confirmation against the
+  then-current data.)* And **`assays` = a
   COMMA-SEPARATED STRING of the sample's current assay TITLES** (e.g. `"Tissue Collection -
   Metadata,Flow Cytometry - Data Linked"`) — the assay carry-forward source (§7.10), resolved to IDs
-  via the §7.6 project-scoped map. Client-side filter rows to `json_metadata.UID` in the requested
+  via the §7.6/R8 one accessible-assays map (with the Path-2 reverse-map fallback for same-project
+  duplicate titles). Client-side filter rows to `json_metadata.UID` in the requested
   set (an EXACT free-text UID can also hit a sample referencing it as `Parent`). *Robustness: if a
   project assay title can contain a comma, match tokens against the known project title set rather
   than a naive split (verify at build time).* *Verified live on dev 2026-06-30.*
@@ -431,12 +536,14 @@ across every endpoint in this flow. Parse/serialize with **`orjson`**.
   `Date`), and `sample_controlled_vocab_id` (null = free-text). *(Verified live: TIS has 90
   attributes; `Parent` is `sample_attributes[5]`, required=false, Text.)*
 - `GET /nextseek_api/projects/` (list, `{id, title}`) and `GET /nextseek_api/assays/` (list, all
-  accessible assays as `{id, title}` — 324 on dev). **Assay resolution (R5) uses `GET /projects/{id}/`
-  → `relationships.assays.data[].id`** (the project's assay IDs) joined with the `/assays/` id↔title
-  list into the project-scoped title↔id map — **NOT** a per-assay `GET /assays/{id}/` fetch
-  (superseded, §7.6). `GET /projects/{id}/` `relationships` also exposes `studies`, but the R5 flow
-  scopes by the project's assays, not by study. `GET /nextseek_api/people/current/` — the logged-in
-  person (`data.id` = caller's SEEK person id).
+  accessible assays as `{id, title}` — 324 on dev; list items carry NO project/study id). **Assay
+  resolution (R5/R8) builds ONE `title → [IDs]` map from `GET /assays/`** and uses
+  **`GET /projects/{id}/` → `relationships.assays.data[].id`** (the confirmed project's assay IDs) only
+  as the collision **TIE-BREAK** set — **NOT** a per-assay `GET /assays/{id}/` fetch for resolution
+  (superseded, §7.6). For a CURRENT title left ambiguous after the tie-break, **Path 2** fetches
+  `GET /assays/{id}/` → `relationships.samples.data[]` for ONLY the ambiguous candidate IDs (never all
+  project assays, never per-sample) and resolves by samples-list membership (§7.10/R8).
+  `GET /nextseek_api/people/current/` — the logged-in person (`data.id` = caller's SEEK person id).
 - `InputRowModel` required fields: `SampleType`, **`json_metadata` (a required JSON STRING**, built
   with `orjson.dumps(...).decode()`). Present-but-optional: `UID`, `assay_ids`, `assay_titles`,
   `project_id`. `additionalProperties: true` (materialized review columns ride alongside and are
@@ -462,6 +569,14 @@ token literals). Gemini/BAML cost is captured honestly or flagged, never fabrica
 - **Unit coverage** of: project/assay resolution, attribute-schema fetch + structured persistence,
   flat-sheet build + materialized columns + `json_metadata` authority, the hard gate, the
   create-vs-update UID/`update_existing` logic.
+- **REQUIRED pre-merge live-fidelity confirmation ($0, read-only, owner-gated; not the paid live
+  E2E):** a read-only `advanced_search` + authoritative-assay-link probe of a **duplicate-title**
+  sample (e.g. `D.IMG-230913ENG-1757-PUB` / "Comet Chip Analysis - Data Attached" → {351, 260})
+  positively confirms `resolve(advanced_search.assays) == the sample's authoritative DB assay-link ID
+  set` and that the committed fixture's `assays` parse matches live; it persists an evidence artifact
+  and exits non-zero on mismatch, and **merge is gated on it** (it is the backstop for the assay
+  under-resolution residual R6/§7.10 documents, since the paid live E2E is held indefinitely). This is
+  a mechanized gate, not a prose obligation (the build plan owns it as a numbered task).
 - **Live E2E via the bridge stays halted.** When the owner authorizes it: the bridge relays and the
   harness records **exact** Bedrock/Gemini cost from `result.usage`/`total_cost_usd`; the run
   exercises the **real** validate endpoint against the dev/local stack with real attribute schemas.
