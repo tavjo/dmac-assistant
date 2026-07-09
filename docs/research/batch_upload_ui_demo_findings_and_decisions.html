@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<!--
+  scout — standalone discovery findings + MCQ decision report TEMPLATE.
+
+  HOW TO USE:
+    1. Copy this file to docs/research/<slug>_findings_and_decisions.html
+    2. Fill REPORT_META, QUESTIONS[], and EVIDENCE{} (bottom script block) — they drive the MCQs + export.
+    3. Replace each <h2> section's placeholder content with real, evidence-grounded findings.
+    4. Keep the <style> and the render()/buildDecision()/doExport() JS intact (the reusable engine).
+    5. Open in a browser with the network OFF, confirm it renders, click Export, confirm valid JSON.
+
+  CONSTRAINTS: no external JS/CSS/fonts/images/network; light background; renders from file://.
+  Confidence labels used throughout: OFFICIAL / SEMI-OFFICIAL / LOCAL-FIXTURE / INFERENCE.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Batch-Upload Skill — Chat-UI Demo Dry Run — Findings &amp; Decisions</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --panel:#ffffff; --ink:#1d2433; --muted:#5b6577; --line:#e2e6ee;
+    --accent:#2d5bd7; --accent-soft:#eaf0ff; --ok:#1f8a4c; --warn:#b6791f; --bad:#c23b3b;
+    --code:#f0f2f7; --rec:#0f7a44;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto;padding:28px 22px 90px}
+  header.top{border-bottom:2px solid var(--line);padding-bottom:18px;margin-bottom:8px}
+  h1{font-size:25px;margin:0 0 4px}
+  h2{font-size:20px;margin:34px 0 10px;padding-top:10px;border-top:1px solid var(--line)}
+  h3{font-size:16px;margin:20px 0 6px}
+  .sub{color:var(--muted);font-size:13.5px}
+  p{margin:8px 0}
+  code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:13px}
+  pre{background:var(--code);padding:12px 14px;border-radius:8px;overflow:auto;font-size:12.5px;border:1px solid var(--line)}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:var(--accent-soft)}
+  .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.02em;padding:2px 8px;border-radius:999px;color:#fff}
+  .t-blk{background:var(--bad)} .t-later{background:var(--warn)} .t-def{background:var(--ok)}
+  .pill{display:inline-block;font-size:11px;padding:1px 7px;border-radius:5px;background:var(--accent-soft);color:var(--accent);font-weight:600}
+  .callout{background:var(--accent-soft);border:1px solid #cdd9f7;border-left:4px solid var(--accent);padding:10px 14px;border-radius:8px;margin:12px 0}
+  .nav{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin:14px 0;font-size:13.5px;columns:2;column-gap:28px}
+  .nav a{color:var(--accent);text-decoration:none} .nav a:hover{text-decoration:underline}
+  .q{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:16px 0;box-shadow:0 1px 2px rgba(20,30,60,.04)}
+  .q h3{margin-top:0;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .q .qid{font-family:ui-monospace,monospace;background:var(--ink);color:#fff;padding:2px 8px;border-radius:6px;font-size:12.5px}
+  .q .meta{font-size:13px;color:var(--muted);margin:4px 0}
+  .q .meta b{color:var(--ink)}
+  .opt{display:block;border:1px solid var(--line);border-radius:8px;padding:9px 12px;margin:7px 0;cursor:pointer;transition:.08s}
+  .opt:hover{border-color:var(--accent);background:#fafbff}
+  .opt input{margin-right:9px}
+  .opt .lab{font-weight:600}
+  .opt .cons{display:block;color:var(--muted);font-size:12.5px;margin-top:3px;margin-left:23px}
+  .opt.isrec{border-color:#bfe6cf;background:#f3fbf6}
+  .recbadge{color:var(--rec);font-weight:700;font-size:11.5px;margin-left:6px}
+  .cmt{width:100%;margin-top:8px;border:1px solid var(--line);border-radius:8px;padding:8px;font-family:inherit;font-size:13px;resize:vertical}
+  .writein{width:100%;margin-top:6px;border:1px solid var(--line);border-radius:8px;padding:7px;font-size:13px;display:none}
+  .affect{font-size:12.5px;color:var(--muted);margin-top:8px;border-top:1px dashed var(--line);padding-top:7px}
+  .bar{position:sticky;bottom:0;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin-top:22px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;box-shadow:0 -2px 12px rgba(20,30,60,.06)}
+  button{font:inherit;font-weight:600;border:1px solid var(--accent);background:var(--accent);color:#fff;padding:9px 16px;border-radius:8px;cursor:pointer}
+  button.ghost{background:#fff;color:var(--accent)}
+  button:hover{filter:brightness(1.05)}
+  #status{font-size:13px;color:var(--muted)}
+  #preview{margin-top:10px;max-height:340px}
+  .src-official{color:var(--ok);font-weight:700}
+  .src-semi{color:var(--warn);font-weight:700}
+  .src-local{color:var(--accent);font-weight:700}
+  .src-inf{color:#86509a;font-weight:700}
+  .small{font-size:12.5px;color:var(--muted)}
+  .legend span{margin-right:14px;font-size:12.5px}
+  footer{margin-top:40px;border-top:1px solid var(--line);padding-top:14px;color:var(--muted);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <h1>Batch-Upload Skill — Chat-UI Demo Dry Run</h1>
+  <div class="sub">
+    Research date: <b>2026-07-09</b> · Question set version <b>1.0</b> · Round 1 ·
+    Standalone (no network/JS/CSS dependencies).<br>
+    Inputs: the batch-upload <code>SKILL.md</code> + its 6 shims and runner; the bridge
+    (<code>app.py</code>, <code>auth.py</code>, <code>ws.py</code>, <code>containers.py</code>,
+    <code>copier.py</code>, <code>config.py</code>, <code>static/index.html</code>);
+    <code>baml_src/router.baml</code>; both compose files; 6 paid evidence bundles under
+    <code>evidence/batch-upload-e2e/</code>; the superseded <code>e2e-local</code> records;
+    <code>.claude/reports/2026-05-28-dropbox-publish-path-redesign-decisions.md</code>;
+    prior vetting findings; all four <code>.env*</code> files and
+    <code>git log --all -S'DMAC_OUTPUT_ROOT'</code>; the Dropbox
+    <code>example-project</code> tree; live Docker state; and a read-only probe of the
+    <b>nextseek-dev</b> OpenAPI schema + <code>samples/advanced_search</code>
+    (11,712 TIS samples, 25 scientists).<br>
+    <b>4 open decisions: 3 blockers, 1 defaultable.</b> Nothing here requires a code change.
+  </div>
+</header>
+
+<div class="legend callout" style="background:#fff;border-left-color:#999">
+  <b>Confidence legend (used throughout):</b><br>
+  <span class="src-official">OFFICIAL</span> vendor / standard documentation &nbsp;·&nbsp;
+  <span class="src-semi">SEMI-OFFICIAL</span> vendor source repo / wiki / issue &nbsp;·&nbsp;
+  <span class="src-local">LOCAL-FIXTURE</span> validated against on-disk files here &nbsp;·&nbsp;
+  <span class="src-inf">INFERENCE</span> reasoned, not directly proven.
+</div>
+
+<nav class="nav">
+  <a href="#s1">1. Executive summary</a><br>
+  <a href="#s2">2. Project purpose (inferred)</a><br>
+  <a href="#s3">3. Repository map</a><br>
+  <a href="#s4">4. What existing documents already decide</a><br>
+  <a href="#s5">5. What the code implements</a><br>
+  <a href="#s6">6. What tests cover</a><br>
+  <a href="#s7">7. What remains genuinely open</a><br>
+  <a href="#s8">8. Local research methods</a><br>
+  <a href="#s9">9. Local findings with evidence</a><br>
+  <a href="#s10">10. Web research findings</a><br>
+  <a href="#s11">11. Source-quality table</a><br>
+  <a href="#s12">12. Current architecture</a><br>
+  <a href="#s13">13. Data model / interface</a><br>
+  <a href="#s14">14. Risks &amp; uncertainties</a><br>
+  <a href="#s15">15. Security / privacy observations</a><br>
+  <a href="#s16">16. Implementation implications</a><br>
+  <a href="#s17">17. Backward-compat / migration</a><br>
+  <a href="#s18">18. Decisions to make (MCQs)</a><br>
+  <a href="#s19">19. Export decision JSON</a>
+</nav>
+
+<!-- ===== 1 ===== -->
+<h2 id="s1">1. Executive summary</h2>
+<p>The goal is a demo-day dry run: drive the NExtSEEK <b>batch-upload skill</b> end to end through
+the browser chat UI, screenshot the flow, and land a valid upload workbook in the operator's Dropbox
+<code>example-project</code> folder. Two turns: an NExtSEEK-routed question that retrieves a
+scientist's samples, then a Claude-Code-routed follow-up that builds a sheet setting
+<code>Scientist = Jane Doe</code> on those UIDs.</p>
+
+<p>Everything needed already exists. The skill is built, merged, and live-proven for the
+<b>create</b> path by six paid end-to-end turns. The chat UI, the WebSocket bridge, the LLM router,
+and the post-turn Dropbox copier are all implemented. Nothing in this demo writes to NExtSEEK: the
+skill builds and validates a spreadsheet and is hard-blocked from uploading
+(<code>SKILL.md:73-77</code>; every shim exits 3 on <code>--start|--upload|--confirmed-write</code>).</p>
+
+<p>Three findings shape the plan. <b>(1)</b> The <b>create</b> path is fully live-proven, and the
+Dropbox delivery mechanism is proven along with it: bundle <code>20260707T231422Z</code> carries
+<code>payload_flat.xlsx</code> byte-identically on both sides of the copier (6467 B, sha256
+<code>23e8fb19…</code>). What is <i>not</i> proven is the <b>update</b> path — exactly what this demo
+shows. Every <code>rows.json</code> across all six paid bundles has an empty <code>UID</code>, so no
+populated-UID row has ever been driven by a live agent turn. It is safe, but can fail-closed on one of
+three gates. <b>(2)</b> Route selection is decided by an LLM and
+<b>cannot be forced</b>; empirically, batch-upload phrasing lands on <code>container_cc</code> every
+time, because the router's own capability text names an <code>upload_payload</code> family whose
+example is literally "Build an update payload to fix the metadata on these existing samples."
+<b>(3)</b> Dropbox publishing works, but the destination is governed by <code>DMAC_OUTPUT_ROOT</code>,
+which is set in no env file and silently falls back to <code>~/dmac-dev/output</code> — a default no
+operator ever chose. The operator already locked the correct design on 2026-05-28; that build was
+deferred.</p>
+
+<p><b>4 open decisions: 3 BLOCKER, 1 DEFAULTABLE.</b> None require code changes — the demo runs
+entirely on existing code plus environment configuration.</p>
+
+<!-- ===== 2 ===== -->
+<h2 id="s2">2. Project purpose as inferred from evidence</h2>
+<p>DMAC Assistant wraps Claude Code as the agent runtime for MIT BioMicro Center lab users: a thin
+FastAPI bridge authenticates a user, mounts their project directories, starts a per-user Docker
+container, and relays a chat turn to a containerized <code>claude</code> CLI
+(<code>.claude/CLAUDE.md</code> "What This System Is").</p>
+<p>The batch-upload skill is one capability inside that container. Its purpose is narrow and
+explicitly bounded: <i>"You prepare a flat create/update workbook and validate it. You do not submit
+it. The safe output is the workbook path plus the validation result."</i>
+(<code>build_context/plugins/nextseek/skills/nextseek-batch-upload/SKILL.md:9-12</code>).</p>
+<p>This scout run's purpose is not to change any of that. It is to determine exactly how to
+<b>demonstrate</b> it through the UI, with the artifact delivered to Dropbox, and to surface where
+that demonstration could fail.</p>
+
+<!-- ===== 3 ===== -->
+<h2 id="s3">3. Repository map</h2>
+<pre>src/dmac_assistant/
+  app.py           GET / serves the chat UI (:30-33); uvicorn entry (:36-46)
+  auth.py          POST /auth/login -> bearer token (:131-148)
+  ws.py            /ws/chat WebSocket (:419); routing dispatch (:1027-1114);
+                   post-turn copy fired at :510 (legacy) / :957 (router-on)
+  containers.py    agent container env + mounts; proxy URL (:370-379);
+                   sidecar-network fail-fast (:496-510); Dropbox ro mount (:337-341)
+  copier.py        post-turn copier: output_root/&lt;user_id&gt;/&lt;rel&gt; (:57-58, :72)
+  config.py        _DEV_DEFAULT_OUTPUT_ROOT = ~/dmac-dev/output (:19); resolution (:211-218)
+  static/index.html  the browser chat UI (login #user_id/#password; chat #msg/#send-btn)
+
+baml_src/router.baml       Route enum: nextseek_query | container_cc | unrelated (:21-25)
+
+build_context/plugins/nextseek/
+  skills/nextseek-batch-upload/SKILL.md   the 9-step skill contract
+  bin/nextseek-*                          6 shims (all refuse writes, exit 3)
+  bin/_batch_upload_runner.py             dispatcher; _is_update (:87-88); gates (:219-239)
+  bin/_batch_upload_payload.py            writes payload_flat.xlsx, sheet "Samples" (:65, :206-208)
+  bin/_batch_upload_client.py             _API = "/nextseek_api" (:13); endpoints (:57-205)
+
+bedrock-proxy/docker-compose.yml   container_name dmac-bedrock-proxy (:22); external net (:32-37)
+sidecar/docker-compose.yml         CREATES dmac-nextseek-net (:55-58)
+
+evidence/batch-upload-e2e/         6 paid T10 turn bundles (all create-path)
+docs/superpowers/plans/evidence/e2e-local/   older, superseded local runs (ALL GATES: FAIL)
+docs/research/fixtures/2026-07-09-dev-tis-scientists.json   this run's live probe output</pre>
+
+<!-- ===== 4 ===== -->
+<h2 id="s4">4. What existing documents already decide</h2>
+<p>Treated as authoritative and <b>not</b> turned into questions:</p>
+<table>
+<tr><th>Area</th><th>Decision</th><th>Source</th></tr>
+<tr><td>Output location</td><td>Output derives from <code>DMAC_DROPBOX_ROOT</code>, under
+<code>dropbox_root/&lt;project&gt;/&lt;user_id&gt;/&lt;session&gt;/{raw,artifacts/&lt;turn-n&gt;}</code>.
+<code>DMAC_OUTPUT_ROOT</code> is to be <b>retired</b> as a user-facing var. <b>Build deferred</b>
+("launch demo now, redesign after").</td>
+<td><code>.claude/reports/2026-05-28-dropbox-publish-path-redesign-decisions.md</code> §"Locked decisions", item 5</td></tr>
+<tr><td>Skill scope</td><td>Build + validate only. <code>POST .../batch-upload/start/</code> is forbidden;
+never submit a batch or treat validation as permission to write.</td>
+<td><code>SKILL.md:73-77</code></td></tr>
+<tr><td>Create vs update</td><td>Blank UID creates a sample; populated UID updates one.</td>
+<td><code>SKILL.md:45-46</code>; <code>_batch_upload_runner.py:87-88</code></td></tr>
+<tr><td>Project resolution</td><td>Resolve by name against the live <code>/projects/</code> API.
+Never derive a project id from cached <code>context/</code> catalogs; never auto-select.</td>
+<td><code>SKILL.md:16-26</code></td></tr>
+<tr><td>Agent credentials</td><td>The agent container holds <b>no</b> AWS token; Bedrock calls go
+through the proxy sidecar at <code>http://bedrock-proxy:8080</code>.</td>
+<td><code>containers.py:370-379, 390-393</code></td></tr>
+<tr><td>Containment</td><td>Agent writes only <code>/data/scratch</code> + <code>/home/user/.claude</code>.
+<code>/data/projects</code> and <code>/data/output</code> stay read-only. Bridge copies host-side.</td>
+<td>ADR-003; <code>containers.py:337-353</code></td></tr>
+<tr><td>Local NExtSEEK stack</td><td>Out of scope. dmac-assistant targets
+<code>nextseek-dev.mit.edu</code>.</td><td>Operator, 2026-07-09</td></tr>
+</table>
+
+<!-- ===== 5 ===== -->
+<h2 id="s5">5. What the code already implements</h2>
+<p><b>Built and live:</b> the chat UI and its <code>dmac.bearer</code>-subprotocol WebSocket
+(<code>index.html:628</code>, <code>ws.py:104,142-156</code>); the BAML router, on by default
+(<code>ws.py:830-844</code> — <code>DMAC_ROUTER_ENABLED</code> defaults to <code>"1"</code>); the
+canned <code>unrelated</code> reply (<code>ws.py:89-95, 1065-1083</code>); the six batch-upload shims;
+the workbook builder; and the post-turn copier.</p>
+<p><b>Built but mis-pointed:</b> the copier writes <code>output_root/&lt;user_id&gt;/&lt;rel&gt;</code>
+(<code>copier.py:57-58,72</code>). <code>output_root</code> resolves from <code>DMAC_OUTPUT_ROOT</code>
+(<code>config.py:215-218</code>), which appears in <b>no</b> env file — verified across
+<code>.env</code>, <code>.env.dev</code>, <code>.env.example</code>, <code>.env.prod</code>, the whole
+working tree, and <code>git log --all -S'DMAC_OUTPUT_ROOT'</code>. It therefore falls back to
+<code>_DEV_DEFAULT_OUTPUT_ROOT = ~/dmac-dev/output</code> (<code>config.py:19</code>). The only
+assignment anywhere in the repo is <code>README.md:106</code>, which is stale against the 2026-05-28
+locked decision.</p>
+<p><b>Designed, not built:</b> the <code>&lt;project&gt;/&lt;user&gt;/&lt;session&gt;/{raw,artifacts}</code>
+hierarchy. The operator reports it is already implemented correctly in the integrated NExtSEEK
+version, which is the long-term target.</p>
+<p><b>Not implemented at all:</b> any mechanism to force a route. Grep for
+<code>force_route|route_override|DMAC_ROUTE</code> across <code>src/</code> returns nothing.
+<code>DMAC_ROUTER_ENABLED=0</code> disables routing entirely rather than selecting a route.</p>
+
+<!-- ===== 6 ===== -->
+<h2 id="s6">6. What the tests already cover</h2>
+<p>The three update-path fail-closed gates are covered by <b>unit tests only</b>:
+<code>tests/unit/test_batch_upload_runner.py:354</code> (<code>assay_superset</code>),
+<code>:368-374</code> (<code>confirm_clear_assays</code> scoping), <code>:221</code>
+(<code>present_blank</code>), and <code>tests/unit/test_batch_upload_payload.py:200-201</code>
+(<code>present_blank:Treatment</code>).</p>
+<p>The T10 harness (<code>tools/e2e/batch_upload_live_evidence.py</code>,
+<code>verify_batch_upload_live.py</code>, <code>run_batch_upload_live_e2e.py</code>) carries 115
+hermetic tests at 100%/99% module coverage, plus a $0 verifier that recomputes the verdict and cost
+from the raw transcript. Post-merge suite: 121 tests + pin registry, 68 green.</p>
+<p><b>The coverage gap that matters here:</b> no test — hermetic or paid — drives an agent-orchestrated
+<i>update</i> turn against the current skill. The hermetic tests hand-write the confirmation token,
+which is precisely why they never caught the live <code>--name</code> resolution defect that the paid
+runs did.</p>
+
+<!-- ===== 7 ===== -->
+<h2 id="s7">7. What remains genuinely open</h2>
+<p>Each maps to a question in §18. Blockers must be resolved before the plan can be written;
+"later" items affect specific task specs; "defaultable" items have a safe recommended default.</p>
+<table>
+<tr><th>ID</th><th>Open decision</th><th>Class</th></tr>
+<tr><td>Q-001</td><td>Which scientist and how many samples the demo operates on</td><td><span class="tag t-blk">BLOCKER</span></td></tr>
+<tr><td>Q-002</td><td>Demo risk posture: replay the proven create path first, or go straight to the unproven update path</td><td><span class="tag t-blk">BLOCKER</span></td></tr>
+<tr><td>Q-003</td><td>The exact <code>DMAC_OUTPUT_ROOT</code> value used to launch the bridge for this demo</td><td><span class="tag t-blk">BLOCKER</span></td></tr>
+<tr><td>Q-004</td><td>Whether turn 1 must genuinely route to <code>nextseek_query</code>, or may be satisfied any way that yields the UIDs</td><td><span class="tag t-def">DEFAULTABLE</span></td></tr>
+</table>
+
+<!-- ===== 8 ===== -->
+<h2 id="s8">8. Local research methods</h2>
+<p>All repository inspection was <b>read-only</b>; no project file was modified or deleted. Methods:</p>
+<ul>
+  <li>Two parallel read-only <code>Explore</code> agents over the skill/evidence and the
+      bridge/UI/routing/delivery surfaces, then <b>independent re-verification</b> by hand of every
+      load-bearing claim — one agent summary (that Dropbox delivery had never worked via the bridge)
+      turned out to be wrong and was corrected against <code>ls -lT</code> of the Dropbox tree.</li>
+  <li><code>git log --all -S'DMAC_OUTPUT_ROOT'</code> and a whole-tree grep to establish that the
+      variable is assigned in exactly one place (<code>README.md:106</code>).</li>
+  <li><code>docker ps -a</code>, <code>docker images</code>, <code>docker network ls</code> to
+      establish the runtime prerequisites.</li>
+  <li><b>Live read-only probes</b> of <code>nextseek-dev.mit.edu</code> with explicit
+      <i>controls</i>: anonymous → 401, deliberately-wrong credentials → 401, <code>.env</code>
+      credentials → 200. This eliminated the assumption that a 200 proved the credentials were doing
+      anything.</li>
+  <li>The sanctioned <code>nextseek-api</code> skill could not bootstrap (its SchemaRAG ingest against
+      dev times out; the operator confirms a container-side issue). Per operator instruction the dev
+      OpenAPI schema was fetched directly
+      (<code>GET /nextseek_api/schema/?format=yaml</code>, 287 KB, OpenAPI 3.1.0, 49 paths) into a
+      temp dir and inspected locally with <code>uv run --with pyyaml</code>.</li>
+  <li>Reproducible evidence persisted at
+      <code>docs/research/fixtures/2026-07-09-dev-tis-scientists.json</code>.</li>
+</ul>
+
+<!-- ===== 9 ===== -->
+<h2 id="s9">9. Local findings with evidence <span class="src-local">LOCAL-FIXTURE</span></h2>
+<table>
+<tr><th>Property / Finding</th><th>Evidence (path:line, excerpt)</th><th>Freshness</th></tr>
+<tr><td>The skill's deliverable is an xlsx and it never uploads</td>
+<td><code>_batch_upload_payload.py:65,206-208</code> (<code>payload_flat.xlsx</code>, sheet <code>Samples</code>);
+<code>SKILL.md:73-77</code>; every shim exits 3 on <code>--start</code></td><td>current</td></tr>
+<tr><td>Populated UID ⇒ update</td><td><code>_batch_upload_runner.py:87-88</code>
+<code>def _is_update(row): return bool(str(row.get("UID") or "").strip())</code></td><td>current</td></tr>
+<tr><td>Three fail-closed update gates</td><td><code>_batch_upload_runner.py:231-236</code> (manifest),
+<code>:237-239</code> (assay_superset), <code>:219-222</code> (present_blank)</td><td>current</td></tr>
+<tr><td><code>Scientist</code> is a required TIS text attribute (id 91)</td>
+<td><code>evidence/batch-upload-e2e/20260707T231422Z/output_state/demo/tis_schema.json:41-58</code></td><td>current</td></tr>
+<tr><td>All 6 paid bundles are blank-UID create rows</td>
+<td>Every <code>per_turn_summary.json</code> query says "ONE new … sample row (blank UID)";
+<code>20260707T231422Z/.../rows.json</code> has <code>"UID": ""</code></td><td>current</td></tr>
+<tr><td>Most authoritative passing bundle</td><td><code>evidence/batch-upload-e2e/20260707T231422Z/</code> —
+route <code>container_cc</code>, 4 shims invoked incl. <code>nextseek-project-resolve</code>,
+<code>total_cost_usd 0.874748</code>, <code>cost_source claude_code_result</code></td><td>current</td></tr>
+<tr><td>Copier destination is <code>output_root</code>, not <code>dropbox_root</code></td>
+<td><code>copier.py:57-58,72</code>; <code>config.py:19,215-218</code>;
+<code>DMAC_DROPBOX_ROOT</code> is used only for the ro project mount at <code>containers.py:337-341</code></td><td>current</td></tr>
+<tr><td>The bridge <i>has</i> published to Dropbox before</td>
+<td><code>Dropbox/DMAC_Data/example-project/demo/<b>demo</b>/260530_153203_demo/</code> — the doubled
+<code>demo/demo/</code> is the copier appending <code>user_id</code>, so that run had
+<code>DMAC_OUTPUT_ROOT=…/example-project/demo</code></td><td>2026-05-30</td></tr>
+<tr><td>Sibling Dropbox dirs came from a different writer</td>
+<td><code>full103/</code>, <code>smoke5*/</code>, <code>20260507T*/</code> each hold
+<code>{raw,artifacts}</code> — the shape produced by <code>tools/e2e/run_batch.py:176,206</code></td><td>2026-05-07/19</td></tr>
+<tr><td>No route override exists</td><td>grep of <code>src/</code> for
+<code>force_route|route_override|DMAC_ROUTE</code> → no hits; only
+<code>DMAC_ROUTER_ENABLED</code> (<code>ws.py:830-844</code>)</td><td>current</td></tr>
+<tr><td>Router capability text steers batch-upload to <code>container_cc</code></td>
+<td><code>docs/superpowers/plans/evidence/e2e-local/run.txt</code> — verbatim prompt: family
+<code>upload_payload</code>, example <i>"Build an update payload to fix the metadata on these existing
+samples"</i>; <code>nextseek_query</code> says "NOT for building … a batch-upload payload"</td><td>2026-06-30</td></tr>
+<tr><td>The old update E2E is not usable as proof</td>
+<td><code>e2e-local/run.txt</code> ends <code>ALL GATES: FAIL</code>; it invokes
+<code>nextseek-sample-read --as-merge-map</code>, a shim absent from today's
+<code>build_context/plugins/nextseek/bin/</code></td><td><b>stale</b></td></tr>
+<tr><td><b>The copier DOES publish the batch-upload workbook — proven.</b> In the authoritative paid
+bundle the workbook exists on both sides of the copier, byte-identical:
+<code>scratch_state/scratch/demo/upload/payload_flat.xlsx</code> and
+<code>output_state/demo/upload/payload_flat.xlsx</code>, both 6467 B,
+sha256 <code>23e8fb19…</code>. The delivery mechanism is exercised end to end; only the
+<i>destination</i> was the harness's <code>output_state/</code> rather than Dropbox, which is purely
+the <code>DMAC_OUTPUT_ROOT</code> value (Q-003).</td>
+<td><code>evidence/batch-upload-e2e/20260707T231422Z/{scratch_state,output_state}/…/payload_flat.xlsx</code></td><td>current</td></tr>
+<tr><td>Dropbox's <code>example-project/</code> contains no workbook, and that is <b>expected</b>, not
+evidence of a broken delivery leg: a depth-complete walk shows only NS-route bundles published by the
+copier (<code>demo/demo/&lt;run&gt;/{api_requests.json, console.txt, files/api/…}</code>) and headless
+batch-runner reports (<code>&lt;run&gt;/artifacts/Report-{GEO,NFCORE}-*/</code>,
+<code>raw/demo/&lt;per-query&gt;/</code>). No batch-upload turn has ever been run with
+<code>output_root</code> pointed at Dropbox.</td>
+<td><code>tree-snapshot.sh</code> over <code>Dropbox/DMAC_Data/example-project/</code> (2026-07-09)</td><td>current</td></tr>
+<tr><td>Runtime prerequisites missing</td><td><code>dmac-bedrock-proxy:poc</code> and
+<code>dmac-nextseek-sidecar:poc</code> absent; network <code>dmac-nextseek-net</code> absent;
+bridge fail-fasts without it (<code>containers.py:496-510</code>)</td><td>current</td></tr>
+<tr><td><code>.env</code> points at the (now stopped) local stack</td>
+<td><code>.env:16</code> <code>NEXTSEEK_URL=http://host.docker.internal:8000</code>; line 15 carries the
+commented-out dev URL</td><td>current</td></tr>
+</table>
+
+<!-- ===== 10 ===== -->
+<h2 id="s10">10. Web research findings</h2>
+<p>No public-web research was required: every external dependency in scope is the operator's own
+NExtSEEK dev deployment, which was probed directly. Its self-published OpenAPI document is the
+authoritative source and is treated as OFFICIAL.</p>
+
+<h3>NExtSEEK dev API contract <span class="src-official">OFFICIAL</span> —
+<code>https://nextseek-dev.mit.edu/nextseek_api/schema/?format=yaml</code> (accessed 2026-07-09)</h3>
+<ul>
+  <li>OpenAPI 3.1.0, title "NExtSEEK API", 49 paths. Retrieved with HTTP 200 and a valid TLS chain
+      (<code>ssl_verify_result=0</code>).</li>
+  <li><code>POST /nextseek_api/samples/advanced_search/</code> — request body
+      <code>SampleAdvancedSearchRequest</code>:
+      <code>{sampletype, attribute, filter_searchText (required), filter_matchType (PARTIAL|EXACT),
+      attribute_logic, searchText_logic}</code>.</li>
+  <li>Its own description states: <i>"SUMMARY: Search samples by type, attribute filters, and text
+      matching with pagination … RETURNS: Paginated list of matching samples."</i> This resolves the
+      question of whether the endpoint is read-only despite being a POST. Caveat: the description is
+      documentation of intent; it is not a proof of the absence of side effects.</li>
+  <li>Corroborating <span class="src-semi">SEMI-OFFICIAL</span>: the <code>nextseek-api</code> skill's
+      own troubleshooting section, <i>"Some POST endpoints (e.g. …
+      <code>samples/advanced_search/</code>) are read-only on the server but are conservatively
+      gated"</i> (<code>~/.claude/plugins/local/nextseek-api/skills/nextseek-api/SKILL.md:499</code>).</li>
+</ul>
+
+<h3>Live dev data <span class="src-official">OFFICIAL</span> — <code>POST /nextseek_api/samples/advanced_search/</code> (accessed 2026-07-09)</h3>
+<ul>
+  <li>Exactly one project: id <code>1</code>, title <code>Published Data</code>.</li>
+  <li><b>11,712 TIS samples across 24 pages; 25 distinct <code>Scientist</code> values.</b>
+      Persisted at <code>docs/research/fixtures/2026-07-09-dev-tis-scientists.json</code>.</li>
+  <li>Small-N candidates suitable for a demo: <b>Lee Pribyl (2)</b>, <b>Eddie Irvine (6)</b>,
+      <b>Owen Leddy (7)</b>, <b>Lindsay Volk (8)</b>, <b>Monet Norales (9)</b>.</li>
+  <li>Data-quality observation: <code>JoAnne Flynn</code> (6,949) and <code>Joanne Flynn</code> (325)
+      coexist as distinct values — the same person stored two ways.</li>
+</ul>
+
+<!-- ===== 11 ===== -->
+<h2 id="s11">11. Source-quality table</h2>
+<table>
+<tr><th>Claim</th><th>Best evidence</th><th>Confidence</th></tr>
+<tr><td>Skill builds a workbook and can never upload</td><td><code>SKILL.md:73-77</code> + shim exit-3 guards</td><td><span class="src-local">LOCAL-FIXTURE</span></td></tr>
+<tr><td>Populated UID means update</td><td><code>_batch_upload_runner.py:87-88</code></td><td><span class="src-local">LOCAL-FIXTURE</span></td></tr>
+<tr><td>Update path never live-proven on the current skill</td><td>All 6 <code>per_turn_summary.json</code> use blank UID; the one update record uses a deleted shim and reports <code>ALL GATES: FAIL</code></td><td><span class="src-local">LOCAL-FIXTURE</span></td></tr>
+<tr><td>Output destination is <code>DMAC_OUTPUT_ROOT</code>, unset, defaulting to <code>~/dmac-dev/output</code></td><td><code>config.py:19,215-218</code> + exhaustive grep + <code>git log -S</code></td><td><span class="src-local">LOCAL-FIXTURE</span></td></tr>
+<tr><td>Operator locked "output derives from <code>DMAC_DROPBOX_ROOT</code>"; build deferred</td><td><code>.claude/reports/2026-05-28-dropbox-publish-path-redesign-decisions.md</code></td><td><span class="src-local">LOCAL-FIXTURE</span></td></tr>
+<tr><td>A past bridge run used <code>DMAC_OUTPUT_ROOT=…/example-project/demo</code></td><td>The <code>demo/demo/</code> nesting in Dropbox + <code>copier.py:58</code></td><td><span class="src-inf">INFERENCE</span></td></tr>
+<tr><td>advanced_search is read-only</td><td>Dev OpenAPI description + nextseek-api SKILL.md:499</td><td><span class="src-official">OFFICIAL</span> / <span class="src-semi">SEMI-OFFICIAL</span></td></tr>
+<tr><td>25 scientists; small-N candidates</td><td><code>docs/research/fixtures/2026-07-09-dev-tis-scientists.json</code> (24-page walk, 11,712/11,712 rows)</td><td><span class="src-official">OFFICIAL</span></td></tr>
+<tr><td>Turn 2 will route to <code>container_cc</code></td><td>Router capability text (<code>run.txt</code>) + 6/6 paid turns</td><td><span class="src-inf">INFERENCE</span> (strong, not guaranteed)</td></tr>
+<tr><td>Dev TLS is valid for the container's <code>verify=True</code> client</td><td><code>ssl_verify_result=0</code> from the host; no <code>verify=</code> override in <code>_assistant_client.py</code></td><td><span class="src-inf">INFERENCE</span> (host ≠ container trust store)</td></tr>
+</table>
+
+<!-- ===== 12 ===== -->
+<h2 id="s12">12. Current architecture summary</h2>
+<pre>browser (Playwright / Chrome)
+  |  http://127.0.0.1:8000/            GET /            app.py:30-33
+  |  POST /auth/login                  -> bearer token  auth.py:131-148
+  |  ws://127.0.0.1:8000/ws/chat       subprotocol ["dmac.bearer", token]
+  v
+FastAPI bridge (host)
+  |  BAML RouteQuery (Gemini, runs on the HOST, needs GCP_API_KEY)
+  |     -> unrelated      : canned reply, no container         ws.py:1065-1083
+  |     -> nextseek_query : exec python /opt/dmac/runner_ns.py containers.py:741
+  |     -> container_cc   : exec claude --permission-mode auto containers.py:632-633
+  v
+agent container  dmac-assistant:poc   (attached to dmac-nextseek-net)
+  |  NO AWS token.  ANTHROPIC_BEDROCK_BASE_URL=http://bedrock-proxy:8080
+  |  writes ONLY /data/scratch/&lt;user&gt;
+  |  runs the 6 nextseek-* shims -> https://nextseek-dev.mit.edu/nextseek_api
+  v
+post-turn copier (HOST side; the agent never touches the output dir)
+     scratch_root/&lt;user_id&gt;/&lt;rel&gt;  ->  output_root/&lt;user_id&gt;/&lt;rel&gt;      copier.py:57-58,72
+     output_root = DMAC_OUTPUT_ROOT  (UNSET -> ~/dmac-dev/output)         config.py:19,215-218
+
+sidecar compose  CREATES dmac-nextseek-net           sidecar/docker-compose.yml:55-58
+proxy compose    JOINS it as external:true           bedrock-proxy/docker-compose.yml:32-37
+bridge           FAIL-FASTS if the network is absent containers.py:496-510</pre>
+
+<!-- ===== 13 ===== -->
+<h2 id="s13">13. Data model or interface summary</h2>
+<p><b>Rows JSON</b> (the skill's input, <code>SKILL.md:43-46</code>): a list of
+<code>{UID, SampleType, attributes{}, assay_ids?|assay titles?}</code>. Blank <code>UID</code> creates;
+populated <code>UID</code> updates. Values live in <code>attributes</code>; the tools synthesize the
+canonical <code>json_metadata</code>. The <code>UID</code> column and <code>json_metadata.UID</code>
+must agree.</p>
+<p><b>Workbook</b>: a single flat sheet named <code>Samples</code> in <code>payload_flat.xlsx</code>,
+one column per metadata key (<code>_batch_upload_payload.py:181-208</code>).</p>
+<p><b>TIS <code>Scientist</code></b>: required text attribute, id 91
+(<code>tis_schema.json:41-58</code>). A separate optional <code>Contact</code> attribute (id 77) also
+exists — do not conflate them.</p>
+<p><b>advanced_search response</b>: rows carry
+<code>{assays, attributeValue, contributor_id, created_at, first_name, id, idlink, idurl,
+json_metadata, sample_type, sample_type_id, title}</code>. The UID lives in
+<code>json_metadata.UID</code>; <code>title</code> mirrors it. Observed shape, dev, 2026-07-09 —
+preserved here rather than normalized into an assumed universal model.</p>
+<p><b>Update gate contract</b>: for each populated-UID row the runner requires the UID to appear in
+the retrieved manifest with <code>retrieve_status == "verified"</code>; requires the current assay-id
+set to be a <b>subset</b> of the delivered assay ids unless the UID is listed in
+<code>--confirm-clear-assays</code>; and refuses to blank any field that is currently present.</p>
+
+<!-- ===== 14 ===== -->
+<h2 id="s14">14. Risks and uncertainties</h2>
+<table>
+<tr><th>Risk</th><th>Likelihood</th><th>Mitigation</th></tr>
+<tr><td><b>The update path fails closed mid-demo</b> on <code>manifest</code>,
+<code>assay_superset</code>, or <code>present_blank</code>. Unit-tested only; never driven by a live
+agent turn on the current skill.</td><td>M</td>
+<td>Replay the proven create-path turn first so working screenshots are already in hand (Q-002).
+Choose a scientist whose samples carry no assay links, to keep <code>assay_superset</code> out of
+play. Pre-check the chosen UIDs with <code>nextseek-sample-search</code> semantics before the demo.</td></tr>
+<tr><td><b>Turn 2 routes to <code>nextseek_query</code></b> instead of <code>container_cc</code>.
+No override exists.</td><td>L</td>
+<td>Phrase turn 2 in the router's own vocabulary ("prepare/build a batch-upload sheet … validate,
+do not submit"). The router's capability text explicitly excludes batch-upload from
+<code>nextseek_query</code>; 6/6 paid turns landed <code>container_cc</code>.</td></tr>
+<tr><td><b>Artifact does not appear in Dropbox</b> because the bridge was launched without
+<code>DMAC_OUTPUT_ROOT</code>.</td><td>H if unaddressed</td>
+<td>Q-003. Launch with an explicit value; assert the file exists on disk before opening it.</td></tr>
+<tr><td>The workbook lands somewhere other than Dropbox because <code>output_root</code> was not
+repointed. This is a <b>configuration</b> risk, not a mechanism risk — the copier is proven to publish
+<code>payload_flat.xlsx</code> (byte-identical sha256 across
+<code>scratch_state/</code> → <code>output_state/</code> in bundle
+<code>20260707T231422Z</code>).</td><td>H if unaddressed</td>
+<td>Q-003. After the turn, assert <code>payload_flat.xlsx</code> exists at the Dropbox path and open
+it. Do not infer delivery from the agent's reply text — a prior run's transcript asserts <i>"This
+file is delivered to your Dropbox folder automatically by the bridge copier"</i> when nothing had been
+checked.</td></tr>
+<tr><td><code>present_blank</code> trips because the merged row omits an attribute the live sample
+carries but the current TIS schema no longer defines (this is exactly what killed the 2026-06-30
+run: <code>ExperimentType="Flow"</code>).</td><td>M</td>
+<td>Inspect the chosen samples' <code>json_metadata</code> keys against the live TIS schema before the
+demo, and pick a scientist whose samples have no undefined attributes.</td></tr>
+<tr><td>Dev TLS trust differs inside the container from the host.</td><td>L</td>
+<td>Verified only from the host. Confirm with one in-container request before the demo turn;
+<code>_assistant_client.py</code> has no <code>verify=</code> override, so a failure surfaces as a typed
+transport error rather than silently.</td></tr>
+<tr><td>Paid spend. Each CC turn costs real money (<code>0.874748</code> USD on the last
+create-path turn).</td><td>certain</td>
+<td>Per-turn cap via <code>DMAC_CC_MAX_BUDGET_USD</code>; explicit operator authorization required
+before any paid turn, per standing policy.</td></tr>
+<tr><td>The <code>nextseek-api</code> skill cannot bootstrap (SchemaRAG ingest timeout).</td><td>certain</td>
+<td>Operator confirms a container-side issue. Direct schema fetch is the sanctioned workaround; it is
+not a blocker for the demo, which never uses that skill.</td></tr>
+</table>
+
+<!-- ===== 15 ===== -->
+<h2 id="s15">15. Security / privacy observations</h2>
+<ul>
+  <li><code>.env</code> holds live secrets (Bedrock bearer token, Anthropic/OpenAI/Google keys, two DB
+      passwords). It <b>is</b> gitignored (<code>.gitignore:18</code>), so it is not committed. Never
+      stage it, and never <code>git add -f</code> it. No secret values are reproduced in this report.</li>
+  <li>Real scientist names from the dev database appear in this report and in
+      <code>docs/research/fixtures/2026-07-09-dev-tis-scientists.json</code>. These are research-staff
+      names on an internal dev instance, not subject data — but the fixture should not leave the repo.</li>
+  <li>The demo replaces a real person's name with <code>Jane Doe</code> in a <b>spreadsheet only</b>.
+      Nothing is uploaded; no NExtSEEK record changes. The skill is structurally incapable of writing
+      (<code>SKILL.md:73-77</code> plus six independent exit-3 guards).</li>
+  <li>The agent container holds no AWS credentials; the Bedrock token lives only in the proxy sidecar
+      (<code>containers.py:390-393</code>). This demo does not weaken that containment.</li>
+  <li>Credentials were passed to <code>nextseek-init</code> via process environment rather than by
+      editing <code>.env</code>, honoring the file's three-layer protection.</li>
+</ul>
+
+<!-- ===== 16 ===== -->
+<h2 id="s16">16. Implementation implications</h2>
+<ul>
+  <li><b>No code changes are needed.</b> The demo is environment configuration plus two chat turns.
+      Resist the temptation to "fix" <code>DMAC_OUTPUT_ROOT</code> in code — that redesign is locked,
+      deferred, and already done correctly in the integrated NExtSEEK version.</li>
+  <li>Bring-up order is forced by the dependency graph: <code>make sidecar-build</code> →
+      <code>make sidecar-up</code> (this creates <code>dmac-nextseek-net</code>) →
+      <code>make proxy-build</code> → <code>make proxy-up</code> → launch the bridge. The bridge
+      fail-fasts if the network is missing.</li>
+  <li>The bridge must be launched with an explicit <code>DMAC_OUTPUT_ROOT</code> (Q-003); otherwise the
+      workbook silently lands in <code>~/dmac-dev/output</code>.</li>
+  <li><code>.env</code> line 16 must be repointed to <code>https://nextseek-dev.mit.edu</code> — an
+      operator edit, not an agent edit.</li>
+  <li>Verification must not rest on screenshots. Assert the workbook exists at the Dropbox path, then
+      open it and check the <code>Samples</code> sheet actually contains the expected UIDs with
+      <code>Scientist = Jane Doe</code>, and that <code>UID</code> and
+      <code>json_metadata.UID</code> agree. Screenshots are the deliverable <i>for the audience</i>,
+      never the proof.</li>
+  <li>Because turn 1 must yield UIDs that turn 2 consumes, capture turn 1's reply text verbatim; if
+      the NS route returns a prose summary rather than a UID list, turn 2's prompt must carry the UIDs
+      explicitly.</li>
+</ul>
+
+<!-- ===== 17 ===== -->
+<h2 id="s17">17. Backward-compatibility / migration implications</h2>
+<ul>
+  <li><b>Not applicable to the demo itself</b> — it changes no code, no schema, and no NExtSEEK data.</li>
+  <li>One forward-looking note: the <code>&lt;project&gt;/&lt;user&gt;/&lt;session&gt;/{raw,artifacts}</code>
+      layout locked on 2026-05-28 is a publish-destination change only; ADR-003's containment invariant
+      is preserved under it. When that build lands, <code>DMAC_OUTPUT_ROOT</code> disappears and any
+      launch script pinning it (including <code>README.md:106</code>) must be updated.</li>
+  <li>The stale <code>e2e-local</code> records reference <code>nextseek-sample-read</code>, which no
+      longer exists. They should be treated as historical artifacts, not regression baselines.</li>
+</ul>
+
+<!-- ===== 18 ===== -->
+<h2 id="s18">18. Decisions to make</h2>
+<p class="small">Choose an option per question (radios), optionally add a write-in or comment.
+Recommended defaults are marked <span class="recbadge">★ recommended</span> and are pre-selected;
+change or clear them as you like. Then go to §19 and export. Nothing here calls a model or the network.</p>
+<div id="questions"></div>
+
+<!-- ===== 19 ===== -->
+<h2 id="s19">19. Export decision JSON</h2>
+<p>Click <b>Export</b> to download the decision JSON and preview it below. The file includes report
+metadata, research + export timestamps, the question-set version, selected answers, comments,
+write-ins, unanswered questions, recommended defaults, and the evidence references per question.
+Hand that file back to continue scout — a new decision round if open questions remain, otherwise
+Phase 5 (engine selection + plan authoring).</p>
+<div class="bar">
+  <button onclick="doExport()">⬇ Export decision JSON</button>
+  <button class="ghost" onclick="selectAllDefaults()">Reset to recommended defaults</button>
+  <button class="ghost" onclick="clearAll()">Clear all answers</button>
+  <span id="status"></span>
+</div>
+<pre id="preview" class="small">// preview appears here after Export</pre>
+
+<footer>
+  Generated by the <code>scout</code> skill, 2026-07-09. This is a decision gate: nothing is executed
+  until the exported JSON is returned and approved.<br>
+  Report: <code>docs/research/batch_upload_ui_demo_findings_and_decisions.html</code><br>
+  Phase-1 notes: <code>docs/research/phase1_constraints_notes_batch_upload_ui_demo.md</code><br>
+  Evidence fixture: <code>docs/research/fixtures/2026-07-09-dev-tis-scientists.json</code><br>
+  Prior paid evidence: <code>evidence/batch-upload-e2e/20260707T231422Z/</code><br>
+  No secret values appear in this report. All repository inspection was read-only.
+</footer>
+
+</div>
+
+<script>
+/* ============================================================================
+   EDIT THESE THREE OBJECTS ONLY. The render()/export functions below are the
+   reusable engine — leave them intact.
+   ============================================================================ */
+
+var REPORT_META = {
+  title: "Batch-Upload Skill — Chat-UI Demo Dry Run: Findings & Decisions",
+  project: "dmac_assistant",
+  report_path: "docs/research/batch_upload_ui_demo_findings_and_decisions.html",
+  research_timestamp: "2026-07-09",
+  question_set_version: "1.0",
+  export_basename: "batch_upload_ui_demo_decisions",
+  round: 1,
+  supersedes: "",
+  corpus: {
+    paid_evidence_bundles: 6,
+    dev_tis_samples: 11712,
+    dev_distinct_scientists: 25,
+    dev_openapi_paths: 49,
+    fixtures: ["docs/research/fixtures/2026-07-09-dev-tis-scientists.json"]
+  }
+};
+
+var QUESTIONS = [
+ { id:"Q-001", area:"Demo subject — which scientist, and how many samples", blocks:"BLOCKER",
+   why:"Turn 1 retrieves this scientist's samples; turn 2 rewrites Scientist to 'Jane Doe' on every returned UID. Sample count drives turn length, cost, and how many rows must clear the three update gates. A scientist with assay links raises the odds of hitting the assay_superset gate; one with a large sample set makes the turn slow and expensive.",
+   evidence:"Live dev probe (2026-07-09) walked all 24 pages of the TIS type: 11,712 samples, 25 distinct Scientist values. Full counts + example UIDs in docs/research/fixtures/2026-07-09-dev-tis-scientists.json. Scientist is a required TIS text attribute (tis_schema.json:41-58). Notably JoAnne Flynn (6,949) and Joanne Flynn (325) are the same person stored two ways.",
+   uncertain:"Whether the chosen scientist's samples carry assay links, and whether their json_metadata contains attributes the current TIS schema no longer defines. Either condition can fail the demo closed. The 2026-06-30 run died exactly this way on ExperimentType='Flow'.",
+   rec:"B",
+   options:[
+     {k:"A", lab:"Lee Pribyl — 2 samples (TIS-241205ESS-38-PUB, -39-PUB)", cons:"Smallest, fastest, cheapest turn. Only 2 rows in the sheet, so the demo looks slight; but the update mechanics are identical and the least can go wrong."},
+     {k:"B", lab:"Owen Leddy — 7 samples (TIS-250319WHI-1..7-PUB)", cons:"RECOMMENDED. Big enough that the sheet visibly contains a batch, small enough to stay fast and cheap. Contiguous UID block reads well on screen."},
+     {k:"C", lab:"Eddie Irvine — 6 samples", cons:"Similar profile to B; UIDs span two date prefixes (240502ALT, 240606ALT), which slightly muddies the on-screen story."},
+     {k:"D", lab:"Joanne Flynn — 325 samples (the casing-duplicate)", cons:"Tells the most compelling curation story (normalize a duplicated identity), but 325 rows is a long, costly turn and maximizes the chance of tripping a gate. High risk for demo day."}
+   ],
+   affects:"Turn-1 prompt wording; turn-2 UID list; expected row count in the validation assertion; per-turn budget cap." },
+
+ { id:"Q-002", area:"Risk posture — how much unproven surface to put on stage", blocks:"BLOCKER",
+   why:"The update path is the thing you want to show, and it is the one path no paid live run has ever exercised on the current skill. This decides whether you walk into the demo already holding working screenshots.",
+   evidence:"The CREATE path is fully live-proven and the DELIVERY leg is proven with it: bundle 20260707T231422Z is a real paid container_cc turn ($0.874748) that resolved the project by name through the shim and produced payload_flat.xlsx byte-identically on both sides of the copier (scratch_state/scratch/demo/upload/ and output_state/demo/upload/, 6467 B, sha256 23e8fb19...). What is NOT proven is the UPDATE path: every rows.json across all six paid bundles carries an empty UID, so no populated-UID row has ever been driven by a live agent turn. The one update run on record (e2e-local/20260630T192019Z) reports ALL GATES: FAIL in run.txt and invokes nextseek-sample-read, a shim that no longer exists. The three update gates (manifest, assay_superset, present_blank) have unit coverage only.",
+   uncertain:"Exactly one thing: whether an agent-orchestrated UPDATE turn clears all three fail-closed gates on the current skill. Nothing on disk answers it; only a live run will. (Delivery is not in question — the copier is proven to publish this artifact; where it lands is just DMAC_OUTPUT_ROOT, i.e. Q-003.)",
+   rec:"A",
+   options:[
+     {k:"A", lab:"Replay the proven create-path turn first, then attempt the update", cons:"RECOMMENDED. Costs one extra paid turn (~$0.87). Confirms the whole rig is healthy end to end under today's config — including that the workbook actually lands in Dropbox once DMAC_OUTPUT_ROOT is repointed — and leaves you holding working screenshots before you risk the update path. If the update then fails closed, you still have a demo and you know exactly which gate fired."},
+     {k:"B", lab:"Go straight to the two-turn update demo", cons:"Saves a turn and time. If a gate fires you have nothing to show and are debugging on demo day. Highest payoff, highest variance."},
+     {k:"C", lab:"Create-path replay only", cons:"Near-zero risk, fully proven. But it does not demonstrate the update capability, which is the point of the demo."}
+   ],
+   affects:"Number of paid turns and total spend; the order of the screenshot sequence; whether a fallback narrative is prepared." },
+
+ { id:"Q-003", area:"Where the bridge publishes for this demo", blocks:"BLOCKER",
+   why:"The copier writes output_root/<user_id>/<rel>. If the bridge is launched without DMAC_OUTPUT_ROOT, the workbook lands in ~/dmac-dev/output and never reaches Dropbox — the exact failure mode that has recurred across sessions.",
+   evidence:"copier.py:57-58,72 appends /<user_id>. config.py:215-218 reads DMAC_OUTPUT_ROOT, defaulting to ~/dmac-dev/output (config.py:19). The variable is assigned in exactly ONE place in the whole repo and history: README.md:106, to the dev default. The 2026-05-28 report locks the opposite: output derives from DMAC_DROPBOX_ROOT, DMAC_OUTPUT_ROOT is to be retired — BUILD DEFERRED. The doubled demo/demo/ directory in Dropbox proves a past bridge run set it to .../example-project/demo.",
+   uncertain:"Only the leaf: whether the operator wants example-project/demo/<file> (clean) or example-project/demo/demo/<file> (what the 2026-05-30 run actually produced).",
+   rec:"A",
+   options:[
+     {k:"A", lab:"DMAC_OUTPUT_ROOT=$DMAC_DROPBOX_ROOT/example-project", cons:"RECOMMENDED. Copier appends 'demo' -> .../DMAC_Data/example-project/demo/upload/payload_flat.xlsx. Matches the folder you set up, no nesting artifact. Env-only, zero code change."},
+     {k:"B", lab:"DMAC_OUTPUT_ROOT=$DMAC_DROPBOX_ROOT/example-project/demo", cons:"Reproduces exactly what the 2026-05-30 run did, yielding .../example-project/demo/demo/... The doubled segment is ugly but is the literal precedent."},
+     {k:"C", lab:"Land it in ~/dmac-dev/output for the dry run, repoint after", cons:"Explicitly rejected by the operator. Listed only for completeness."}
+   ],
+   affects:"The bridge launch command; the path asserted before opening the workbook; the Dropbox screenshot." },
+
+ { id:"Q-004", area:"Must turn 1 genuinely route to nextseek_query?", blocks:"DEFAULTABLE",
+   why:"Your described flow has turn 1 hitting the NExtSEEK route. But routing is LLM-decided and cannot be forced, and the NS route needs the sidecar container running, not just the network. If turn 1 need only PRODUCE the UIDs, the demo has more ways to succeed.",
+   evidence:"No override exists: grep of src/ for force_route|route_override|DMAC_ROUTE returns nothing; DMAC_ROUTER_ENABLED=0 disables routing entirely rather than selecting a route (ws.py:830-844). The NS route execs runner_ns.py (containers.py:741) and its staging sweep reads config.sidecar_staging_root (ws.py:288-292). The router's capability text lists sample_search under nextseek_query with the example 'Find me mice treated with NDMA.'",
+   uncertain:"Whether an NS-routed reply returns a machine-usable UID list or a prose summary. If prose, turn 2 must restate the UIDs regardless.",
+   rec:"A",
+   options:[
+     {k:"A", lab:"Yes — turn 1 must route nextseek_query, and we stand the sidecar up", cons:"RECOMMENDED, and it is what you asked for. Shows the router genuinely picking two different routes across two turns, which is a strong demo beat. Costs a sidecar build + up. If the reply is prose, we paste the UIDs into turn 2."},
+     {k:"B", lab:"No — any turn that surfaces the UIDs is fine", cons:"Lets turn 1 be a container_cc turn too, dropping the sidecar dependency. Simpler and more robust, but loses the 'watch it route differently' moment."}
+   ],
+   affects:"Whether make sidecar-build/sidecar-up is on the critical path; turn-1 prompt wording; how turn 2 receives the UID list." }
+];
+
+/* Evidence references per question id — emitted into the exported JSON. */
+var EVIDENCE = {
+ "Q-001":[
+   "docs/research/fixtures/2026-07-09-dev-tis-scientists.json (live dev probe, 24 pages, 11712/11712 rows)",
+   "evidence/batch-upload-e2e/20260707T231422Z/output_state/demo/tis_schema.json:41-58 (Scientist = required attr id 91)",
+   "docs/superpowers/plans/evidence/e2e-local/run.txt (ExperimentType='Flow' broke the 2026-06-30 update)",
+   "POST https://nextseek-dev.mit.edu/nextseek_api/samples/advanced_search/ (accessed 2026-07-09)"
+ ],
+ "Q-002":[
+   "evidence/batch-upload-e2e/20260707T231422Z/ (authoritative create-path PASS, $0.874748)",
+   "evidence/batch-upload-e2e/20260707T231422Z/{scratch_state/scratch,output_state}/demo/upload/payload_flat.xlsx (6467 B, sha256 23e8fb19... on BOTH sides of the copier => delivery leg PROVEN)",
+   "evidence/batch-upload-e2e/*/rows.json (every paid bundle: UID == '' => update path never live-driven)",
+   "docs/superpowers/plans/evidence/e2e-local/run.txt ('ALL GATES: FAIL'; uses removed nextseek-sample-read)",
+   "build_context/plugins/nextseek/bin/_batch_upload_runner.py:219-239 (present_blank, manifest, assay_superset)",
+   "tests/unit/test_batch_upload_runner.py:221,354,368-374 (unit coverage only)"
+ ],
+ "Q-003":[
+   ".claude/reports/2026-05-28-dropbox-publish-path-redesign-decisions.md (locked decision 5; BUILD DEFERRED)",
+   "src/dmac_assistant/copier.py:57-58,72",
+   "src/dmac_assistant/config.py:19,215-218",
+   "README.md:106 (the only DMAC_OUTPUT_ROOT assignment in the repo or its history)",
+   "docs/superpowers/plans/nextseek-batch-upload-skill-vet/pass-1/reviewer-findings.md:63 (2A-4)",
+   "Dropbox/DMAC_Data/example-project/demo/demo/260530_153203_demo/ (the doubled-segment precedent)"
+ ],
+ "Q-004":[
+   "src/dmac_assistant/ws.py:830-844 (DMAC_ROUTER_ENABLED; no force mechanism)",
+   "src/dmac_assistant/ws.py:288-292 (sidecar staging sweep)",
+   "src/dmac_assistant/containers.py:741 (NS route execs runner_ns.py)",
+   "baml_src/router.baml:21-25 (Route enum)",
+   "docs/superpowers/plans/evidence/e2e-local/run.txt (verbatim router capability prompt)"
+ ]
+};
+
+/* ============================================================================
+   ENGINE — render + export (do not edit below unless intentionally extending)
+   ============================================================================ */
+function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+function tagFor(b){ if(b==="BLOCKER")return '<span class="tag t-blk">BLOCKER</span>';
+  if(b==="LATER")return '<span class="tag t-later">AFFECTS LATER</span>';
+  return '<span class="tag t-def">DEFAULTABLE</span>'; }
+
+function render(){
+  var root=document.getElementById("questions"), html="";
+  QUESTIONS.forEach(function(q){
+    html+='<div class="q" id="card-'+q.id+'">';
+    html+='<h3><span class="qid">'+q.id+'</span> '+esc(q.area)+' '+tagFor(q.blocks)+'</h3>';
+    html+='<div class="meta"><b>Why it matters:</b> '+esc(q.why)+'</div>';
+    html+='<div class="meta"><b>What the evidence says:</b> '+esc(q.evidence)+'</div>';
+    html+='<div class="meta"><b>What is uncertain:</b> '+esc(q.uncertain)+'</div>';
+    q.options.forEach(function(o){
+      var isrec=(o.k===q.rec);
+      html+='<label class="opt'+(isrec?' isrec':'')+'">'+
+        '<input type="radio" name="'+q.id+'" value="'+o.k+'"'+(isrec?' checked':'')+'>'+
+        '<span class="lab">'+o.k+'. '+esc(o.lab)+'</span>'+(isrec?'<span class="recbadge">★ recommended</span>':'')+
+        '<span class="cons">'+esc(o.cons)+'</span></label>';
+    });
+    html+='<label class="opt"><input type="radio" name="'+q.id+'" value="OTHER">'+
+      '<span class="lab">Other / write-in</span></label>';
+    html+='<input class="writein" id="wi-'+q.id+'" placeholder="Write-in answer (used when \'Other\' is selected)…">';
+    html+='<textarea class="cmt" id="cmt-'+q.id+'" rows="2" placeholder="Optional comment for '+q.id+'…"></textarea>';
+    html+='<div class="affect"><b>Affects:</b> '+esc(q.affects)+' &nbsp;·&nbsp; <b>Recommended default:</b> '+(q.rec||"none")+'</div>';
+    html+='</div>';
+  });
+  root.innerHTML=html;
+  // Toggle the write-in box off the CURRENTLY-CHECKED radio (not the firing one), so the
+  // box can never desync from the selection. selectAllDefaults()/clearAll() call syncWI() too.
+  QUESTIONS.forEach(function(q){
+    document.getElementsByName(q.id).forEach(function(r){
+      r.addEventListener("change",function(){ syncWI(q.id); });
+    });
+  });
+}
+function isOther(id){var r=document.querySelector('input[name="'+id+'"]:checked');return r&&r.value==="OTHER";}
+function syncWI(id){document.getElementById("wi-"+id).style.display=isOther(id)?"block":"none";}
+
+function selectAllDefaults(){
+  QUESTIONS.forEach(function(q){
+    if(q.rec){ var r=document.querySelector('input[name="'+q.id+'"][value="'+q.rec+'"]'); if(r)r.checked=true; }
+    syncWI(q.id);
+  });
+  setStatus("Reset to recommended defaults.");
+}
+function clearAll(){
+  QUESTIONS.forEach(function(q){
+    document.getElementsByName(q.id).forEach(function(r){r.checked=false;});
+    syncWI(q.id);
+    document.getElementById("cmt-"+q.id).value="";
+  });
+  setStatus("Cleared all answers.");
+}
+function setStatus(m){document.getElementById("status").textContent=m;}
+
+function buildDecision(){
+  var answers={}, comments={}, writeins={}, unanswered=[], defaults={};
+  QUESTIONS.forEach(function(q){
+    defaults[q.id]=q.rec||null;
+    var sel=document.querySelector('input[name="'+q.id+'"]:checked');
+    var cmt=document.getElementById("cmt-"+q.id).value.trim();
+    var wi=document.getElementById("wi-"+q.id).value.trim();
+    if(cmt)comments[q.id]=cmt;
+    if(!sel){ unanswered.push(q.id); }
+    else if(sel.value==="OTHER"){ answers[q.id]="OTHER"; writeins[q.id]= wi || "(write-in selected but left blank)"; }
+    else { answers[q.id]=sel.value; if(wi)writeins[q.id]=wi; }
+  });
+  return {
+    report_metadata: REPORT_META,
+    research_timestamp: REPORT_META.research_timestamp,
+    export_timestamp_utc: new Date().toISOString(),
+    question_set_version: REPORT_META.question_set_version,
+    selected_answers: answers,
+    comments: comments,
+    write_in_answers: writeins,
+    unanswered_questions: unanswered,
+    recommended_defaults: defaults,
+    evidence_references: EVIDENCE
+  };
+}
+function doExport(){
+  var d=buildDecision();
+  var txt=JSON.stringify(d,null,2);
+  document.getElementById("preview").textContent=txt;
+  var fname=(REPORT_META.export_basename||"decisions")+".json";
+  try{
+    var blob=new Blob([txt],{type:"application/json"});
+    var a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download=fname;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){URL.revokeObjectURL(a.href);},1500);
+    var n=Object.keys(d.selected_answers).length, u=d.unanswered_questions.length;
+    setStatus("Exported "+fname+" — "+n+" answered, "+u+" unanswered.");
+  }catch(e){
+    setStatus("Download blocked by browser; copy the JSON from the preview below.");
+  }
+}
+render();
+setStatus("Loaded "+QUESTIONS.length+" questions (defaults pre-selected). Review, then Export.");
+</script>
+</body>
+</html>
