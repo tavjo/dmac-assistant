@@ -9,13 +9,16 @@ import os
 import shutil
 import sys
 import tempfile
+import traceback
 from typing import Any
 
 import orjson
 import polars as pl
+from pydantic import ValidationError
 
 from _batch_upload_client import BatchUploadClient
 from _batch_upload_extract import extract_text
+from _batch_upload_models import SchemaFile
 from _batch_upload_payload import build as build_payload
 
 REQUIRED_CHECKS = {"structure", "name_check", "dag"}
@@ -35,6 +38,15 @@ def _emit_gate(exc: GateError) -> None:
     if exc.detail:
         payload["detail"] = exc.detail
     print(json.dumps(payload, separators=(",", ":")))
+
+
+def _emit_runner_error(exc: BaseException) -> None:
+    """Fail closed with a diagnosable marker (class + message) and stderr traceback."""
+    detail = f"{type(exc).__name__}: {exc}"
+    if len(detail) > 500:
+        detail = detail[:497] + "..."
+    traceback.print_exc(file=sys.stderr)
+    _emit_gate(GateError("runner_error", detail))
 
 
 def _client(transport=None) -> BatchUploadClient:
@@ -127,20 +139,35 @@ def _resolve_additions(
     return out
 
 
+def _index_search_rows(search_rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    by_uid: dict[str, dict[str, Any]] = {}
+    for row in search_rows:
+        meta = row.get("json_metadata")
+        if not isinstance(meta, dict):
+            continue
+        uid = meta.get("UID")
+        if isinstance(uid, str) and uid.strip():
+            by_uid[uid.strip()] = row
+    return by_uid
+
+
 def _resolve_manifest(
     rows: list[dict[str, Any]],
     client: BatchUploadClient,
     title_map: dict[str, list[int]],
     project_ids: set[int],
+    *,
+    prefetched: list[dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     uids = sorted({str(row.get("UID")).strip() for row in rows if _is_update(row)})
     if not uids:
         return {}
-    by_uid = {
-        row.get("json_metadata", {}).get("UID"): row
-        for row in client.search_samples_by_uid(uids, known_assay_titles=title_map.keys())
-        if isinstance(row.get("json_metadata"), dict)
-    }
+    if prefetched is not None:
+        by_uid = _index_search_rows(prefetched)
+    else:
+        by_uid = _index_search_rows(
+            client.search_samples_by_uid(uids, known_assay_titles=title_map.keys())
+        )
     manifest: dict[str, dict[str, Any]] = {}
     for uid in uids:
         found = by_uid.get(uid)
@@ -156,9 +183,10 @@ def _resolve_manifest(
             continue
         try:
             titles = list(found.get("assay_titles") or [])
+            sample_id = found.get("numeric_seek_id", found.get("id"))
             current = client.resolve_current_assay_titles(
                 titles,
-                sample_numeric_id=found["numeric_seek_id"],
+                sample_numeric_id=sample_id,
                 title_map=title_map,
                 project_assay_ids=project_ids,
             )
@@ -369,11 +397,11 @@ def _cmd_sample_search(argv: list[str], *, transport=None) -> int:
 
 
 def _cmd_build_payload(argv: list[str], *, transport=None) -> int:
-    del transport
     parser = argparse.ArgumentParser(prog="nextseek-build-payload")
     parser.add_argument("--rows", required=True)
     parser.add_argument("--schema", required=True)
     parser.add_argument("--resolved-current")
+    parser.add_argument("--project-id", type=int)
     parser.add_argument("--id-to-title", required=True)
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
@@ -381,10 +409,31 @@ def _cmd_build_payload(argv: list[str], *, transport=None) -> int:
     if SCRATCH_ROOT in out.parents or out == SCRATCH_ROOT:
         raise GateError("staging")
     rows = _load_rows(args.rows)
-    schema = json.loads(pathlib.Path(args.schema).read_text())
-    resolved = _load_current(args.resolved_current)
-    id_to_title = {int(k): v for k, v in json.loads(pathlib.Path(args.id_to_title).read_text()).items()}
-    for path in build_payload(rows, out, resolved_current=resolved, id_to_title=id_to_title, sample_type_attributes=schema):
+    try:
+        schema = SchemaFile.model_validate(
+            orjson.loads(pathlib.Path(args.schema).read_bytes())
+        ).as_dicts()
+    except ValidationError as exc:
+        raise GateError("schema", str(exc)) from exc
+    except orjson.JSONDecodeError as exc:
+        raise GateError("schema", str(exc)) from exc
+    resolved = _load_current(
+        args.resolved_current,
+        rows=rows,
+        transport=transport,
+        project_id=args.project_id,
+    )
+    id_to_title = {
+        int(k): v
+        for k, v in json.loads(pathlib.Path(args.id_to_title).read_text()).items()
+    }
+    for path in build_payload(
+        rows,
+        out,
+        resolved_current=resolved,
+        id_to_title=id_to_title,
+        sample_type_attributes=schema,
+    ):
         print(path)
     return 0
 
@@ -435,15 +484,42 @@ def _cmd_build_validate(argv: list[str], *, transport=None) -> int:
         _emit_gate(exc)
         return 1
     except Exception as exc:  # noqa: BLE001 - CLI must fail closed with a marker.
-        _emit_gate(GateError("runner_error", type(exc).__name__))
+        _emit_runner_error(exc)
         return 1
 
 
-def _load_current(path: str | None) -> dict[str, set[int]]:
+def _load_current(
+    path: str | None,
+    *,
+    rows: list[dict[str, Any]] | None = None,
+    transport=None,
+    project_id: int | None = None,
+) -> dict[str, set[int]]:
     if not path:
         return {}
-    raw = json.loads(pathlib.Path(path).read_text())
-    return {uid: {int(item) for item in ids} for uid, ids in raw.items()}
+    raw = orjson.loads(pathlib.Path(path).read_bytes())
+    if isinstance(raw, dict):
+        return {uid: {int(item) for item in ids} for uid, ids in raw.items()}
+    if isinstance(raw, list):
+        if project_id is None:
+            raise GateError(
+                "resolved_current_shape",
+                "sample-search list requires --project-id to resolve assay ids",
+            )
+        client = _client(transport)
+        title_map, project_ids, _id_to_title = _assay_maps(client, project_id)
+        manifest = _resolve_manifest(
+            rows or [],
+            client,
+            title_map,
+            project_ids,
+            prefetched=raw,
+        )
+        return _verified_current(manifest)
+    raise GateError(
+        "resolved_current_shape",
+        f"expected object or array, got {type(raw).__name__}",
+    )
 
 
 def _blank(value: Any) -> bool:
@@ -473,7 +549,7 @@ def main(argv: list[str], *, transport=None) -> int:
         _emit_gate(exc)
         return 1
     except Exception as exc:  # noqa: BLE001 - command helpers fail closed.
-        _emit_gate(GateError("runner_error", type(exc).__name__))
+        _emit_runner_error(exc)
         return 1
 
 

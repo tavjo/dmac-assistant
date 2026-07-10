@@ -103,7 +103,7 @@ def _run_viewset(query: str, mode: str) -> dict:  # pragma: no cover  # Minor-8
     import httpx  # pragma: no cover
     client = ac.AssistantClient(  # pragma: no cover
         base_url=os.environ["NEXTSEEK_URL"],  # pragma: no cover
-        assistant_prefix=os.environ.get("NEXTSEEK_ASSISTANT_PREFIX", "nextseek_api/assistant"),  # pragma: no cover
+        assistant_prefix=os.environ.get("NEXTSEEK_ASSISTANT_PREFIX", "nextseek_api/cc-assistant"),  # pragma: no cover
         auth=(_api_user(), _api_pass()),  # pragma: no cover
     )  # pragma: no cover
     try:  # pragma: no cover

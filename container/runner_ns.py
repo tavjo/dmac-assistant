@@ -113,7 +113,7 @@ def _emit_jsonl(event_name: str, payload: dict[str, Any]) -> None:
 def _build_assistant_client() -> Any:
     """Construct AssistantClient from environment variables.
 
-    Reads NEXTSEEK_URL, NEXTSEEK_ASSISTANT_PREFIX (default nextseek_api/assistant),
+    Reads NEXTSEEK_URL, NEXTSEEK_ASSISTANT_PREFIX (default nextseek_api/cc-assistant),
     API_USER, API_PASS -- mirrors the pattern used by T8's _run_viewset in
     build_context/plugins/nextseek/bin/_nextseek_runner.py.
     """
@@ -122,7 +122,7 @@ def _build_assistant_client() -> Any:
     return ac.AssistantClient(
         base_url=os.environ["NEXTSEEK_URL"],
         assistant_prefix=os.environ.get(
-            "NEXTSEEK_ASSISTANT_PREFIX", "nextseek_api/assistant"
+            "NEXTSEEK_ASSISTANT_PREFIX", "nextseek_api/cc-assistant"
         ),
         auth=(os.environ.get("API_USER", ""), os.environ.get("API_PASS", "")),
     )

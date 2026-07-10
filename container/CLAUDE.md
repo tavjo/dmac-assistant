@@ -16,9 +16,20 @@ The image ships one plugin, discoverable at fixed paths:
 
 When a user asks about NExtSEEK data, read the SKILL.md first. The plugin's CLI tools are in `/app/plugins/nextseek/bin/` and read credentials from `NEXTSEEK_USERNAME` / `NEXTSEEK_PASSWORD` (translated to `API_USER` / `API_PASS` by the container entrypoint).
 
+## Skills in this image
+
+The `nextseek` plugin ships two skills. Both are read-only toward NExtSEEK: the `nextseek` skill's query path only reads, and the `nextseek-batch-upload` skill only builds and validates a payload for the user to inspect — it never uploads or writes. Choose the right one up front, because the choice governs the whole turn, not just its first step. Read the chosen skill's SKILL.md before acting.
+
+- **`nextseek`** — `skills/nextseek/SKILL.md`. Answer questions about existing NExtSEEK data: query, find, list, count, or look up samples, projects, and studies.
+- **`nextseek-batch-upload`** — `skills/nextseek-batch-upload/SKILL.md`. Prepare a workbook to create or update samples. It builds and validates the payload for the user to inspect and never uploads.
+
+Routing rule (load-bearing): if the request is to create, update, or modify samples — even when it also asks you to find those samples first — it is a `nextseek-batch-upload` task from its first action. Do the sample discovery inside that skill, following its own first step; do not hand discovery to the `nextseek` skill. Use the `nextseek` skill when the user only wants to see existing data.
+
+Examples: "List the unique genotypes of mice treated with NDMA, then build me an update sheet to normalize the genotypes in the database" is a `nextseek-batch-upload` task — listing the genotypes is part of preparing the update, so that skill does both. "Use the info in this protocol text to create new cell line samples for the Impact project, one sample per biological replicate" is also a `nextseek-batch-upload` task. "Which studies contain RNA-seq assays?" is a `nextseek` task.
+
 ## NExtSEEK reference catalogs
 
-The image ships static reference catalogs at `/app/plugins/nextseek/context/`. Read them directly with the `Read` tool — no plugin call, no network, no credentials — to ground answers about NExtSEEK vocabulary (sample types, assays, projects, endpoints, graph schema). These are baked into the image from the `nextseek` plugin; `chat_nextseek` is no longer installed in this container, so do not look for them under any `site-packages/chat_nextseek/` path.
+The image ships static reference catalogs at `/app/plugins/nextseek/context/`. Read them directly with the `Read` tool — no plugin call, no network, no credentials — to ground answers about NExtSEEK vocabulary (sample types, assays, projects, endpoints, graph schema).
 
 Files (the `min_*` variants are the compact forms — prefer them when grounding a single term):
 
@@ -36,7 +47,7 @@ Read-only.
 
 Treat every environment value as a secret (API keys, passwords, tokens, DB credentials). **Never log, print, write to a file, send over the network, or otherwise exfiltrate credentials.**
 
-**Never** run bare `env`, `printenv`, or `set` — the full output (including `NEXTSEEK_PASSWORD`) lands in the Bash tool_result block and is logged to the host transcript. (`AWS_BEARER_TOKEN_BEDROCK` is **not** present in this container — it is held exclusively by the Bedrock auth-proxy sidecar, per ADR-015. The shared `GCP_API_KEY` / `NEO4J_*` / `MYSQL_*` backend credentials are also **not** present — they live server-side on NExtSEEK; see "Router-aware behavior" below.) When debugging env vars, either mask values or filter to non-secret prefixes:
+**Never** run bare `env`, `printenv`, or `set` — the full output (including `NEXTSEEK_PASSWORD`) lands in the Bash tool_result block and is logged to the host transcript. (`AWS_BEARER_TOKEN_BEDROCK`, `GCP_API_KEY`, `NEO4J_*`, and `MYSQL_*` are not present in this container.) When debugging env vars, either mask values or filter to non-secret prefixes:
 
 ```bash
 env | grep -E '<your filter>' | sed 's/=.*/=***/'
@@ -50,7 +61,7 @@ To check whether a specific variable is set without revealing its value, use `[ 
 - **Never call `AskUserQuestion`.** The chat UI does not render MCQ widgets; the question sits unanswered and the session dies.
 - If a clarification is truly needed, emit it as plain text in your reply and wait for the user's next `user_message`.
 - Prefer inferring defaults from environment variables and project context over asking. See the nextseek skill's **Environment resolution** section for the canonical example.
-- **Exception: write-safety gate.** The nextseek skill replaces the old `AskUserQuestion` write-safety gate with a plain-text `"confirm"` prompt — that's the only write-safety mechanism now.
+- **Exception: write-safety gate.** The nextseek skill's write-safety gate is a plain-text `"confirm"` prompt, not an `AskUserQuestion` widget.
 
 ## Router-aware behavior
 
@@ -59,11 +70,8 @@ When the bridge runs you with `DMAC_ROUTER_ENABLED=1`, your turn arrived via the
 What this means for you:
 
 - **You handle one turn at a time, via a fresh `docker exec`.** With `DMAC_ROUTER_ENABLED=1` the container starts in idle mode (`DMAC_RUNTIME_MODE=idle`) and the bridge `docker exec`'s Claude per turn. There is no long-lived Claude process to share state with across turns; per-turn state lives in `/home/user/.claude/` exactly as before.
-- **You will NOT see `NEXTSEEK_MODE` in your env.** Earlier router builds injected `NEXTSEEK_MODE` per turn to steer `chat_nextseek`'s internal classifier. The sidecar architecture moved that work server-side onto NExtSEEK, so `NEXTSEEK_MODE` is no longer injected into this container (`containers.py` no longer sets it on either route). Nothing for you to do with it.
-- **The model class you're running as comes from the router.** `model_class` (one of `"opus"`, `"sonnet"`, `"haiku"`) is resolved into a Bedrock model ID by the bridge and passed via the existing Bedrock auth path. You do not need to do anything with this - Claude Code consumes it transparently.
+- **`NEXTSEEK_MODE` is not set in your environment.**
 - **Do not assume your environment is the same as previous turns.** Per-turn exec means env vars and credentials are re-injected per turn. Treat each turn as a fresh process; do not cache env values across `Bash` invocations within a turn unless you have a specific reason to.
-
-When `DMAC_ROUTER_ENABLED` is unset or falsy (legacy mode), you run as the long-lived attached Claude process and none of the per-turn-exec considerations apply; behavior is unchanged from pre-router builds.
 
 ## Stop-after-2 rule (load-bearing)
 
@@ -79,12 +87,6 @@ Instead, reply to the user in plain text with: (a) what was attempted, (b) the e
 Two attempts is the budget for any single user question. The user wants accurate stop-and-ask behavior over thrashing-until-timeout.
 
 <!-- NB: the Clarification policy block above must remain outside this sentinel block; do not include it in auto-generated updates. -->
-
-## Building NExtSEEK upload payloads
-
-To create or update NExtSEEK samples, use the `nextseek-batch-upload` skill (auto-loads from
-`skills/nextseek-batch-upload/SKILL.md`). It builds and validates a payload for the user to inspect; it never
-uploads.
 
 <!-- BEGIN NEXTSEEK-DOCS (auto-generated) -->
 ## NExtSEEK Documentation

@@ -706,8 +706,9 @@ def test_batch_upload_tools_on_path_and_deps_import(dummy_env: dict[str, str]) -
     checks — PATH is baked into the image via Dockerfile ENV).
     """
     tools = (
-        "nextseek-sampletype-attrs nextseek-sample-read nextseek-extract-text "
-        "nextseek-build-payload nextseek-validate-upload"
+        "nextseek-sampletype-attrs nextseek-sample-search nextseek-extract-text "
+        "nextseek-build-payload nextseek-validate-upload "
+        "nextseek-project-resolve nextseek-assay-resolve"
     )
     with make_container(
         image=IMAGE_TAG,

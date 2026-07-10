@@ -696,3 +696,97 @@ def _write_artifact(path, rows):
         autofilter=False,
         table_style=None,
     )
+
+
+def test_build_payload_accepts_single_dict_schema_file(tmp_path):
+    """Defect 3: nextseek-sampletype-attrs emits one dict; build-payload must accept it."""
+    schema_path = tmp_path / "attrs.json"
+    schema_path.write_text(json.dumps(SCHEMA[0]))
+    rows = _rows_file(tmp_path, [_create_row(assay_ids=[9])])
+    rc = runner.main(
+        [
+            "build-payload",
+            "--rows", str(rows),
+            "--schema", str(schema_path),
+            "--id-to-title", str(_titles_file(tmp_path, {9: "RNA-seq"})),
+            "--out", str(tmp_path / "stage"),
+        ]
+    )
+    assert rc == 0
+    assert (tmp_path / "stage" / "payload_flat.xlsx").exists()
+
+
+def test_resolve_manifest_reuses_prefetched_rows_without_search():
+    """Defect 2: when sample-search rows are already in hand, do not search again."""
+    client = StubClient()
+    prefetched = [
+        {
+            "id": 324503,
+            "numeric_seek_id": 324503,
+            "json_metadata": {"UID": UID},
+            "assays": TITLE,
+            "assay_titles": [TITLE],
+        }
+    ]
+    manifest = runner._resolve_manifest(
+        [_update_row()],
+        client,
+        {TITLE: [351, 260]},
+        {351, 260},
+        prefetched=prefetched,
+    )
+    assert not any(call[0] == "search" for call in client.calls)
+    assert manifest[UID]["retrieve_status"] == "verified"
+    assert set(manifest[UID]["current_assay_ids"]) == {351}
+
+
+def test_build_payload_resolved_current_from_sample_search_no_second_search(tmp_path):
+    """Defect 2: --resolved-current may be sample-search list; resolve without re-search."""
+    client = StubClient()
+    search_path = tmp_path / "sample_search.json"
+    search_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": 324503,
+                    "numeric_seek_id": 324503,
+                    "json_metadata": {"UID": UID},
+                    "assays": TITLE,
+                    "assay_titles": [TITLE],
+                }
+            ]
+        )
+    )
+    rows = _rows_file(tmp_path, [_update_row(attributes={"Treatment": "drug"})])
+    rc = runner.main(
+        [
+            "build-payload",
+            "--rows", str(rows),
+            "--schema", str(_schema_file(tmp_path)),
+            "--resolved-current", str(search_path),
+            "--project-id", "1",
+            "--id-to-title", str(_titles_file(tmp_path)),
+            "--out", str(tmp_path / "stage"),
+        ],
+        transport=client,
+    )
+    assert rc == 0, client.calls
+    assert not any(call[0] == "search" for call in client.calls)
+    assert (tmp_path / "stage" / "payload_flat.xlsx").exists()
+
+
+def test_runner_error_includes_message_and_stderr_traceback(tmp_path, capsys, monkeypatch):
+    """Defect 4: runner_error must carry the exception message; stderr gets a traceback."""
+
+    def boom(_argv, *, transport=None):
+        raise RuntimeError("distinct-failure-message")
+
+    monkeypatch.setitem(runner._CMDS, "build-payload", boom)
+    rc = runner.main(["build-payload"])
+    captured = capsys.readouterr()
+    assert rc != 0
+    gate = json.loads(captured.out.strip().splitlines()[-1])
+    assert gate["gate"] == "runner_error"
+    assert "RuntimeError" in gate["detail"]
+    assert "distinct-failure-message" in gate["detail"]
+    assert "Traceback" in captured.err

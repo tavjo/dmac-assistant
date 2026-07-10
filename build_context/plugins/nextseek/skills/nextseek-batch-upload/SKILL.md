@@ -11,6 +11,27 @@ description: >
 You prepare a flat create/update workbook and validate it. You do not submit it.
 The safe output is the workbook path plus the validation result.
 
+## Step 0: Identify the target samples
+
+Before the Required Flow you must know which samples to build rows for. Discover
+them with the granular, deterministic ops below — not with `nextseek-query`. The
+granular ops return a plan and rows you can inspect directly; use them for target
+discovery.
+
+- **Curator described the samples by attribute** (e.g. "every TIS sample whose
+  Scientist is Owen Leddy"): run `nextseek-parse --query "<the curator's request
+  verbatim>"` to turn it into an `advanced_search` plan, then
+  `nextseek-api-read --parser-plan "<plan JSON>" --query "<same request>"` to
+  execute it. The response rows carry each matching sample's UID and metadata.
+  If `nextseek-parse` returns `AGENT_FAILED`, retry the identical call once; if it
+  fails again, stop and tell the curator. Do not fall back to `nextseek-query`.
+- **Curator already gave explicit UIDs**: skip parse/api-read and go straight to
+  `nextseek-sample-search --uid <UID> [--uid <UID> ...]`. This op is UID-only; it
+  does not search by attribute.
+
+Confirm the discovered UID set with the curator before building anything. Carry
+those UIDs into step 3 (retrieve current) and step 5 (rows JSON).
+
 ## Required Flow
 
 1. Resolve the project with `nextseek-project-resolve`.
@@ -28,12 +49,18 @@ The safe output is the workbook path plus the validation result.
 2. Fetch the structured schema with `nextseek-sampletype-attrs`.
    Do this for every SampleType. Persist the structured schema, not just title
    strings, and use it for value population. If a required value is missing or
-   ambiguous, ask for the missing value instead of inventing it.
+   ambiguous, ask for the missing value instead of inventing it. The attrs
+   command emits one schema object per SampleType; pass that file (or a JSON
+   array of such objects) to `nextseek-build-payload --schema` — the runner
+   accepts either shape.
 
 3. Retrieve on update with `nextseek-sample-search`.
    A populated UID means an update. Retrieve the visible current sample row before
    building so the hard gate can preserve current assay links and refuse missing
-   or degraded current-assay evidence.
+   or degraded current-assay evidence. Pass the sample-search JSON file directly
+   to `nextseek-build-payload --resolved-current` together with `--project-id`.
+   Do not invent a `{uid: [assay_id, ...]}` map by hand; the runner resolves
+   assay IDs from the search rows without calling advanced_search again.
 
 4. Resolve assay titles with `nextseek-assay-resolve`.
    Use the accessible `/assays/` map and the selected project's assay set as the
@@ -46,9 +73,14 @@ The safe output is the workbook path plus the validation result.
    Values belong in `attributes`; the tools build canonical `json_metadata`.
 
 6. Build only staged payloads with `nextseek-build-payload`.
-   Use a non-scratch staging directory for build-only inspection. Do not hand-edit
-   the sheet. If the user changes values, update the rows JSON and
-   rebuild from the source rows so schema and gate checks still apply.
+   Use a non-scratch staging directory for build-only inspection. Pass
+   `--schema` (attrs output), and on updates also `--resolved-current`
+   (sample-search output) plus `--project-id`. Do not hand-edit the sheet. If
+   the user changes values, update the rows JSON and rebuild from the source
+   rows so schema and gate checks still apply.
+
+   Prefer `nextseek-validate-upload` (fused build+validate) when you do not need
+   a staged inspection workbook; it retrieves current assays once in-process.
 
 7. Validate in file mode with `nextseek-validate-upload`.
    Pass `--project-id` and the matching `--project-confirmation` token. The
