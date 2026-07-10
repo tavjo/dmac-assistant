@@ -365,27 +365,46 @@ def _scan_image_metadata_for(tag: str, needle: str) -> int:
 
 
 def _scan_image_filesystem_for(tag: str, needle: str, tmp_path: Path) -> int:
-    """Hits for `needle` in the layer FILESYSTEM, via `docker save | grep`.
+    """Hits for `needle` in the image FILESYSTEM, via `docker export | grep`.
 
-    `docker save` emits an uncompressed tar-of-tars: every layer's filesystem
-    content (and the config/manifest JSON) is present as raw bytes. Grepping the
-    saved tar therefore covers ALL layers without needing any tooling inside the
-    image, catching a token written into a file via `COPY` or `RUN echo`. The tar
-    is scoped to a temp file and removed before returning.
+    Creates a container from the image and `docker export`s its flattened
+    filesystem as a single uncompressed tar, then counts raw-byte occurrences of
+    the needle. This covers a token written into a file via `COPY` or `RUN echo`
+    regardless of how the runtime stores layers.
+
+    `docker save` is deliberately NOT used here: under an OCI-layout runtime such
+    as OrbStack it emits gzip/zstd-compressed layer blobs (`blobs/sha256/...`), so
+    a file's content is invisible to a raw-byte grep and this scan would silently
+    return 0 (the G6 filesystem negative control catches exactly that). `docker
+    export` yields the container's flat filesystem uncompressed, so file content
+    is always present as raw bytes. The container and tar are scoped and removed
+    before returning.
     """
-    tar_path = tmp_path / f"_g6_save_{tag.replace('/', '_').replace(':', '_')}.tar"
+    tar_path = tmp_path / f"_g6_export_{tag.replace('/', '_').replace(':', '_')}.tar"
     needle_bytes = needle.encode()
+    cid = ""
     try:
-        save = subprocess.run(
-            ["docker", "save", tag, "-o", str(tar_path)],
+        create = subprocess.run(
+            ["docker", "create", tag],
             capture_output=True,
             text=True,
         )
-        assert save.returncode == 0, f"docker save {tag} failed: {save.stderr}"
+        assert create.returncode == 0, f"docker create {tag} failed: {create.stderr}"
+        cid = create.stdout.strip()
+        export = subprocess.run(
+            ["docker", "export", cid, "-o", str(tar_path)],
+            capture_output=True,
+            text=True,
+        )
+        assert export.returncode == 0, f"docker export {cid} failed: {export.stderr}"
         data = tar_path.read_bytes()
         return data.count(needle_bytes)
     finally:
         tar_path.unlink(missing_ok=True)
+        if cid:
+            subprocess.run(
+                ["docker", "rm", "-f", cid], capture_output=True, text=True
+            )
 
 
 def _scan_image_all_surfaces_for(tag: str, needle: str, tmp_path: Path) -> int:

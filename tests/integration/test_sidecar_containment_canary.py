@@ -121,6 +121,10 @@ def test_build_env_strips_all_shared_canaries() -> None:
 
 
 @pytest.mark.skipif(not docker_available(), reason="docker daemon not available")
+@pytest.mark.skipif(
+    not H.nextseek_backend_available(),
+    reason="local NExtSEEK backend (nextseek_nginx) not running",
+)
 @pytest.mark.live_docker
 @pytest.mark.slow
 def test_decredentialed_agent_runs_9_ops_with_zero_shared_creds(

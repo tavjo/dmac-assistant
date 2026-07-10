@@ -118,6 +118,24 @@ def sidecar_start() -> None:
     subprocess.run(["docker", "start", SIDECAR_CONTAINER], capture_output=True, timeout=60)
 
 
+def nextseek_backend_available() -> bool:
+    """True when the local NExtSEEK backend the sidecar forwards to is running.
+
+    The sidecar forwards granular ops to the local NExtSEEK stack's nginx
+    (`nextseek_nginx`), and the assistant viewset is reached at the same stack
+    via the host gateway. When that stack is down, every op transport-fails with
+    "Name or service not known" / ConnectError, so these live tests cannot
+    exercise the forward path — they must SKIP, not FAIL. Evaluated at collection
+    time by the module skip guards.
+    """
+    out = subprocess.run(
+        ["docker", "ps", "--filter", "name=nextseek_nginx",
+         "--filter", "status=running", "--format", "{{.Names}}"],
+        capture_output=True, text=True, timeout=30,
+    )
+    return out.returncode == 0 and bool(out.stdout.strip())
+
+
 # ---------------------------------------------------------------- bridge plumbing
 
 def make_bridge_config(tmp_path: Path, *, staging_root: Path) -> BridgeConfig:

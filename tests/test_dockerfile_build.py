@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import textwrap
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -352,26 +353,26 @@ def test_dockerfile_uses_uv_sync_locked() -> None:
         "Dockerfile contains the literal placeholder `<CHAT_NEXTSEEK_REV>`."
     )
 
-    # Amendment 7 v2 (2026-04-30) removed markitdown from the image. The
-    # 2026-05-04 docs-ingest stabilization removes it from build_tools too.
-    # Drift guards below assert it stays out of both the Dockerfile and the
-    # bridge pyproject.toml.
+    # markitdown must not appear in the Dockerfile directly (the image installs
+    # it via the `container` extra, referenced as `--extra container`, never by
+    # name) nor in the main bridge dependencies (those install on the macOS
+    # host). It IS allowed as an image-only extra
+    # ([project.optional-dependencies].container) — it backs nextseek-extract-text
+    # inside the image.
     assert "markitdown" not in text, (
-        "Amendment 7 v2 forbids any markitdown reference in the Dockerfile. "
-        "The image needs the COPYd doc artifacts, not the old PDF conversion "
-        "library."
+        "markitdown must not be referenced by name in the Dockerfile. "
+        "The image installs it via the `container` extra, not directly."
     )
 
     pyproject = REPO_ROOT / "pyproject.toml"
-    pyproject_text = pyproject.read_text(encoding="utf-8")
-    for line in pyproject_text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            continue
-        assert "markitdown" not in stripped, (
-            f"Amendment 7 v2 forbids an active markitdown dep in bridge "
-            f"pyproject.toml; found: {line!r}"
-        )
+    pyproject_data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    main_deps = pyproject_data.get("project", {}).get("dependencies", [])
+    markitdown_in_main = [dep for dep in main_deps if "markitdown" in dep]
+    assert not markitdown_in_main, (
+        "markitdown must not appear in the main bridge [project] dependencies "
+        "(they install on the macOS host); it is allowed only in the image-only "
+        f"[project.optional-dependencies].container extra. Found: {markitdown_in_main!r}"
+    )
 
     # The build_tools sibling project must declare its own pyproject.toml and
     # own lockfile so the bridge lockfile stays portable.

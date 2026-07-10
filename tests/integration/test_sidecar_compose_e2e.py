@@ -19,6 +19,10 @@ from tests.integration import _sidecar_e2e_helpers as H
 
 pytestmark = [
     pytest.mark.skipif(not docker_available(), reason="docker daemon not available"),
+    pytest.mark.skipif(
+        not H.nextseek_backend_available(),
+        reason="local NExtSEEK backend (nextseek_nginx) not running",
+    ),
     pytest.mark.live_docker,
     pytest.mark.slow,
 ]
